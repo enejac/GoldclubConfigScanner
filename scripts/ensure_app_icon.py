@@ -1,0 +1,45 @@
+#!/usr/bin/env python3
+"""Regenerate assets/log_investigator.ico from the PNG source (Windows exe icon)."""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QIcon, QPixmap
+from PySide6.QtWidgets import QApplication
+
+_ROOT = Path(__file__).resolve().parents[1]
+_PNG = _ROOT / "assets" / "log_investigator_icon.png"
+_ICO = _ROOT / "assets" / "log_investigator.ico"
+
+
+def main() -> int:
+    if not _PNG.is_file():
+        print(f"Missing source PNG: {_PNG}", file=sys.stderr)
+        return 1
+    app = QApplication(sys.argv)
+    base = QPixmap(str(_PNG))
+    if base.isNull():
+        print("Failed to load PNG", file=sys.stderr)
+        return 1
+    icon = QIcon()
+    for size in (16, 24, 32, 48, 64, 128, 256):
+        icon.addPixmap(
+            base.scaled(
+                size,
+                size,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        )
+    if not icon.pixmap(256, 256).toImage().save(str(_ICO), "ICO"):
+        print(f"Failed to write {_ICO}", file=sys.stderr)
+        return 1
+    print(f"Wrote {_ICO} ({_ICO.stat().st_size} bytes)")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

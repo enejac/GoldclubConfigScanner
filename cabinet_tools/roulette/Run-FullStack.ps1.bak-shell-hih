@@ -1,0 +1,383 @@
+<#
+.SYNOPSIS
+    Reverse of Kill-All: start full GoldClub/roulette stack + game.
+
+.DESCRIPTION
+    Starts GoldClub services + nginx, ensures a single platform\user\shell.ps1,
+    resumes it. HIH (owned by shell) auto-boots game-start -> Godot — this script
+    does NOT start godot.exe and does not start a parallel game-start when shell
+    is live (that races HIH and can spawn a second Godot).
+
+    Fast path: skip long Godot waits / settle-watch. Success = services +
+    shell/HIH chain alive (Godot optional; HIH brings it up shortly after).
+
+.EXAMPLE
+    .\Run-FullStack.ps1
+#>
+[CmdletBinding()]
+param(
+    [switch] $WhatIf,
+    [switch] $AlreadyElevated,
+    [string] $BinDir = 'C:\goldclub\bin',
+    # Brief optional peek for Godot after HIH is up (0 = skip).
+    [int] $GodotPeekSec = 8,
+    # Only used if more than one Godot is seen; otherwise skipped.
+    [int] $SettleWatchSec = 6
+)
+
+$ErrorActionPreference = 'Continue'
+$script:StackOk = $false
+
+function Test-IsAdmin {
+    try {
+        $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $p = New-Object Security.Principal.WindowsPrincipal($id)
+        return $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    } catch { return $false }
+}
+
+if (-not $WhatIf -and -not $AlreadyElevated -and -not (Test-IsAdmin)) {
+    $self = $MyInvocation.MyCommand.Path
+    if (-not $self) { Write-Host 'ERROR: cannot elevate' -ForegroundColor Red; exit 1 }
+    Write-Host 'Not elevated - relaunching as Administrator...' -ForegroundColor Yellow
+    $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $self, '-AlreadyElevated')
+    if ($PSBoundParameters.ContainsKey('BinDir')) { $argList += @('-BinDir', $BinDir) }
+    if ($PSBoundParameters.ContainsKey('GodotPeekSec')) { $argList += @('-GodotPeekSec', "$GodotPeekSec") }
+    if ($PSBoundParameters.ContainsKey('SettleWatchSec')) { $argList += @('-SettleWatchSec', "$SettleWatchSec") }
+    try {
+        $p = Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $argList -PassThru -Wait
+        exit $(if ($null -ne $p) { $p.ExitCode } else { 1 })
+    } catch {
+        Write-Host ("ERROR: elevation failed: {0}" -f $_.Exception.Message) -ForegroundColor Red
+        exit 1
+    }
+}
+
+if (-not ('NativeMethods.ProcHold' -as [type])) {
+    Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+namespace NativeMethods {
+  public static class ProcHold {
+    [DllImport("ntdll.dll")] public static extern int NtSuspendProcess(IntPtr ProcessHandle);
+    [DllImport("ntdll.dll")] public static extern int NtResumeProcess(IntPtr ProcessHandle);
+    [DllImport("kernel32.dll", SetLastError=true)] public static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
+    [DllImport("kernel32.dll", SetLastError=true)] public static extern bool CloseHandle(IntPtr h);
+    public const uint PROCESS_SUSPEND_RESUME = 0x0800;
+  }
+}
+"@
+}
+
+function Get-PlatformShellProcesses {
+    @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+        $_.Name -match '^(powershell|pwsh)\.exe$' -and
+        $_.CommandLine -and
+        ($_.CommandLine -match '(?i)[\\/]platform[\\/]user[\\/]shell\.ps1') -and
+        ($_.CommandLine -notmatch '(?i)Open-AdminShell') -and
+        ($_.ProcessId -ne $PID)
+    })
+}
+
+function Ensure-SinglePlatformShell {
+    $shells = @(Get-PlatformShellProcesses | Sort-Object ProcessId)
+    if ($shells.Count -le 1) { return $shells }
+    $keep = $shells | Select-Object -First 1
+    $kill = @($shells | Where-Object { $_.ProcessId -ne $keep.ProcessId })
+    Write-Host ("  WARN: {0} shell.ps1 - keep pid={1}, stop extras {2}" -f `
+        $shells.Count, $keep.ProcessId, (($kill | ForEach-Object { $_.ProcessId }) -join ',')) -ForegroundColor Yellow
+    if (-not $WhatIf) {
+        foreach ($s in $kill) {
+            try { Stop-Process -Id $s.ProcessId -Force -ErrorAction Stop } catch {
+                cmd /c "taskkill /F /PID $($s.ProcessId)" | Out-Null
+            }
+        }
+        Start-Sleep -Milliseconds 300
+    }
+    return @(Get-PlatformShellProcesses)
+}
+
+function Resume-PlatformShell {
+    $shells = @(Ensure-SinglePlatformShell)
+    if ($shells.Count -eq 0) {
+        Write-Host '  platform\user\shell.ps1 not running' -ForegroundColor DarkGray
+        return $false
+    }
+    $anyOk = $false
+    foreach ($s in $shells) {
+        if ($WhatIf) {
+            Write-Host ("  WhatIf: RESUME shell.ps1 pid={0}" -f $s.ProcessId) -ForegroundColor Yellow
+            $anyOk = $true
+            continue
+        }
+        $h = [NativeMethods.ProcHold]::OpenProcess([NativeMethods.ProcHold]::PROCESS_SUSPEND_RESUME, $false, [int]$s.ProcessId)
+        if ($h -eq [IntPtr]::Zero) {
+            Write-Host ("  WARN: cannot open shell.ps1 pid={0}" -f $s.ProcessId) -ForegroundColor Yellow
+            continue
+        }
+        try {
+            for ($i = 0; $i -lt 16; $i++) {
+                [void][NativeMethods.ProcHold]::NtResumeProcess($h)
+            }
+            Write-Host ("  RESUMED shell.ps1 pid={0} (x16)" -f $s.ProcessId) -ForegroundColor Green
+            $anyOk = $true
+        } finally {
+            [void][NativeMethods.ProcHold]::CloseHandle($h)
+        }
+    }
+    return $anyOk
+}
+
+function Get-GodotUiProcesses {
+    @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+        $_.Name -and ($_.Name -like 'godot*' -or $_.Name -ieq 'Godot_v4.exe')
+    } | ForEach-Object {
+        try { Get-Process -Id $_.ProcessId -ErrorAction Stop } catch { $null }
+    } | Where-Object { $_ } | Sort-Object Id -Unique)
+}
+
+function Get-NamedProcesses {
+    param([string[]] $Names)
+    $all = @()
+    foreach ($n in $Names) {
+        $all += @(Get-Process -Name $n -ErrorAction SilentlyContinue)
+    }
+    @($all | Sort-Object Id -Unique)
+}
+
+function Wait-GodotUi {
+    param([int] $TimeoutSec = 8)
+    if ($TimeoutSec -le 0) { return @(Get-GodotUiProcesses) }
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    do {
+        $gods = @(Get-GodotUiProcesses)
+        if ($gods.Count -gt 0) { return $gods }
+        Start-Sleep -Milliseconds 350
+    } while ((Get-Date) -lt $deadline)
+    return @()
+}
+
+function Test-HihPresent {
+    return (@(Get-NamedProcesses -Names @('HIH'))).Count -gt 0
+}
+
+function Test-GameChainPresent {
+    return (@(Get-GodotUiProcesses) + @(Get-NamedProcesses -Names @('game-start', 'Start-Game', 'ruleta', 'Ruleta', 'HIH'))).Count -gt 0
+}
+
+function Stop-ExtraByName {
+    param(
+        [string[]] $Names,
+        [string] $Label
+    )
+    $all = @(Get-NamedProcesses -Names $Names)
+    if ($all.Count -le 1) { return 0 }
+    $keep = $all | Sort-Object StartTime | Select-Object -First 1
+    $kill = @($all | Where-Object { $_.Id -ne $keep.Id })
+    Write-Host ("  {0}: {1} instances - keep oldest pid={2}, stop {3}" -f `
+        $Label, $all.Count, $keep.Id, (($kill | ForEach-Object { $_.Id }) -join ',')) -ForegroundColor Yellow
+    if ($WhatIf) { return $kill.Count }
+    $kill | Stop-Process -Force -ErrorAction SilentlyContinue
+    return $kill.Count
+}
+
+function Start-HihDirect {
+    $exe = Join-Path $BinDir 'HIH.exe'
+    if (-not (Test-Path -LiteralPath $exe)) {
+        Write-Host ("  ERROR: missing {0}" -f $exe) -ForegroundColor Red
+        return $false
+    }
+    if (Test-HihPresent) {
+        Write-Host '  HIH already running' -ForegroundColor Green
+        return $true
+    }
+    if ($WhatIf) {
+        Write-Host ("  WhatIf: Start-Process {0}" -f $exe) -ForegroundColor Yellow
+        return $true
+    }
+    Write-Host ("  starting HIH.exe (boots game via shell chain): {0}" -f $exe) -ForegroundColor Cyan
+    Start-Process -FilePath $exe -WorkingDirectory $BinDir
+    Start-Sleep -Milliseconds 600
+    return (Test-HihPresent)
+}
+
+function Prune-ExtrasOnce {
+    [void](Stop-ExtraByName -Names @('HIH') -Label 'HIH')
+    [void](Stop-ExtraByName -Names @('game-start', 'Start-Game') -Label 'game-start')
+    [void](Stop-ExtraByName -Names @('ruleta', 'Ruleta') -Label 'ruleta')
+    $gods = @(Get-GodotUiProcesses)
+    if ($gods.Count -le 1) { return $gods }
+    $keep = $gods | Sort-Object StartTime | Select-Object -First 1
+    $kill = @($gods | Where-Object { $_.Id -ne $keep.Id })
+    Write-Host ("  {0} Godot - keep oldest pid={1}, stop {2}" -f `
+        $gods.Count, $keep.Id, (($kill | ForEach-Object { $_.Id }) -join ',')) -ForegroundColor Yellow
+    if (-not $WhatIf) {
+        $kill | Stop-Process -Force -ErrorAction SilentlyContinue
+    }
+    return @(Get-GodotUiProcesses)
+}
+
+function Watch-DelayedSecondGodot {
+    param([int] $WatchSec = 6)
+    if ($WhatIf -or $WatchSec -le 0) { return }
+    Write-Host ("  settle-watch {0}s (extras only) ..." -f $WatchSec) -ForegroundColor DarkGray
+    $deadline = (Get-Date).AddSeconds($WatchSec)
+    while ((Get-Date) -lt $deadline) {
+        [void](Stop-ExtraByName -Names @('game-start', 'Start-Game') -Label 'game-start(settle)')
+        [void](Stop-ExtraByName -Names @('HIH') -Label 'HIH(settle)')
+        $gods = @(Get-GodotUiProcesses)
+        if ($gods.Count -gt 1) {
+            $keep = $gods | Sort-Object StartTime | Select-Object -First 1
+            $kill = @($gods | Where-Object { $_.Id -ne $keep.Id })
+            Write-Host ("  delayed twin Godot - keep pid={0}, stop {1}" -f `
+                $keep.Id, (($kill | ForEach-Object { $_.Id }) -join ',')) -ForegroundColor Yellow
+            $kill | Stop-Process -Force -ErrorAction SilentlyContinue
+        }
+        Start-Sleep -Milliseconds 400
+    }
+}
+
+Write-Host 'Starting GoldClub FULL STACK + game ...' -ForegroundColor Cyan
+Write-Host ("Elevated: {0}  User: {1}\{2}" -f (Test-IsAdmin), $env:USERDOMAIN, $env:USERNAME) -ForegroundColor DarkGray
+Write-Host ("Bin: {0}" -f $BinDir) -ForegroundColor DarkGray
+Write-Host ''
+
+$gcSvcPath = Join-Path $PSScriptRoot 'GoldClubServices.ps1'
+if (-not (Test-Path -LiteralPath $gcSvcPath)) {
+    Write-Host ("ERROR: missing {0}" -f $gcSvcPath) -ForegroundColor Red
+    exit 1
+}
+. $gcSvcPath
+if (-not $script:GoldClubServiceNames -or @($script:GoldClubServiceNames).Count -lt 1) {
+    Write-Host 'ERROR: GoldClubServices.ps1 did not load (UTF-16?). Re-copy UTF-8 file beside this script.' -ForegroundColor Red
+    exit 1
+}
+$serviceNames = @($script:GoldClubServiceNames)
+
+function Start-GcService {
+    param([string] $Name)
+    $svc = Resolve-GoldClubService -NameOrDisplay $Name
+    if (-not $svc) { Write-Host ("  service missing skip: {0}" -f $Name) -ForegroundColor DarkYellow; return }
+    if ($svc.Status -eq 'Running') { Write-Host ("  already Running: {0}" -f $svc.Name) -ForegroundColor Green; return }
+    if ($WhatIf) { Write-Host ("  WhatIf: Start-Service {0}" -f $svc.Name) -ForegroundColor Yellow; return }
+    try {
+        Write-Host ("  starting service: {0} ..." -f $svc.Name) -ForegroundColor Cyan
+        Start-Service -InputObject $svc -ErrorAction Stop
+        $svc.Refresh()
+        Write-Host ("  now {0}: {1}" -f $svc.Status, $svc.Name) -ForegroundColor Green
+    } catch {
+        Write-Host ("  FAILED {0}: {1}" -f $svc.Name, $_.Exception.Message) -ForegroundColor Red
+    }
+}
+
+Write-Host '1) GoldClub Windows services ...' -ForegroundColor Cyan
+foreach ($sn in $serviceNames) { Start-GcService -Name $sn }
+Write-Host ''
+
+Write-Host '2) nginx ...' -ForegroundColor Cyan
+$nginxPs1 = 'C:\goldclub\bin\Start-NgnixAndWatcher.ps1'
+$nginxWatchers = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+    $_.CommandLine -and ($_.CommandLine -match '(?i)Start-NgnixAndWatcher')
+})
+if (Get-Process -Name 'nginx' -ErrorAction SilentlyContinue) {
+    Write-Host '  nginx already running' -ForegroundColor Green
+} elseif ($nginxWatchers.Count -gt 0) {
+    Write-Host ("  nginx watcher already running pid={0}" -f ($nginxWatchers.ProcessId -join ',')) -ForegroundColor Green
+} elseif ($WhatIf) {
+    Write-Host '  WhatIf: would start nginx' -ForegroundColor Yellow
+} elseif (Test-Path -LiteralPath $nginxPs1) {
+    Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$nginxPs1,'-Silent') -WindowStyle Hidden
+    Write-Host '  nginx watcher launched' -ForegroundColor Green
+} else {
+    Write-Host '  WARN: Start-NgnixAndWatcher.ps1 missing' -ForegroundColor Yellow
+}
+Write-Host ''
+
+Write-Host '3) Resume single platform\user\shell.ps1 ...' -ForegroundColor Cyan
+$shellResumed = [bool](Resume-PlatformShell)
+if ($shellResumed) {
+    Write-Host '  shell owns HIH loop — Godot will auto-boot (no manual godot/game-start)' -ForegroundColor DarkGray
+}
+Write-Host ''
+
+Write-Host '4) Ensure HIH chain (not Godot) ...' -ForegroundColor Cyan
+if ($WhatIf) {
+    Write-Host '  WhatIf: ensure HIH' -ForegroundColor Yellow
+    $script:StackOk = $true
+} elseif ($shellResumed) {
+    # Give shell a moment to respawn HIH after resume; do NOT start parallel game-start.
+    $deadline = (Get-Date).AddSeconds(4)
+    while ((Get-Date) -lt $deadline -and -not (Test-HihPresent) -and -not (@(Get-GodotUiProcesses)).Count) {
+        Start-Sleep -Milliseconds 300
+    }
+    if (Test-HihPresent) {
+        Write-Host '  HIH up (shell chain) — Godot boots via HIH' -ForegroundColor Green
+        $script:StackOk = $true
+    } elseif ((@(Get-GodotUiProcesses)).Count -gt 0) {
+        Write-Host '  Godot already up' -ForegroundColor Green
+        $script:StackOk = $true
+    } else {
+        Write-Host '  shell live but HIH not visible yet — waiting on shell (no parallel start)' -ForegroundColor Yellow
+        # Still OK: shell was resumed; HIH may appear after bios handshake.
+        $script:StackOk = $true
+    }
+} else {
+    # No platform shell — start HIH once (preferred over game-start/godot).
+    Write-Host '  no platform shell — starting HIH.exe once' -ForegroundColor Cyan
+    if (Start-HihDirect) {
+        $script:StackOk = $true
+    } else {
+        Write-Host '  WARN: HIH did not start' -ForegroundColor Yellow
+    }
+}
+
+if ($GodotPeekSec -gt 0 -and -not $WhatIf) {
+    Write-Host ("  brief Godot peek ({0}s) ..." -f $GodotPeekSec) -ForegroundColor DarkGray
+    $gods = @(Wait-GodotUi -TimeoutSec $GodotPeekSec)
+    if ($gods.Count -gt 0) {
+        Write-Host ("  Godot up: {0}" -f (($gods | ForEach-Object { "pid=$($_.Id)" }) -join ', ')) -ForegroundColor Green
+    } else {
+        Write-Host '  Godot not up yet (HIH will bring it) — not an error' -ForegroundColor DarkGray
+    }
+}
+Write-Host ''
+
+Write-Host '5) Prune extras only (one pass) ...' -ForegroundColor Cyan
+if (-not $WhatIf) {
+    $gods = @(Prune-ExtrasOnce)
+    if ($gods.Count -eq 1) {
+        Write-Host ("  Godot UI: pid={0}" -f $gods[0].Id) -ForegroundColor Green
+    } elseif ($gods.Count -eq 0) {
+        Write-Host '  Godot: none yet (OK if HIH/shell running)' -ForegroundColor DarkGray
+    } else {
+        Write-Host ("  Godot still {0} after prune" -f $gods.Count) -ForegroundColor Yellow
+    }
+    # Short settle only when we already have Godot (catch delayed twin).
+    if ((@(Get-GodotUiProcesses)).Count -ge 1 -and $SettleWatchSec -gt 0) {
+        Write-Host ''
+        Write-Host ("6) Settle-watch ({0}s) ..." -f $SettleWatchSec) -ForegroundColor Cyan
+        Watch-DelayedSecondGodot -WatchSec $SettleWatchSec
+        $left = @(Get-GodotUiProcesses)
+        if ($left.Count -eq 1) {
+            Write-Host ("  settle OK: pid={0}" -f $left[0].Id) -ForegroundColor Green
+        } elseif ($left.Count -gt 1) {
+            Write-Host ("  settle: still {0} Godot" -f $left.Count) -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host ''
+        Write-Host '6) Settle-watch skipped (no Godot yet / HIH owns boot)' -ForegroundColor DarkGray
+    }
+} else {
+    Write-Host '  WhatIf: skip prune' -ForegroundColor Yellow
+}
+
+Write-Host ''
+if ($script:StackOk -or (Test-GameChainPresent) -or $shellResumed) {
+    $g = @(Get-GodotUiProcesses)
+    $hih = Test-HihPresent
+    Write-Host ("Done. Stack started (shell={0} HIH={1} Godot={2})." -f `
+        $shellResumed, $hih, $g.Count) -ForegroundColor Green
+    exit 0
+}
+Write-Host 'Done with errors: could not resume shell or start HIH.' -ForegroundColor Red
+exit 1

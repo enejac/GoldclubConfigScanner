@@ -1,0 +1,31 @@
+---
+description: QA Config SHA1 scanner — standalone ConfigScanner app
+globs:
+  - config_scanner/**
+  - config-scanner/**
+  - gui/config_scanner*.py
+---
+
+# Config Scanner
+
+SHA1 snapshots of GoldClub **config** for QA diff and restore. This repo is the scanner-only app (`python gui_app.py` / `ConfigScanner.exe`).
+
+## Code
+
+- **Python package:** `config_scanner/`
+- **GUI:** `gui/config_scanner_tab.py`, `gui/config_scanner_worker.py`, `gui/config_scanner_window.py`
+- **Bundled defaults:** `config_scanner/assets/`
+- **Writable data:** `config-scanner/` next to `ConfigScanner.exe` (or repo root in dev)
+
+## USB
+
+```powershell
+.\build_exe.ps1
+```
+
+## Scan scope
+
+- Roulette: `config\`, `bios\etc\`, `data\` — build tag from `ruleta\BuildVersion.txt`
+- Slot (`slot_lab_90`): slot root + hwdrivers + languages + themes/*.xml only
+
+Read **`config-scanner/AGENT.md`**. Slot auto-adapt (OneHand / mgconfig / themes) is the next structural work.

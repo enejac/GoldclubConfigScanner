@@ -1,0 +1,26 @@
+---
+description: UTF-8 only — Write tool emits UTF-16 on Windows; hook auto-fixes; never rewrite manually
+alwaysApply: true
+---
+
+# Script encoding: UTF-8 only (automatic)
+
+## Root cause (this workstation)
+
+Cursor's **Write** / file-edit tools often save as **UTF-16 LE** on Windows. That is a Cursor bug, not something to "fix" mid-turn with chat tokens.
+
+## Automatic fix (do not duplicate)
+
+Project hook `.cursor/hooks/fix_utf16_after_edit.py` runs on **`afterFileEdit`**, **`afterTabFileEdit`**, and **`postToolUse`** (Write / StrReplace / EditNotebook). It is launched with **`py -3`** (Cursor's hook PATH often has no `python`). It converts UTF-16 to **UTF-8 no BOM**.
+
+## Agent rules
+
+- Write/edit files normally (Write / StrReplace). **Do not** spend turns detecting or re-encoding UTF-16.
+- **Never** say "rewriting as UTF-8" / "known Write-tool issue" in the reply unless the hook is missing.
+- **Do not** create scripts via PowerShell `Set-Content` / `Out-File` / `>` (Windows PowerShell 5.x defaults to UTF-16). Prefer Write/StrReplace.
+- If a shell write is unavoidable:
+  `[System.IO.File]::WriteAllText($path, $text, [System.Text.UTF8Encoding]::new($false))`
+
+## Verify (rare)
+
+First bytes of a `.py`/`.bat` must not be `FF FE` / `FE FF`. ASCII text starts with the first character byte (e.g. `p` -> `70`).

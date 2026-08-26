@@ -1,0 +1,43 @@
+---
+description: Ruleta ERROR 30/99 lives in persistent\, not DataBase.db; RAM clear does not wipe it
+alwaysApply: true
+---
+
+# Ruleta trial lock (ERROR 30 / 99) — persistence
+
+Proven on **GRT330106 / 10.0.0.111** (20 Aug 2026, cabinet clock rolled to 10 Aug). Two licence systems: Aurum XML+WIBU vs Ruleta exe trial keypad. Do not confuse them. Do not copy another EGM's XML/`licence.dll`.
+
+## Cause (not the database)
+
+`DataBase.db` only held GameID. Official RAM clear (`cleanup.d/ruleta.json`) wipes `ruleta\var` + `arhiv` only.
+
+Trial state survives in `C:\goldclub\ruleta\persistent\` (junction of `var\state\ruleta\persistent`):
+
+| File | Written when |
+|---|---|
+| `RouletteActivate.dat` | LLAVE **SUCCEEDED** (binding token) |
+| `HeapDataFinanceStamps.dat` | first **Trial expired** (Unix stamp) |
+| `RouletteStop.flag` | stop after expire |
+
+Clock rollback + deleting `var\HeapDataDateTime.dat` / `Password.dat` is **not enough**. A leftover Activate token from an expired 10.2 enter keeps **ERROR 30**. An Aug 20 finance stamp vs an Aug 10 clock looks like tamper.
+
+Empty Activate (all zeros) 뿯↽ `Dongle mismatch!!!` + **ERROR 99** (fresh bind). That is reversible; 30 after a used token is the "stuck" stage.
+
+876 lock date on the Ventura disk was **18.08.2026**. After a clean persistent + clock **before** that date + a matching keypad enter, 876 stayed up (bets open/close, no `Trial expired`).
+
+## Fix (cabinet `C:` only)
+
+1. Stop `w32time` (or it snaps back). `Set-Date` to before the build's lock (lab: `2026-08-10 12:00`).
+2. Delete the three persistent files above + `var\Password.dat` + `var\HeapDataDateTime.dat`. Backup first.
+3. Keep live `37A55022…xml` and the 12 KB `licence.dll`. Never write `G:\` / `goldclub.vhd`.
+4. Relaunch. Expect **ERROR 99** with a **new** challenge. Enter that id's password (old 30-codes fail).
+5. Success = `type="SUCCEEDED"` and **no** `Trial expired` within ~15 s, then `Bets are open`.
+
+Scripts: `Fix-Error30Clock.ps1`, `Clear-TrialPersistent.ps1`, 876/684 push (now wipe persistent too).
+
+## Do not
+
+- Treat RAM clear as a trial reset.
+- Restore an expired `RouletteActivate.dat` (brings 30 back).
+- Forge keypad codes. Wrong code = `WRONG CODE`; 5x = lockout, new challenge.
+- Copy 0157/Ventura licence files onto 330106.

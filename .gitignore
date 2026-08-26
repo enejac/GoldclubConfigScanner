@@ -1,0 +1,23 @@
+# Local scanner output
+config-scanner/snapshots/
+config-scanner/reports/
+config-scanner/cabinet_secrets.json
+config-scanner/browser/chrome-win64/
+config-scanner/browser/user-data/
+config-scanner/browser/*.zip
+config-scanner/rollback.json
+snapshots/
+reports/
+
+# Built app
+ConfigScanner.exe
+dist/
+build/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+
+# Logs
+logs/
+*.log
