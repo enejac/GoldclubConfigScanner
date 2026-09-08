@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import string
@@ -33,8 +34,11 @@ def _migrate_legacy_nested_layout(exe_dir: Path) -> None:
         dest = exe_dir / name
         if dest.exists():
             continue
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(src), str(dest))
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(src), str(dest))
+        except OSError:
+            continue
     try:
         if legacy.is_dir() and not any(legacy.iterdir()):
             legacy.rmdir()
@@ -86,20 +90,42 @@ def _portable_data_candidates(exe_dir: Path) -> list[Path]:
 def _resolve_tool_root() -> Path:
     """Writable data folder next to LogInvestigator / config-scanner (never another drive)."""
     exe_dir = _default_exe_dir()
-    if getattr(sys, "frozen", False):
-        _migrate_legacy_nested_layout(exe_dir)
-
     override = os.environ.get("LOGINV_CONFIG_SCANNER_ROOT", "").strip()
     if override:
         return Path(override).resolve()
+    if getattr(sys, "frozen", False):
+        from app_paths import app_local_data_dir, dir_is_writable, is_network_path
+
+        if is_network_path(exe_dir) or not dir_is_writable(exe_dir):
+            return app_local_data_dir()
+        _migrate_legacy_nested_layout(exe_dir)
     return exe_dir
 
 
 def tool_root() -> Path:
-    """Writable folder for snapshots, reports, and seeded config (next to exe on USB)."""
+    """Writable folder for snapshots, reports, and seeded config (next to exe on USB).
+
+    When the exe folder cannot be written (typical of a policy-locked USB stick),
+    data goes to ``%LOCALAPPDATA%\\LogInvestigator`` instead of crashing.
+    """
     root = _resolve_tool_root()
-    ensure_tool_data(root)
-    return root
+    try:
+        ensure_tool_data(root)
+        return root
+    except OSError as exc:
+        from app_paths import app_local_data_dir
+
+        fallback = app_local_data_dir()
+        if fallback.resolve() == Path(root).resolve():
+            raise
+        logging.getLogger("config_scanner.paths").warning(
+            "tool data cannot be written under %s (%s); using %s",
+            root,
+            exc,
+            fallback,
+        )
+        ensure_tool_data(fallback)
+        return fallback
 
 
 def ensure_tool_data(root: Path) -> None:

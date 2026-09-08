@@ -24,6 +24,7 @@ class GameProfile:
     build_fingerprint: dict[str, object] | None
     scan_roots: list[ScanRootSpec]
     include_patterns: list[str]
+    extra_file_globs: tuple[str, ...]
     discover_targets: list[str]
     parallel_workers: int = 8
 
@@ -44,6 +45,7 @@ def _parse_profile(data: dict[str, object]) -> GameProfile:
     fp = fingerprint if isinstance(fingerprint, dict) else None
     rel = data.get("buildVersionRelativePath")
     discover_raw = data.get("discoverTargets") or data.get("discover_targets") or []
+    extra_raw = data.get("extraFileGlobs") or data.get("extra_file_globs") or []
     return GameProfile(
         id=str(data["id"]),
         label=str(data["label"]),
@@ -54,6 +56,7 @@ def _parse_profile(data: dict[str, object]) -> GameProfile:
         include_patterns=list(
             data.get("includePatterns") or ["*.xml", "*.ini", "*.conf", "*.json", "*.dat"]
         ),
+        extra_file_globs=tuple(str(item).replace("\\", "/") for item in extra_raw),
         discover_targets=[str(item) for item in discover_raw],
         parallel_workers=int(data.get("parallelWorkers") or 8),
     )
@@ -75,6 +78,7 @@ def load_profiles() -> list[GameProfile]:
                     ScanRootSpec(path="data", recursive=True),
                 ],
                 include_patterns=["*.xml", "*.ini", "*.conf", "*.json", "*.dat"],
+                extra_file_globs=(),
                 discover_targets=[],
             )
         ]

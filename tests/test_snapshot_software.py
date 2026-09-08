@@ -9,6 +9,7 @@ from config_scanner.service import ConfigScannerService
 from config_scanner.software_compat import (
     SNAPSHOT_SOFTWARE_SUBDIR,
     capture_ruleta_software_into_snapshot,
+    capture_slot_software_into_snapshot,
     is_software_capture_info_note,
     resolve_software_pack_for_snapshot,
     scan_user_warnings,
@@ -195,3 +196,108 @@ def test_run_scan_without_software_stays_config_only(tmp_path: Path) -> None:
     result = service.run_scan(str(machine), include_software=False)
     assert result.software_captured is False
     assert snapshot_has_embedded_software(result.snapshot_path) is False
+
+
+def _slot_goldclub(tmp_path: Path) -> Path:
+    root = tmp_path / "Goldclub"
+    slot = root / "slot"
+    themes = slot / "themes" / "PR2_Foo"
+    themes.mkdir(parents=True)
+    (slot / "OneHand.exe").write_bytes(b"MZ slot")
+    (slot / "game-start.exe").write_bytes(b"MZ start")
+    (slot / "GoldClub.Settings.dll").write_bytes(b"settings")
+    (slot / "themes" / "mgconfig.xml").write_text(
+        "<Multigamer><MachineID>GST22377</MachineID></Multigamer>\n",
+        encoding="utf-8",
+    )
+    (themes / "game.xml").write_text("<game/>", encoding="utf-8")
+    (themes / "MathSettings.xml").write_text("<math/>", encoding="utf-8")
+    (themes / "PR2_FooMath.json").write_bytes(b"\x00math")
+    (themes / "big.mp4").write_bytes(b"video")
+    (slot / "themes" / "HardwareConfig.xml").write_text("<hwcfg/>", encoding="utf-8")
+    gs = slot / "themes" / "data" / "GameStarColors" / "1080p" / "Red"
+    gs.mkdir(parents=True)
+    (gs / "gameselector_GSC_config.xml").write_text("<gs/>", encoding="utf-8")
+    (gs / "flag.png").write_bytes(b"png")
+    (slot / "hwdrivers").mkdir()
+    (slot / "hwdrivers" / "device.xml").write_text("<dev/>", encoding="utf-8")
+    (slot / "var").mkdir()
+    (slot / "var" / "runtime.dat").write_bytes(b"runtime")
+    cache = slot / "Cache"
+    cache.mkdir()
+    (cache / "blob.bin").write_bytes(b"cache")
+    (slot / "licence.dll").write_bytes(b"wibu-slot")
+    bios = root / "bios"
+    (bios / "License").mkdir(parents=True)
+    (bios / "etc" / "game-start").mkdir(parents=True)
+    (bios / "BiOS2.exe").write_bytes(b"MZ bios")
+    (bios / "License" / "License.lic").write_bytes(b"secret-lic")
+    (bios / "etc" / "game-start" / "checksum.sha1").write_text("deadbeef", encoding="utf-8")
+    (root / "Licenses").mkdir()
+    (root / "Licenses" / "dongle.xml").write_text("<licence/>", encoding="utf-8")
+    (root / "maintenance" / "config").mkdir(parents=True)
+    (root / "maintenance" / "config" / "serialports.conf").write_text("COM4", encoding="utf-8")
+    (root / "Bootstrap.exe").write_bytes(b"MZ boot")
+    (root / "licence.dll").write_bytes(b"wibu")
+    return root
+
+
+def test_capture_slot_software_skips_gamepack_keeps_licence_and_hw(tmp_path: Path) -> None:
+    live = _slot_goldclub(tmp_path)
+    snap = tmp_path / "snap"
+    snap.mkdir()
+    result = capture_slot_software_into_snapshot(str(live), snap)
+    assert result.captured is True
+    software = snap / SNAPSHOT_SOFTWARE_SUBDIR
+    assert (software / "slot" / "OneHand.exe").read_bytes().startswith(b"MZ")
+    assert (software / "slot" / "hwdrivers" / "device.xml").is_file()
+    assert (software / "bios" / "BiOS2.exe").is_file()
+    assert (software / "Bootstrap.exe").is_file()
+    assert (software / "licence.dll").read_bytes() == b"wibu"
+    assert (software / "slot" / "licence.dll").read_bytes() == b"wibu-slot"
+    assert (software / "Licenses" / "dongle.xml").is_file()
+    assert (software / "bios" / "License" / "License.lic").is_file()
+    assert (software / "slot" / "themes" / "mgconfig.xml").is_file()
+    assert (software / "slot" / "themes" / "HardwareConfig.xml").is_file()
+    assert (software / "slot" / "themes" / "PR2_Foo" / "MathSettings.xml").is_file()
+    assert (software / "slot" / "themes" / "PR2_Foo" / "PR2_FooMath.json").is_file()
+    assert (
+        software
+        / "slot"
+        / "themes"
+        / "data"
+        / "GameStarColors"
+        / "1080p"
+        / "Red"
+        / "gameselector_GSC_config.xml"
+    ).is_file()
+    assert (software / "bios" / "etc" / "game-start" / "checksum.sha1").is_file()
+    assert (software / "maintenance" / "config" / "serialports.conf").is_file()
+    assert not (software / "slot" / "themes" / "PR2_Foo" / "game.xml").exists()
+    assert not (software / "slot" / "themes" / "PR2_Foo" / "big.mp4").exists()
+    assert not (
+        software / "slot" / "themes" / "data" / "GameStarColors" / "1080p" / "Red" / "flag.png"
+    ).exists()
+    assert not (software / "slot" / "var" / "runtime.dat").exists()
+    assert not (software / "slot" / "Cache" / "blob.bin").exists()
+    assert snapshot_has_embedded_software(snap) is True
+
+
+def test_run_scan_slot_full_snapshot_prelicence_tag(tmp_path: Path) -> None:
+    machine = _slot_goldclub(tmp_path)
+    service = ConfigScannerService(
+        _minimal_tool_root(tmp_path), profile_id="slot_lab_90"
+    )
+    result = service.run_scan(
+        str(machine), include_software=True, snapshot_tag="prelicence"
+    )
+    assert result.software_captured is True
+    assert result.software_file_count >= 4
+    assert "prelicence" in result.snapshot_name.casefold()
+    assert "GST22377" in result.snapshot_name
+    assert snapshot_has_embedded_software(result.snapshot_path)
+    listed = {row.name: row for row in service.list_snapshots()}
+    assert listed[result.snapshot_name].has_software is True
+    software = result.snapshot_path / SNAPSHOT_SOFTWARE_SUBDIR
+    assert (software / "licence.dll").is_file()
+    assert not (software / "slot" / "themes" / "PR2_Foo" / "game.xml").exists()

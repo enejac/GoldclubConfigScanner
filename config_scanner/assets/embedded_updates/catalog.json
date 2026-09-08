@@ -1,0 +1,149 @@
+{
+  "version": 1,
+  "updates": [
+    {
+      "id": "CS-Gamestar-TT-00",
+      "label": "Trinidad TT-00 (Gamestar 2.0.1)",
+      "country": "Trinidad",
+      "gamestar_version": "2.0.1",
+      "b2u_file": "CS-Gamestar-TT-00.b2u",
+      "staged_id": "CS-Gamestar-TT-00",
+      "readme": "Gamestar Trinidad 5c SAS 3Screens - Axiomtek GMB140"
+    },
+    {
+      "id": "CS-Gamestar-TRI-00",
+      "label": "Trinidad TRI-00",
+      "country": "Trinidad",
+      "gamestar_version": "TRI-00",
+      "b2u_file": "CS-Gamestar-TRI-00.b2u",
+      "staged_id": "CS-Gamestar-TRI-00",
+      "readme": ""
+    },
+    {
+      "id": "CS-Gamestar-TRI-00_SAS",
+      "label": "Trinidad TRI-00 SAS",
+      "country": "Trinidad",
+      "gamestar_version": "TRI-00",
+      "b2u_file": null,
+      "staged_id": "CS-Gamestar-TRI-00_SAS",
+      "readme": ""
+    },
+    {
+      "id": "CS-Gamestar-TRI-00_OL+SAS",
+      "label": "Trinidad TRI-00 OL+SAS",
+      "country": "Trinidad",
+      "gamestar_version": "TRI-00",
+      "b2u_file": null,
+      "staged_id": "CS-Gamestar-TRI-00_OL+SAS",
+      "readme": ""
+    },
+    {
+      "id": "CS-Gamestar-TRI-01",
+      "label": "Trinidad TRI-01",
+      "country": "Trinidad",
+      "gamestar_version": "TRI-01",
+      "b2u_file": "CS-Gamestar-TRI-01.b2u",
+      "staged_id": "CS-Gamestar-TRI-01",
+      "readme": ""
+    },
+    {
+      "id": "CS-Gamestar-TRI-01_SAS",
+      "label": "Trinidad TRI-01_SAS",
+      "country": "Trinidad",
+      "gamestar_version": "TRI-01",
+      "b2u_file": "CS-Gamestar-TRI-01_SAS.b2u",
+      "staged_id": "CS-Gamestar-TRI-01_SAS",
+      "readme": ""
+    },
+    {
+      "id": "CS-Gamestar-PR-00",
+      "label": "Puerto Rico PR-00",
+      "country": "PuertoRico",
+      "gamestar_version": "PR-00",
+      "b2u_file": "CS-Gamestar-PR-00.b2u",
+      "staged_id": "CS-Gamestar-PR-00",
+      "readme": "Gamestar PuertoRico 1c 94 500Limit OL Ticket + SAS"
+    },
+    {
+      "id": "CS-Gamestar-PR-01",
+      "label": "Puerto Rico PR-01",
+      "country": "PuertoRico",
+      "gamestar_version": "PR-01",
+      "b2u_file": "CS-Gamestar-PR-01.b2u",
+      "staged_id": "CS-Gamestar-PR-01",
+      "readme": "Gamestar PuertoRico 1c 94 500Limit OL Ticket + SAS"
+    },
+    {
+      "id": "CS-Gamestar-PR-02",
+      "label": "Puerto Rico PR-02",
+      "country": "PuertoRico",
+      "gamestar_version": "PR-02",
+      "b2u_file": "CS-Gamestar-PR-02.b2u",
+      "staged_id": "CS-Gamestar-PR-02",
+      "readme": "Gamestar PuertoRico 1c 92-94 / 94 500Limit OL Ticket + SAS"
+    },
+    {
+      "id": "CS-Gamestar-PR-03",
+      "label": "Puerto Rico PR-03",
+      "country": "PuertoRico",
+      "gamestar_version": "PR-03",
+      "b2u_file": "CS-Gamestar-PR-03.b2u",
+      "staged_id": "CS-Gamestar-PR-03",
+      "readme": "Gamestar PuertoRico 1c 92-94 / 94 500Limit OL Ticket + SAS"
+    },
+    {
+      "id": "CS-Gamestar-PR-06",
+      "label": "Puerto Rico PR-06",
+      "country": "PuertoRico",
+      "gamestar_version": "PR-06",
+      "b2u_file": null,
+      "staged_id": "CS-Gamestar-PR-06",
+      "readme": "Gamestar PuertoRico 1c 92-94 / 94 500Limit OL Ticket + SAS"
+    },
+    {
+      "id": "CS-Gamestar-PR-06_SAS",
+      "label": "Puerto Rico PR-06 SAS",
+      "country": "PuertoRico",
+      "gamestar_version": "PR-06",
+      "b2u_file": null,
+      "staged_id": "CS-Gamestar-PR-06_SAS",
+      "readme": "Gamestar PuertoRico 1c 92-94 / 94 SAS"
+    },
+    {
+      "id": "CS-Gamestar-PANC-00",
+      "label": "Panama PANC-00",
+      "country": "Panama",
+      "gamestar_version": "PANC-00",
+      "b2u_file": "CS-Gamestar-PANC-00.b2u",
+      "staged_id": "CS-Gamestar-PANC-00",
+      "readme": ""
+    },
+    {
+      "id": "CS-Gamestar-PANC-01",
+      "label": "Panama PANC-01",
+      "country": "Panama",
+      "gamestar_version": "PANC-01",
+      "b2u_file": "CS-Gamestar-PANC-01.b2u",
+      "staged_id": "CS-Gamestar-PANC-01",
+      "readme": ""
+    },
+    {
+      "id": "CS-Gamestar-PER-00",
+      "label": "Peru PER-00",
+      "country": "Peru",
+      "gamestar_version": "PER-00",
+      "b2u_file": "CS-Gamestar-PER-00.b2u",
+      "staged_id": "CS-Gamestar-PER-00",
+      "readme": "Official Peru CS overlay"
+    },
+    {
+      "id": "CS-Gamestar-SA-00",
+      "label": "South Africa SA-00",
+      "country": "South Africa",
+      "gamestar_version": "SA-00",
+      "b2u_file": null,
+      "staged_id": "CS-Gamestar-SA-00",
+      "readme": "Gamestar2 South Africa 1c 94 Limit 500 SAS 3Screens - Axiomtek GMB140"
+    }
+  ]
+}

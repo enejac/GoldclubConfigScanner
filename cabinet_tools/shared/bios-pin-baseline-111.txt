@@ -1,0 +1,38 @@
+﻿BiOS PIN login capture - 10.0.0.111 GST22377 - 2026-08-31 13:43 UTC
+=====================================================================
+
+BASELINE (before PIN)
+- BiOS2: 3 instances (inject leftover)
+- Session.lic: MISSING
+- SessionValidator.log: 60606 bytes
+- Licence XMLs: present in G:\slot\ (placement fix applied)
+- CommCtrl: 30800/30200 - Dallas channel NOT involved in BiOS login
+
+SUCCESSFUL PIN ENTRY @ 13:43:37 local (12:43:37 UTC in log)
+- PIN entered: 508352
+- Role: Service
+- WIBU serial: 12-12262688
+- SessionId: GST22377 (Windows hostname)
+- AllowedTime: 20 minutes
+- Output: G:\bios\License\Session.lic (288 bytes, encrypted)
+
+LAYER STACK (PIN auth - NOT Dallas)
+1. UI: BiOS2.exe WinForms keypad (btnPinPressed, QRCoder for QR display)
+2. Logic: SessionChecker::SessionManager::CreateSession (native, in-process)
+3. Crypto: Session::SaveAs -> "Encrypt Session XML" -> GameStarCrypter / Quixant.Cryptography
+4. Storage: c:\goldclub\bios\License\Session.lic (bind file, never copy from snapshots)
+5. Verify: Session::LoadFromFile + IsAliveSession on subsequent boots
+
+NOT INVOLVED
+- TCP 30800 / CommCtrl / Dallas ROM inject
+- OneHand / slot licence.dll (separate WIBU game licence layer)
+- HardwareConfig Dallas key 01D68A721B000019
+
+REPLICATION OPTIONS (for lab automation)
+- Call chain: CreateSession -> SaveAs (needs valid PIN from QR/vendor flow)
+- QR likely encodes machine/session id for remote operator app (LOGIN_URL in BiOS2)
+- Forging Session.lic requires same encrypt path as License.lic (288-byte blob)
+- Do NOT MITM 30800 for this screen
+
+Monitor script: C:\Platform\Security\Monitor-BiOSSessionPin.ps1
+Monitor log: C:\Platform\Security\bios-pin-monitor.log

@@ -1,0 +1,29 @@
+---
+description: Lab cabinet TeamViewer IDs and the SMB log path to re-read them
+alwaysApply: true
+---
+
+# Lab TeamViewer IDs
+
+## Known IDs
+
+| Cabinet | Host | TeamViewer ID |
+|---|---|---|
+| `10.0.0.111` | GRT330106 (workgroup; WinRM/SMB `10.0.0.111\test`) | **1 259 893 055** (`1259893055`) |
+
+Confirmed 26 Aug 2026; TV was up that day (`clientId [1259893055]`).
+
+## Where to read it next time
+
+Portable TeamViewer is **not** under Program Files. Do not recurse `C:\`/`D:\` over WinRM for `TeamViewer.ini` (hangs the cabinet).
+
+Read over SMB (cmdkey first):
+
+`\\<ip>\c$\Users\goldclub\AppData\Local\TeamViewer\Logs\TeamViewer15_Logfile.log`
+
+Grep the latest of:
+
+- `Login::Identify::ManageLogin(): ID: <n>`
+- `clientId [<n>]`
+
+On `.111`, `...\TeamViewer\TeamViewer_HKCU.reg` had no `ClientID`.

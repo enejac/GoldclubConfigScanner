@@ -39,7 +39,7 @@ function Ensure-MacriumSpacedAlias {
             if ($cHash -eq $aHash) {
                 return @{ Path = $alias; Skipped = $true; Success = $true }
             }
-            Write-Host 'WARN: alias size OK but hash bad — recopying' -ForegroundColor Yellow
+            Write-Host 'WARN: alias size OK but hash bad - recopying' -ForegroundColor Yellow
             Remove-Item -LiteralPath $alias -Force
         } else {
             return @{ Path = $alias; Skipped = $true; Success = $true }

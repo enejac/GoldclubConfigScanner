@@ -87,14 +87,38 @@ from config_scanner.service import (
     order_snapshots_newest_first,
     scan_scope_zero_diff_hint,
 )
-from config_scanner.software_compat import (
-    format_live_ruleta_sw_banner,
-    live_ruleta_exe_version_for_target,
+from config_scanner.egm_ui_labels import (
+    create_full_snapshot_tooltip,
+    detect_target_tooltip,
+    encrypted_setup_legend,
+    files_locked_during_restore_message,
+    game_may_already_be_up_hint,
+    incomplete_undo_cancel_status,
+    incomplete_undo_point_body,
+    live_exe_version_for_target,
+    live_exe_version_tooltip,
+    format_live_sw_banner,
+    resolve_game_kind,
+    rollback_matches_game_kind,
+    restore_binaries_only_tooltip,
+    restore_binaries_step_line,
+    restore_config_only_tooltip,
+    restore_full_context_menu_tip,
+    restore_full_software_tooltip,
+    restore_no_paytable_tooltip,
+    restore_snapshot_tooltip,
+    scan_saved_software_status,
+    set_baseline_tooltip,
+    undo_backup_step_line,
+    uses_trial_keypad,
+    undo_missing_binaries_warning,
+    welcome_panel_create_step,
+    write_scope_combo_tooltip,
+    write_scope_description,
+    write_scope_label,
+    write_scope_short,
 )
 from config_scanner.write_scope import (
-    WRITE_SCOPE_DESCRIPTIONS,
-    WRITE_SCOPE_LABELS,
-    WRITE_SCOPE_SHORT,
     WriteScope,
     is_protected_write_path,
     protected_write_block_reason,
@@ -423,50 +447,25 @@ def snapshots_drawer_open_sizes(total_width: int) -> tuple[int, int]:
     return (left, max(total - left, 1))
 
 
-def full_snapshot_saved_message(
+def full_snapshot_saved_message(  # noqa: F811 — re-export for tests
     snapshot_name: str,
     file_count: int,
     *,
     software_file_count: int = 0,
     software_captured: bool = False,
     extra_notes: tuple[str, ...] | list[str] = (),
+    profile_id: str | None = None,
 ) -> str:
-    """One success dialog after Create full snapshot (no compare, no write-back)."""
-    from config_scanner.software_compat import scan_user_warnings
+    from config_scanner import egm_ui_labels
 
-    name = (snapshot_name or "").strip() or "(unnamed)"
-    count = max(int(file_count), 0)
-    files = "file" if count == 1 else "files"
-    lines = [
-        "This machine is saved.",
-        "",
-        name,
-        "",
-        f"• {count} config {files}",
-    ]
-    if software_captured:
-        sw = max(int(software_file_count), 0)
-        lines.append(f"• {sw} Ruleta software files (exe + Godot)")
-    else:
-        lines.append("• Ruleta software was not included")
-        lines.append(
-            "  Restore will look for a matching pack if you need the exe later."
-        )
-    lines.extend(
-        [
-            "",
-            "The machine was not changed.",
-            "",
-            "This snapshot is selected. Click Restore snapshot when you "
-            "want this version back.",
-        ]
+    return egm_ui_labels.full_snapshot_saved_message(
+        snapshot_name,
+        file_count,
+        software_file_count=software_file_count,
+        software_captured=software_captured,
+        extra_notes=extra_notes,
+        profile_id=profile_id,
     )
-    notes = scan_user_warnings(tuple(extra_notes))
-    if notes:
-        lines.append("")
-        lines.append("Notes:")
-        lines.extend(f"• {note}" for note in notes)
-    return "\n".join(lines)
 
 
 def _configure_snapshot_combo(combo: QComboBox, *, min_width: int = 200) -> None:
@@ -481,7 +480,7 @@ def _configure_snapshot_combo(combo: QComboBox, *, min_width: int = 200) -> None
     combo.setMinimumContentsLength(36)
 
 
-# Primary restore: config + matching Ruleta software (seamless transfer).
+# Primary restore: config + matching game software (seamless transfer).
 _SNAPSHOT_CONTEXT_RESTORE_LABELS: dict[WriteScope, str] = {
     WriteScope.FULL_SOFTWARE: "Restore to machine (config + software)…",
     WriteScope.FULL: "Restore config only…",
@@ -504,6 +503,8 @@ def snapshot_context_advanced_restore_actions() -> list[tuple[str, WriteScope]]:
 
 def snapshot_context_restore_actions(
     extra_scope: WriteScope | None = None,
+    *,
+    game_kind: str = "roulette",
 ) -> list[tuple[str, WriteScope]]:
     """Legacy helper — primary restore first, then advanced scopes."""
     items = [
@@ -512,7 +513,10 @@ def snapshot_context_restore_actions(
     ]
     if extra_scope is not None and extra_scope not in {a[1] for a in items}:
         items.append(
-            (f"Restore {WRITE_SCOPE_SHORT[extra_scope]} to machine…", extra_scope)
+            (
+                f"Restore {write_scope_short(extra_scope, game_kind)} to machine…",
+                extra_scope,
+            )
         )
     return items
 
@@ -601,25 +605,20 @@ class ConfigScannerTabWidget(QFrame):
         self._drive_edit.editingFinished.connect(self._on_drive_editing_finished)
         toolbar.addWidget(self._drive_edit, stretch=1)
         self._detect_btn = QPushButton("Auto-detect")
-        self._detect_btn.setToolTip(
-            "Find local image or remote .90 Goldclub when EXEs exist (OneHand.exe / Ruleta.exe)."
-        )
+        self._detect_btn.setToolTip(detect_target_tooltip(self._game_kind()))
         self._detect_btn.clicked.connect(self._on_detect_drive)
         toolbar.addWidget(self._detect_btn)
         self._create_snapshot_btn = QPushButton("Create full snapshot")
         self._create_snapshot_btn.setObjectName("primary")
         self._create_snapshot_btn.setToolTip(
-            "Save live config and Ruleta software into one snapshot. "
-            "Does not write anything back. Restore that snapshot later to "
-            "return this machine to this version."
+            create_full_snapshot_tooltip(self._game_kind())
         )
         self._create_snapshot_btn.clicked.connect(self._on_create_snapshot_clicked)
         self._create_snapshot_btn.setEnabled(False)
         toolbar.addWidget(self._create_snapshot_btn)
         self._restore_toolbar_btn = QPushButton("Restore snapshot")
         self._restore_toolbar_btn.setToolTip(
-            "Put the selected snapshot back on the machine "
-            "(config + Ruleta software). Live config is saved first so you can undo."
+            restore_snapshot_tooltip(self._game_kind())
         )
         self._restore_toolbar_btn.clicked.connect(self._on_restore_selected_clicked)
         self._restore_toolbar_btn.setEnabled(False)
@@ -660,27 +659,9 @@ class ConfigScannerTabWidget(QFrame):
         self._compare_latest_action = QAction("Quick compare last two", self)
         self._compare_latest_action.triggered.connect(self._on_compare_latest_clicked)
         more_menu.addAction(self._compare_latest_action)
-        self._compare_action = QAction("Compare selected snapshots", self)
-        self._compare_action.setToolTip(
-            "Compare the Reference and Compared snapshots selected in the Snapshots list."
-        )
-        self._compare_action.triggered.connect(self._on_compare_clicked)
-        more_menu.addAction(self._compare_action)
-        self._refresh_action = QAction("Refresh list", self)
-        self._refresh_action.triggered.connect(self.refresh_snapshots)
-        more_menu.addAction(self._refresh_action)
-        self._create_snapshot_action = QAction("Create full snapshot", self)
-        self._create_snapshot_action.setToolTip(
-            "Save live config and Ruleta software into one snapshot."
-        )
-        self._create_snapshot_action.triggered.connect(self._on_create_snapshot_clicked)
-        more_menu.addAction(self._create_snapshot_action)
         more_menu.addSeparator()
         self._set_baseline_action = QAction("Set reference baseline", self)
-        self._set_baseline_action.setToolTip(
-            "Rename the selected snapshot to slot_baseline or "
-            "roulette_baseline_build… and register it as the compare baseline."
-        )
+        self._set_baseline_action.setToolTip(set_baseline_tooltip(self._game_kind()))
         self._set_baseline_action.triggered.connect(self._on_set_baseline_clicked)
         more_menu.addAction(self._set_baseline_action)
         self._delete_action = QAction("Delete snapshot", self)
@@ -694,44 +675,12 @@ class ConfigScannerTabWidget(QFrame):
         self._delete_action.triggered.connect(self._on_delete_clicked)
         more_menu.addAction(self._delete_action)
         more_menu.addSeparator()
-        self._restore_selected_action = QAction("Restore snapshot", self)
-        self._restore_selected_action.setToolTip(
-            "Put the selected snapshot back (config + Ruleta software). "
-            "Live config is saved first so you can undo."
-        )
-        self._restore_selected_action.triggered.connect(self._on_restore_selected_clicked)
-        self._restore_selected_action.setEnabled(False)
-        more_menu.addAction(self._restore_selected_action)
-        self._restore_selected_software_action = QAction(
-            "Restore snapshot",
-            self,
-        )
-        self._restore_selected_software_action.setToolTip(
-            "Put the selected snapshot back (config + Ruleta software)."
-        )
-        self._restore_selected_software_action.triggered.connect(
-            self._on_restore_selected_software_clicked
-        )
-        self._restore_selected_software_action.setEnabled(False)
-        self._restore_selected_config_action = QAction(
-            "Restore config only…",
-            self,
-        )
-        self._restore_selected_config_action.setToolTip(
-            "Write config files only. Live Ruleta.exe stays as-is."
-        )
-        self._restore_selected_config_action.triggered.connect(
-            self._on_restore_selected_config_clicked
-        )
-        self._restore_selected_config_action.setEnabled(False)
-        more_menu.addAction(self._restore_selected_config_action)
         self._restore_selected_binaries_action = QAction(
             "Restore software only (keep profile)…",
             self,
         )
         self._restore_selected_binaries_action.setToolTip(
-            "Push Ruleta binaries only. Keeps this cabinet's setup, "
-            "switches, wheel, SAS, serialport, and licence."
+            restore_binaries_only_tooltip(self._game_kind())
         )
         self._restore_selected_binaries_action.triggered.connect(
             self._on_restore_selected_binaries_clicked
@@ -762,6 +711,29 @@ class ConfigScannerTabWidget(QFrame):
         )
         self._clear_error30_action.triggered.connect(self._on_clear_error30_clicked)
         more_menu.addAction(self._clear_error30_action)
+        self._restore_slot_licence_action = QAction(
+            "Restore slot licence from snapshot…", self
+        )
+        self._restore_slot_licence_action.setToolTip(
+            "Overwrite live Licenses/*.xml and slot/licence.dll from a saved "
+            "snapshot (e.g. prelicence). Normal config restore never touches "
+            "the dongle — use this after a B2U replaced the licence."
+        )
+        self._restore_slot_licence_action.triggered.connect(
+            self._on_restore_slot_licence_clicked
+        )
+        self._restore_slot_licence_action.setEnabled(False)
+        more_menu.addAction(self._restore_slot_licence_action)
+        self._repair_cabinet_action = QAction("Diagnose & repair cabinet…", self)
+        self._repair_cabinet_action.setToolTip(
+            "Check the live cabinet for faults we have hit before — licence files "
+            "missing next to OneHand, an AurumSetup host block that does not match "
+            "the hostname, the MUX stuck off COM11 (NO SAS COMMUNICATIONS), and "
+            "missing boot unlock tasks — then fix the ones you pick. "
+            "See docs/cabinet-repairs.md."
+        )
+        self._repair_cabinet_action.triggered.connect(self._on_repair_cabinet_clicked)
+        more_menu.addAction(self._repair_cabinet_action)
         self._llave_password_action = QAction("Enter LLAVE trial password…", self)
         self._llave_password_action.setToolTip(
             "Save a vendor trial password and auto-type it on the cabinet "
@@ -796,6 +768,7 @@ class ConfigScannerTabWidget(QFrame):
         self._write_scope_combo.setObjectName("writeScopeCombo")
         self._write_scope_combo.setMinimumWidth(200)
         self._write_scope_combo.setMaximumWidth(360)
+        _init_kind = self._game_kind()
         for scope in (
             WriteScope.FULL,
             WriteScope.NO_PAYTABLE,
@@ -804,19 +777,20 @@ class ConfigScannerTabWidget(QFrame):
             WriteScope.HARDWARE,
             WriteScope.SOFTWARE,
         ):
-            self._write_scope_combo.addItem(WRITE_SCOPE_LABELS[scope], scope.value)
+            self._write_scope_combo.addItem(
+                write_scope_label(scope, _init_kind), scope.value
+            )
             idx = self._write_scope_combo.count() - 1
             self._write_scope_combo.setItemData(
                 idx,
-                WRITE_SCOPE_DESCRIPTIONS[scope],
+                write_scope_description(scope, _init_kind),
                 Qt.ItemDataRole.ToolTipRole,
             )
         full_sw = self._write_scope_combo.findData(WriteScope.FULL_SOFTWARE.value)
         self._write_scope_combo.setCurrentIndex(full_sw if full_sw >= 0 else 0)
         self._write_scope_combo.setToolTip(
-            "Bulk restore scope: Full, Config except paytables, Config + Ruleta "
-            "software, Ruleta software only (keep cabinet profile), Hardware, "
-            "or Software. Per-setting Apply always changes one field."
+            write_scope_combo_tooltip(_init_kind)
+            + " Per-setting Apply always changes one field."
         )
         self._write_scope_combo.currentIndexChanged.connect(self._on_write_scope_changed)
         self._write_scope_combo.hide()
@@ -835,16 +809,15 @@ class ConfigScannerTabWidget(QFrame):
         live_row = QHBoxLayout()
         live_row.setContentsMargins(2, 2, 2, 0)
         live_row.setSpacing(8)
-        self._live_sw_label = QLabel(format_live_ruleta_sw_banner(None))
-        self._live_sw_label.setObjectName("liveRuletaVersion")
+        self._live_sw_label = QLabel(
+            format_live_sw_banner(None, kind=self._game_kind())
+        )
+        self._live_sw_label.setObjectName("liveGameVersion")
         self._live_sw_label.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
         self._live_sw_label.setStyleSheet(
-            "QLabel#liveRuletaVersion { font-weight: 700; font-size: 15px; }"
-        )
-        self._live_sw_label.setToolTip(
-            "ProductVersion of live ruleta\\Ruleta.exe on this scan target."
+            "QLabel#liveGameVersion { font-weight: 700; font-size: 15px; }"
         )
         live_row.addWidget(self._live_sw_label, stretch=1)
         root.addLayout(live_row)
@@ -883,17 +856,15 @@ class ConfigScannerTabWidget(QFrame):
         restore_sel_row.setSpacing(6)
         self._restore_selected_btn = QPushButton("Restore to machine")
         self._restore_selected_btn.setToolTip(
-            "Put the selected snapshot back on the machine (config + Ruleta "
-            "software, with LLAVE trial bind when the snapshot captured it). "
-            "Live config is saved first so you can undo."
+            restore_snapshot_tooltip(self._game_kind())
         )
         self._restore_selected_btn.clicked.connect(self._on_restore_selected_clicked)
         self._restore_selected_btn.setEnabled(False)
         restore_sel_row.addWidget(self._restore_selected_btn, stretch=0)
         self._restore_config_only_btn = QPushButton("Restore config only")
         self._restore_config_only_btn.setToolTip(
-            "Write config files only. Live Ruleta.exe stays as-is. "
-            "Kill-All still runs first on a live cabinet."
+            restore_config_only_tooltip(self._game_kind())
+            + " Kill-All still runs first on a live cabinet."
         )
         self._restore_config_only_btn.clicked.connect(
             self._on_restore_selected_config_clicked
@@ -1052,6 +1023,7 @@ class ConfigScannerTabWidget(QFrame):
         self._rebuild_changes_panel(None)
         self._validate_pending = self._drive_edit.text().strip()
         QTimer.singleShot(0, self._run_target_validation)
+        self._refresh_egm_ui_strings()
         logger.info(
             "ConfigScannerTabWidget.__init__ done snapshots_dir=%s",
             self._service.get_snapshots_dir(),
@@ -1145,7 +1117,7 @@ class ConfigScannerTabWidget(QFrame):
             "(e.g. \\\\10.0.0.90\\c$\\Goldclub).\n\n"
             "Requires real binaries (OneHand.exe / Ruleta.exe); "
             "empty C:\\Goldclub is ignored.\n\n"
-            "Create full snapshot saves live config and Ruleta software together. "
+            "Create full snapshot saves live config and game software together. "
             "Restore snapshot puts that version back. Right-click a snapshot to write "
             "it back to the scan target (overwrite-only, scan scope).\n\n"
             f"Data folder: {data_root}\n"
@@ -1398,9 +1370,17 @@ class ConfigScannerTabWidget(QFrame):
                 self._fill_missing_file_write(host_layout, file_diff, baseline_name, target_name, styles)
                 body_layout.addWidget(host)
             else:
-                note = QLabel(
-                    "File hash differs but no archived content is available for field-level apply"
+                from config_scanner.theme_math import (
+                    is_theme_math_rel,
+                    theme_math_compare_note,
                 )
+
+                if is_theme_math_rel(file_diff.relative_path):
+                    note = QLabel(theme_math_compare_note(file_diff))
+                else:
+                    note = QLabel(
+                        "File hash differs but no archived content is available for field-level apply"
+                    )
                 note.setStyleSheet(styles["legend"])
                 note.setWordWrap(True)
                 body_layout.addWidget(note)
@@ -1590,8 +1570,91 @@ class ConfigScannerTabWidget(QFrame):
     def _write_scope_value(self) -> str:
         return self._current_write_scope().value
 
+    def _game_kind(self, profile_id: str | None = None) -> str:
+        target = ""
+        if getattr(self, "_target_valid", False) and hasattr(self, "_drive_edit"):
+            target = self._drive_edit.text().strip()
+        return resolve_game_kind(
+            profile_id=profile_id or getattr(self._service, "profile_id", None),
+            scan_target=target or None,
+        )
+
+    def _populate_write_scope_combo(self, kind: str) -> None:
+        if not self._widget_is_alive(getattr(self, "_write_scope_combo", None)):
+            return
+        current = self._write_scope_combo.currentData()
+        self._write_scope_combo.blockSignals(True)
+        self._write_scope_combo.clear()
+        for scope in (
+            WriteScope.FULL,
+            WriteScope.NO_PAYTABLE,
+            WriteScope.FULL_SOFTWARE,
+            WriteScope.BINARIES_ONLY,
+            WriteScope.HARDWARE,
+            WriteScope.SOFTWARE,
+        ):
+            self._write_scope_combo.addItem(write_scope_label(scope, kind), scope.value)
+            idx = self._write_scope_combo.count() - 1
+            self._write_scope_combo.setItemData(
+                idx,
+                write_scope_description(scope, kind),
+                Qt.ItemDataRole.ToolTipRole,
+            )
+        pick = current or WriteScope.FULL_SOFTWARE.value
+        idx = self._write_scope_combo.findData(pick)
+        self._write_scope_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self._write_scope_combo.setToolTip(
+            write_scope_combo_tooltip(kind)
+            + " Per-setting Apply always changes one field."
+        )
+        self._write_scope_combo.blockSignals(False)
+
+    def _refresh_egm_ui_strings(self) -> None:
+        kind = self._game_kind()
+        create_tip = create_full_snapshot_tooltip(kind)
+        restore_tip = restore_snapshot_tooltip(kind)
+        config_only_tip = restore_config_only_tooltip(kind)
+        for btn, tip in (
+            (getattr(self, "_create_snapshot_btn", None), create_tip),
+            (getattr(self, "_restore_toolbar_btn", None), restore_tip),
+            (getattr(self, "_restore_selected_btn", None), restore_tip),
+            (getattr(self, "_restore_config_only_btn", None), config_only_tip),
+            (
+                getattr(self, "_restore_selected_binaries_action", None),
+                restore_binaries_only_tooltip(kind),
+            ),
+            (getattr(self, "_detect_btn", None), detect_target_tooltip(kind)),
+            (getattr(self, "_set_baseline_action", None), set_baseline_tooltip(kind)),
+        ):
+            if self._widget_is_alive(btn):
+                btn.setToolTip(tip)
+        self._refresh_game_kind_actions(kind)
+        self._populate_write_scope_combo(kind)
+        self._refresh_live_game_version()
+        if hasattr(self, "_refresh_revert_ui"):
+            self._refresh_revert_ui()
+        if hasattr(self, "_refresh_write_action_labels"):
+            self._refresh_write_action_labels()
+
+    def _refresh_game_kind_actions(self, kind: str | None = None) -> None:
+        """Show the trial-keypad tooling only on the EGM family that has it.
+
+        ERROR 30 / 99 and LLAVE are Ruleta-exe concepts; a slot cabinet locks on
+        RAMCLEAR instead, so surfacing them here only sends the operator down the
+        wrong path.
+        """
+        resolved = kind or self._game_kind()
+        roulette = uses_trial_keypad(resolved)
+        for name in ("_clear_error30_action", "_llave_password_action"):
+            action = getattr(self, name, None)
+            if self._widget_is_alive(action):
+                action.setVisible(roulette)
+        slot_licence = getattr(self, "_restore_slot_licence_action", None)
+        if self._widget_is_alive(slot_licence):
+            slot_licence.setVisible(not roulette)
+
     def _write_scope_short_label(self) -> str:
-        return WRITE_SCOPE_SHORT[self._current_write_scope()]
+        return write_scope_short(self._current_write_scope(), self._game_kind())
 
     def _on_snapshot_selection_changed(self) -> None:
         if self._snapshot_sel_guard:
@@ -1695,13 +1758,6 @@ class ConfigScannerTabWidget(QFrame):
                 )
         if hasattr(self, "_restore_toolbar_btn"):
             self._restore_toolbar_btn.setEnabled(enabled)
-        if hasattr(self, "_restore_selected_action"):
-            self._restore_selected_action.setEnabled(enabled)
-            self._restore_selected_action.setText("Restore snapshot")
-        if hasattr(self, "_restore_selected_software_action"):
-            self._restore_selected_software_action.setEnabled(enabled)
-        if hasattr(self, "_restore_selected_config_action"):
-            self._restore_selected_config_action.setEnabled(enabled)
         if hasattr(self, "_restore_config_only_btn"):
             self._restore_config_only_btn.setEnabled(enabled)
         if hasattr(self, "_restore_selected_binaries_action"):
@@ -1753,15 +1809,36 @@ class ConfigScannerTabWidget(QFrame):
         self._confirm_write_snapshot(name, write_scope=WriteScope.BINARIES_ONLY)
 
     def _refresh_revert_ui(self) -> None:
-        """Show or hide the rollback banner when an undo point exists."""
+        """Show or hide the rollback banner when an undo point exists.
+
+        Cross-game undo points (e.g. a Ruleta restore while the live target is
+        Slot / OneHand) stay hidden so the banner does not litter Slot UI.
+        """
         self._service.refresh_rollback_if_stale()
         info = self._service.get_rollback_info()
         available = self._service.rollback_is_available()
+        details = self._service.get_rollback_details() if available else None
+        if available and info is not None:
+            profile_id = details.profile_id if details else None
+            if not rollback_matches_game_kind(
+                self._game_kind(),  # type: ignore[arg-type]
+                profile_id=profile_id,
+                restored_from=info.restored_from,
+                snapshot_name=info.snapshot_name,
+            ):
+                available = False
         if hasattr(self, "_rollback_banner"):
             if available and info is not None:
                 from_name = info.restored_from or "previous snapshot"
-                details = self._service.get_rollback_details()
-                puts_back = f" — puts back {details.summary()}" if details else ""
+                puts_back = ""
+                if details:
+                    puts_back = (
+                        " — puts back "
+                        + details.summary(
+                            restored_from=info.restored_from,
+                            snapshot_name=info.snapshot_name,
+                        )
+                    )
                 self._rollback_banner_label.setText(
                     f"Undo available — revert to config from before you restored "
                     f"\u00ab{from_name}\u00bb  (saved as {info.snapshot_name})"
@@ -1781,8 +1858,24 @@ class ConfigScannerTabWidget(QFrame):
             return
         self._confirm_revert_config()
 
-    def _on_clear_error30_clicked(self) -> None:
+    def _on_repair_cabinet_clicked(self) -> None:
         if self._busy:
+            return
+        scan_target = self._drive_edit.text().strip()
+        if not scan_target:
+            QMessageBox.warning(
+                self,
+                "Config Scanner",
+                "Enter the machine path before diagnosing the cabinet.",
+            )
+            return
+        from gui.cabinet_repair_dialog import CabinetRepairDialog
+
+        dialog = CabinetRepairDialog(self._service, scan_target, self)
+        dialog.exec()
+
+    def _on_clear_error30_clicked(self) -> None:
+        if self._busy or not uses_trial_keypad(self._game_kind()):
             return
         scan_target = self._drive_edit.text().strip()
         if not scan_target:
@@ -1845,6 +1938,62 @@ class ConfigScannerTabWidget(QFrame):
         self._set_busy(True, op="stack_restart")
         schedule_stack_restart(self._pool, plan, self._emitter)
 
+    def _on_restore_slot_licence_clicked(self) -> None:
+        if self._busy:
+            return
+        scan_target = self._drive_edit.text().strip()
+        if not scan_target:
+            QMessageBox.warning(
+                self,
+                "Config Scanner",
+                "Enter the machine path before restoring a slot licence.",
+            )
+            return
+        default_snap = ""
+        result = self._last_compare_result
+        if result is not None and result.licence_changed:
+            default_snap = result.baseline_snapshot
+        if not default_snap:
+            default_snap = self._baseline_combo.currentText().strip()
+        reply = QMessageBox.question(
+            self,
+            "Config Scanner — restore slot licence",
+            "This overwrites live licence files on the cabinet:\n"
+            "• Licenses/*.xml\n"
+            "• slot/licence.dll\n\n"
+            "Normal config restore never touches these. Use only to undo a "
+            "B2U / licence pack that replaced the dongle.\n\n"
+            "bios/License/*.lic (BiOS accept bind) is not restored.\n\n"
+            f"Snapshot: {default_snap or '(select baseline)'}\n"
+            f"Machine: {scan_target}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        snapshot_name = default_snap
+        if not snapshot_name:
+            QMessageBox.warning(
+                self,
+                "Config Scanner",
+                "Select a baseline snapshot (e.g. prelicence) first.",
+            )
+            return
+        try:
+            notes = self._service.restore_slot_licence_from_snapshot(
+                snapshot_name,
+                scan_target,
+            )
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                "Config Scanner",
+                f"Could not restore slot licence:\n\n{exc}",
+            )
+            return
+        body = "\n".join(notes) if notes else "No licence files were written."
+        QMessageBox.information(self, "Config Scanner", body)
+
     def _on_llave_password_clicked(self) -> None:
         scan_target = self._drive_edit.text().strip()
         if not scan_target:
@@ -1864,6 +2013,8 @@ class ConfigScannerTabWidget(QFrame):
             format_manual_system_id_prompt,
         )
 
+        if not uses_trial_keypad(self._game_kind()):
+            return
         challenge = self._service.read_llave_challenge(scan_target)
         prompt = format_llave_prompt(challenge)
         if after_restart and challenge is None:
@@ -1936,13 +2087,10 @@ class ConfigScannerTabWidget(QFrame):
             return
 
         details = self._service.get_rollback_details()
+        kind = self._game_kind()
         puts_back = f"\n\nPuts back:\n  {details.summary()}" if details else ""
         if details is not None and not details.is_self_contained:
-            puts_back += (
-                "\n  Warning: this undo point has no Ruleta binaries, so the "
-                "exe stays on the version running now. Restore a full snapshot "
-                "of the version you want if the game must go back too."
-            )
+            puts_back += undo_missing_binaries_warning(kind)
         prompt = (
             "Revert this machine to how it was before the last swap?\n\n"
             f"  Was restored: {info.restored_from or '(unknown snapshot)'}\n"
@@ -1950,7 +2098,7 @@ class ConfigScannerTabWidget(QFrame):
             f"{puts_back}\n"
             f"  Machine: {scan_target}\n\n"
             "Yes will:\n"
-            "1. Save a backup of what is running now (config + Ruleta binaries).\n"
+            f"{undo_backup_step_line(kind)}\n"
             f"2. Restore that undo snapshot ({info.write_scope or 'full'}).\n"
             "\nLive licence XML and serialport maps are never overwritten.\n"
             "Continue?"
@@ -1992,6 +2140,7 @@ class ConfigScannerTabWidget(QFrame):
     def _refresh_write_action_labels(self) -> None:
         short = self._write_scope_short_label()
         scope = self._current_write_scope()
+        kind = self._game_kind()
         if scope is WriteScope.FULL:
             btn = "Restore to machine"
             act = "Restore reference to machine"
@@ -2002,26 +2151,15 @@ class ConfigScannerTabWidget(QFrame):
         elif scope is WriteScope.NO_PAYTABLE:
             btn = f"Restore {short} to machine"
             act = f"Restore {short} to machine"
-            tip = (
-                "Save live config first, then restore all restorable files except "
-                "paytable JSON. Use when live Ruleta cannot load the snapshot paytables."
-            )
+            tip = restore_no_paytable_tooltip(kind)
         elif scope is WriteScope.FULL_SOFTWARE:
             btn = f"Restore {short} to machine"
             act = f"Restore {short} to machine"
-            tip = (
-                "Push the matching Ruleta pack from software_versions first, then "
-                "restore config (including paytables) onto that exe. Stops if "
-                "the pack is missing or the copy fails."
-            )
+            tip = restore_full_software_tooltip(kind)
         elif scope is WriteScope.BINARIES_ONLY:
             btn = f"Restore {short} to machine"
             act = f"Restore {short} to machine"
-            tip = (
-                "Push matching Ruleta binaries only. This cabinet's setup, "
-                "switches, wheel, SAS, serialport, and licence stay in place. "
-                "Refuses 10.2.0.684 trial and Downloads 10.2.0.0."
-            )
+            tip = restore_binaries_only_tooltip(kind)
         else:
             btn = f"Restore {short} to machine"
             act = f"Restore {short} to machine"
@@ -2059,19 +2197,20 @@ class ConfigScannerTabWidget(QFrame):
         self._replace_changes_content()
 
         if result is None:
+            kind = self._game_kind()
             empty = QLabel(
                 "<p style='font-size:15px; margin:24px 12px 12px 12px;'>"
                 "<b>Config Scanner</b> — save a machine, put it back later."
                 "</p>"
                 "<ol style='margin:8px 12px 8px 28px; color:#cccccc; line-height:1.5;'>"
                 "<li>Set the <b>Machine</b> path (or Auto-detect)</li>"
-                "<li>Click <b>Create full snapshot</b> — saves config "
-                "<i>and</i> Ruleta software</li>"
+                f"<li>Click <b>Create full snapshot</b> — saves config "
+                f"{welcome_panel_create_step(kind)}</li>"
                 "<li>To go back: select that snapshot and click "
                 "<b>Restore snapshot</b> (live config is saved first so you can undo)</li>"
                 "</ol>"
                 "<p style='margin:12px 12px; color:gray;'>"
-                "Compare and config-only restore stay under <b>More</b>. "
+                "Open the Snapshots drawer for Compare, config-only restore, and refresh. "
                 "Serialport maps and the live licence file are never overwritten."
                 "</p>"
             )
@@ -2151,7 +2290,7 @@ class ConfigScannerTabWidget(QFrame):
 
         legend_bits: list[str] = []
         if any(is_encrypted_origin_config_path(fd.relative_path) for fd in changed):
-            legend_bits.append("Amber = encrypted ruleta setup.xml")
+            legend_bits.append(encrypted_setup_legend(self._game_kind()))
         if any(is_protected_write_path(fd.relative_path) for fd in changed):
             legend_bits.append("Gray = protected (licences kept if present)")
         if legend_bits:
@@ -2201,6 +2340,17 @@ class ConfigScannerTabWidget(QFrame):
             )
         self._write_baseline_btn.setToolTip(tip)
         self._write_baseline_action.setToolTip(tip)
+        can_restore_licence = (
+            has_archive
+            and not self._busy
+            and result.licence_changed
+        )
+        self._restore_slot_licence_action.setEnabled(has_archive and not self._busy)
+        if can_restore_licence:
+            self._restore_slot_licence_action.setToolTip(
+                f"Licence changed ({result.licence_change_count} file(s)). "
+                f"Restore dongle files from {result.baseline_snapshot}."
+            )
         # Always rebuild (including identical / zero-diff) so the previous compare cannot stick.
         self._rebuild_changes_panel(result)
         self._log_compare_result(result)
@@ -2419,26 +2569,30 @@ class ConfigScannerTabWidget(QFrame):
         self._validate_pending = cleaned
         self._update_scan_status_ui()
         self._refresh_action_enabled()
-        self._refresh_live_ruleta_version()
+        self._refresh_egm_ui_strings()
         if status_note:
             self._append_status(status_note, force=True)
 
-    def _refresh_live_ruleta_version(self) -> None:
-        """Show the live Ruleta.exe ProductVersion for the current scan target."""
+    def _refresh_live_game_version(self) -> None:
+        """Show the live game exe ProductVersion for the current scan target."""
         if not hasattr(self, "_live_sw_label"):
             return
         target = self._drive_edit.text().strip()
+        kind = self._game_kind()
         version = None
         if self._target_valid and target:
             try:
-                version = live_ruleta_exe_version_for_target(target)
+                version = live_exe_version_for_target(
+                    target, kind=kind, profile_id=self._service.profile_id
+                )
             except OSError:
                 version = None
-        self._live_sw_label.setText(format_live_ruleta_sw_banner(version))
-        self._live_sw_label.setToolTip(
-            "ProductVersion of live ruleta\\Ruleta.exe on this scan target.\n"
-            f"Target: {target or '(none)'}"
-        )
+        self._live_sw_label.setText(format_live_sw_banner(version, kind=kind))
+        self._live_sw_label.setToolTip(live_exe_version_tooltip(target, kind=kind))
+
+    def _refresh_live_ruleta_version(self) -> None:
+        """Backward-compatible alias."""
+        self._refresh_live_game_version()
 
     def _maybe_align_scan_target_to_snapshot(self, snapshot_name: str | None) -> None:
         if not snapshot_name or self._busy:
@@ -2554,14 +2708,11 @@ class ConfigScannerTabWidget(QFrame):
         registered_baseline = self._service.get_baseline_name()
         is_baseline_row = snapshot.is_baseline or snapshot.name == registered_baseline
         has_archive = self._snapshot_has_archive(snapshot.name)
+        kind = resolve_game_kind(profile_id=snapshot.profile_id)
         if not has_archive:
             restore_tip = "Re-scan to capture archived files"
         else:
-            restore_tip = (
-                "Save live config first, then restore config + matching Ruleta "
-                "software. WIBU licence is kept; LLAVE trial bind is restored "
-                "from this snapshot when it was captured."
-            )
+            restore_tip = restore_full_context_menu_tip(kind)
         restore_action = QAction(snapshot_context_primary_restore_label(), self)
         restore_action.setEnabled(has_archive)
         restore_action.setToolTip(restore_tip)
@@ -2575,8 +2726,7 @@ class ConfigScannerTabWidget(QFrame):
             config_tip = "Re-scan to capture archived files"
         else:
             config_tip = (
-                "Save live config first, then restore config only. "
-                "Live Ruleta.exe stays as-is. Kill-All still runs first."
+                f"{restore_config_only_tooltip(kind)} Kill-All still runs first."
             )
         config_action = QAction(
             _SNAPSHOT_CONTEXT_RESTORE_LABELS[WriteScope.FULL], self
@@ -2697,7 +2847,7 @@ class ConfigScannerTabWidget(QFrame):
                 scope = (
                     WriteScope.FULL if revert_from else WriteScope.FULL_SOFTWARE
                 )
-        scope_label = WRITE_SCOPE_LABELS[scope]
+        scope_label = write_scope_label(scope, resolve_game_kind(profile_id=snapshot.profile_id))
         scoped_count = self._service.count_scoped_snapshot_files(
             snapshot_name, scope.value
         )
@@ -2728,17 +2878,15 @@ class ConfigScannerTabWidget(QFrame):
         self._pending_restore_title = None
         self._pending_restore_body = None
 
+        snap_kind = resolve_game_kind(profile_id=snapshot.profile_id)
         if revert_from:
             prompt = ""
         else:
             if scope is WriteScope.BINARIES_ONLY:
-                step_two = (
-                    "Push Ruleta binaries from this snapshot and keep this "
-                    "cabinet's setup / SAS / licence."
-                )
+                step_two = restore_binaries_step_line(snap_kind)
             else:
                 step_two = (
-                    f"Restore {WRITE_SCOPE_SHORT[scope]} from that snapshot."
+                    f"Restore {write_scope_short(scope, snap_kind)} from that snapshot."
                 )
             prompt = (
                 "Swap this machine to:\n\n"
@@ -2748,8 +2896,7 @@ class ConfigScannerTabWidget(QFrame):
                 f"  Profile: {profile_line}\n"
                 f"  Machine: {scan_target}\n\n"
                 "Yes will:\n"
-                "1. Save a backup of what is running now (config + Ruleta "
-                "binaries) so you can revert.\n"
+                f"{undo_backup_step_line(snap_kind)}\n"
                 f"2. {step_two}\n"
             )
             if plan is not None:
@@ -2761,13 +2908,14 @@ class ConfigScannerTabWidget(QFrame):
                     start_bit = (
                         " Auto-start stack is off, so the game stays stopped."
                     )
-                prompt += (
-                    "3. Stop the GoldClub stack (Kill-All) before writing;"
-                    f"{start_bit}\n"
-                )
+                if getattr(plan, "kind", "roulette") == "slot":
+                    stop_bit = "Stop OneHand/Bootstrap before writing;"
+                else:
+                    stop_bit = "Stop the GoldClub stack (Kill-All) before writing;"
+                prompt += f"3. {stop_bit}{start_bit}\n"
             else:
                 prompt += (
-                    "3. Offline disk: config is written only (no Kill-All).\n"
+                    "3. Offline disk: config is written only (no stack stop).\n"
                 )
             prompt += (
                 "\nLive licence XML and serialport maps are never overwritten.\n"
@@ -2856,30 +3004,50 @@ class ConfigScannerTabWidget(QFrame):
             QMessageBox.information(
                 self,
                 "Config Scanner",
-                "No GoldClub stack scripts for this machine path "
-                "(offline disk skips Kill-All / Run-FullStack).",
+                "No GoldClub stack restart for this machine path "
+                "(offline disk skips stop/start).",
             )
             return
         self._pending_stack_plan = plan
         self._pending_stack_phase = "start"
-        self._append_status("Starting GoldClub stack …", force=True)
+        if getattr(plan, "kind", "roulette") == "slot":
+            self._append_status("Starting Bootstrap / OneHand …", force=True)
+        else:
+            self._append_status("Starting GoldClub stack …", force=True)
         self._set_busy(True, op="stack_restart")
-        schedule_stack_restart(self._pool, plan, self._emitter, phase="start")
+        schedule_stack_restart(
+            self._pool,
+            plan,
+            self._emitter,
+            phase="start",
+            scan_target=scan_target,
+        )
 
     def _offer_stack_start_after_write(self, title: str, body: str) -> None:
-        """Ask to Run-FullStack after a write that already did Kill-All."""
+        """Ask to start the game after a write that already stopped the stack."""
         plan = self._pending_stack_plan or plan_stack_restart(
             self._drive_edit.text().strip()
         )
         if plan is None:
             QMessageBox.information(self, title, body)
             return
+        is_slot = getattr(plan, "kind", "roulette") == "slot"
+        if is_slot:
+            ask = (
+                "\n\nOneHand is stopped. Auto-start stack is off.\n\n"
+                "Start Bootstrap now?"
+            )
+            starting = "Starting Bootstrap / OneHand …"
+        else:
+            ask = (
+                "\n\nStack is down (Kill-All). Auto-start stack is off.\n\n"
+                "Start full stack now (Run-FullStack)?"
+            )
+            starting = "Starting GoldClub stack …"
         reply = QMessageBox.question(
             self,
             title,
-            body
-            + "\n\nStack is down (Kill-All). Auto-start stack is off.\n\n"
-            "Start full stack now (Run-FullStack)?",
+            body + ask,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -2891,50 +3059,72 @@ class ConfigScannerTabWidget(QFrame):
         self._pending_restore_body = body
         self._pending_stack_plan = plan
         self._pending_stack_phase = "start"
-        self._append_status("Starting GoldClub stack …", force=True)
+        self._append_status(starting, force=True)
         self._set_busy(True, op="stack_restart")
-        schedule_stack_restart(self._pool, plan, self._emitter, phase="start")
-
+        schedule_stack_restart(
+            self._pool,
+            plan,
+            self._emitter,
+            phase="start",
+            scan_target=self._drive_edit.text().strip(),
+        )
     def _on_stack_restart_finished(self, ok: bool, detail: str) -> None:
         phase = self._pending_stack_phase
         self._pending_stack_phase = None
         if phase == "kill":
             self._stack_killed_ok = ok
+            plan = self._pending_stack_plan
+            is_slot = getattr(plan, "kind", "roulette") == "slot" if plan else False
             if ok:
                 self._append_status("OK: " + detail, force=True)
-                from config_scanner.build_version import scan_target_path
-                from network.ruleta_stack_probe import verify_stack_clear_for_swap
+                if not is_slot:
+                    from config_scanner.build_version import scan_target_path
+                    from network.ruleta_stack_probe import verify_stack_clear_for_swap
 
-                target = self._drive_edit.text().strip()
-                plan = self._pending_stack_plan
-                host = (plan.host if plan is not None else None) or None
-                dest_ruleta = scan_target_path(target) / "ruleta"
-                clear, block_detail = verify_stack_clear_for_swap(host, dest_ruleta)
-                if not clear:
-                    self._clear_pending_write_state()
-                    self._set_busy(False)
-                    self._append_status("FAIL: " + block_detail, force=True)
-                    hint = ""
-                    if host:
-                        from automation.cabinet_elevate import bootstrap_hint
-
-                        hint = "\n\n" + bootstrap_hint(host)
-                    QMessageBox.critical(
-                        self,
-                        "Config Scanner — restore blocked",
-                        "Kill-All ran but Ruleta files are still locked, so "
-                        "software restore cannot continue.\n\n"
-                        f"{block_detail}{hint}",
+                    target = self._drive_edit.text().strip()
+                    host = (plan.host if plan is not None else None) or None
+                    dest_ruleta = scan_target_path(target) / "ruleta"
+                    clear, block_detail = verify_stack_clear_for_swap(
+                        host, dest_ruleta
                     )
-                    return
+                    if not clear:
+                        self._clear_pending_write_state()
+                        self._set_busy(False)
+                        self._append_status("FAIL: " + block_detail, force=True)
+                        hint = ""
+                        if host:
+                            from automation.cabinet_elevate import bootstrap_hint
+
+                            hint = "\n\n" + bootstrap_hint(host)
+                        QMessageBox.critical(
+                            self,
+                            "Config Scanner — restore blocked",
+                            files_locked_during_restore_message(self._game_kind())
+                            + "\n\n"
+                            f"{block_detail}{hint}",
+                        )
+                        return
             else:
                 self._clear_pending_write_state()
                 self._set_busy(False)
                 self._append_status("FAIL: " + detail, force=True)
                 hint = ""
-                plan = self._pending_stack_plan
                 host = (plan.host if plan is not None else None) or None
-                if host:
+                if is_slot:
+                    hint = (
+                        "\n\nStop OneHand/Bootstrap on the cabinet "
+                        "(or retry after WinRM is available), then restore again."
+                    )
+                    if "TrustedHosts" in detail or "ServerNotTrusted" in detail:
+                        from config_scanner.stack_restart import scan_target_is_local_machine
+
+                        target = self._drive_edit.text().strip()
+                        if scan_target_is_local_machine(target):
+                            hint = (
+                                "\n\nThis PC is the cabinet but restore tried WinRM "
+                                "instead of a local stop. Update Config Scanner and retry."
+                            )
+                elif host:
                     from automation.cabinet_elevate import bootstrap_hint
 
                     hint = "\n\n" + bootstrap_hint(host)
@@ -2943,10 +3133,15 @@ class ConfigScannerTabWidget(QFrame):
                         "\n\nStop the GoldClub stack on the cabinet, then retry "
                         "Restore to machine."
                     )
+                stop_what = (
+                    "OneHand/Bootstrap could not be stopped on the cabinet"
+                    if is_slot
+                    else "GoldClub stack could not be stopped on the cabinet"
+                )
                 QMessageBox.critical(
                     self,
                     "Config Scanner — restore blocked",
-                    "GoldClub stack could not be stopped on the cabinet, so "
+                    f"{stop_what}, so "
                     "software files would stay locked during restore.\n\n"
                     f"{detail}{hint}",
                 )
@@ -2985,12 +3180,18 @@ class ConfigScannerTabWidget(QFrame):
                         self._prompt_llave_trial_password(scan_target, after_restart=True)
             else:
                 up_hint = ""
-                if "ruleta running" in detail.casefold():
+                detail_cf = detail.casefold()
+                kind = self._game_kind()
+                if kind == "roulette" and "ruleta running" in detail_cf:
                     up_hint = (
-                        "\n\nRuleta may already be up — check the cabinet screen. "
-                        "ERROR 99 after a version transfer is normal once; use "
+                        game_may_already_be_up_hint(kind)
+                        + "ERROR 99 after a version transfer is normal once; use "
                         "More → Enter trial password (LLAVE)."
                     )
+                elif kind == "slot" and (
+                    "onehand" in detail_cf or "slot" in detail_cf
+                ):
+                    up_hint = game_may_already_be_up_hint(kind)
                 QMessageBox.warning(
                     self,
                     title,
@@ -3052,7 +3253,7 @@ class ConfigScannerTabWidget(QFrame):
             if wrote:
                 try:
                     scope_e = WriteScope(wrote_scope)
-                    scope_txt = WRITE_SCOPE_SHORT[scope_e]
+                    scope_txt = write_scope_short(scope_e, self._game_kind())
                 except ValueError:
                     scope_txt = wrote_scope or "config"
                 if was_revert:
@@ -3157,11 +3358,17 @@ class ConfigScannerTabWidget(QFrame):
         """Remote restore that swaps Ruleta binaries (needs clock + LLAVE pipeline)."""
         if not self._software_swapping_scope():
             return False
+        if not uses_trial_keypad(self._game_kind()):
+            return False
         plan = self._pending_stack_plan
         return plan is not None and getattr(plan, "mode", None) == "remote"
 
     def _stack_trial_kwargs(self, *, phase: str) -> dict:
         seamless = self._remote_software_transfer()
+        plan = self._pending_stack_plan
+        if plan is not None and getattr(plan, "kind", "roulette") == "slot":
+            # Slot has no Ruleta trial keypad / ERROR 30 clock prep.
+            seamless = False
         snap = self._pending_write_snapshot or ""
         kwargs: dict = {
             "service": self._service,
@@ -3190,25 +3397,17 @@ class ConfigScannerTabWidget(QFrame):
         """
         if result.software_captured or not self._software_swapping_scope():
             return True
+        kind = self._game_kind()
         reply = QMessageBox.question(
             self,
             "Config Scanner — undo point is incomplete",
-            "Live config was saved, but the Ruleta binaries running now could "
-            "not be copied into the undo point:\n\n"
-            f"  {result.snapshot_name}\n\n"
-            "If you continue, Revert last restore puts the config back but "
-            "leaves the exe on the version you are about to install.\n\n"
-            "The GoldClub stack is already stopped. Choose No to stop here and "
-            "start it again with Start GoldClub stack.\n\n"
-            "Install the new Ruleta software anyway?",
+            incomplete_undo_point_body(result.snapshot_name, kind=kind),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
         if reply == QMessageBox.StandardButton.Yes:
             return True
-        self._append_status(
-            "Restore cancelled — undo point has no Ruleta binaries.", force=True
-        )
+        self._append_status(incomplete_undo_cancel_status(kind), force=True)
         return False
 
     def _on_scan_finished(self, ok: bool, result: object, message: str) -> None:
@@ -3260,8 +3459,8 @@ class ConfigScannerTabWidget(QFrame):
                     f"WARN: could not capture LLAVE trial bind for revert: {exc}",
                     force=True,
                 )
-            scope_txt = WRITE_SCOPE_SHORT.get(
-                WriteScope(self._pending_write_scope), self._pending_write_scope
+            scope_txt = write_scope_short(
+                WriteScope(self._pending_write_scope), self._game_kind()
             )
             self._append_status(
                 f"OK: Saved live as {result.snapshot_name}; "
@@ -3309,10 +3508,13 @@ class ConfigScannerTabWidget(QFrame):
             else:
                 if result.software_captured:
                     self._append_status(
-                        f"OK: Saved {result.software_file_count} Ruleta software files "
-                        "with this snapshot.",
+                        scan_saved_software_status(
+                            result.software_file_count,
+                            kind=self._game_kind(),
+                        ),
                         force=True,
                     )
+                self._refresh_egm_ui_strings()
                 for note in self._last_scan_user_warnings:
                     self._append_status(f"WARN: {note}", force=True)
                 # Create-full-snapshot already shows one success box; do not
@@ -3429,7 +3631,15 @@ class ConfigScannerTabWidget(QFrame):
         if self._pending_write_snapshot and self._pending_stack_plan is not None:
             self._pending_stack_phase = "kill"
             self._set_busy(True, op="stack_kill")
-            self._append_status("Stopping GoldClub stack before restore …", force=True)
+            plan = self._pending_stack_plan
+            if getattr(plan, "kind", "roulette") == "slot":
+                self._append_status(
+                    "Stopping OneHand / Bootstrap before restore …", force=True
+                )
+            else:
+                self._append_status(
+                    "Stopping GoldClub stack before restore …", force=True
+                )
             schedule_stack_restart(
                 self._pool,
                 self._pending_stack_plan,
@@ -3520,8 +3730,6 @@ class ConfigScannerTabWidget(QFrame):
                 self._create_snapshot_btn.setText("Saving snapshot…")
             else:
                 self._create_snapshot_btn.setText("Create full snapshot")
-        if hasattr(self, "_create_snapshot_action"):
-            self._create_snapshot_action.setEnabled(can_scan)
         if hasattr(self, "_scan_action"):
             self._scan_action.setEnabled(can_scan)
         if hasattr(self, "_compare_latest_action"):
@@ -3545,16 +3753,22 @@ class ConfigScannerTabWidget(QFrame):
                 "then compare it to your session baseline (or the previous scan)."
             )
         self._compare_btn.setEnabled(not busy)
-        self._compare_action.setEnabled(not busy)
         self._compare_latest_btn.setEnabled(not busy)
         self._detect_btn.setEnabled(not busy)
         self._refresh_btn.setEnabled(not busy)
-        self._refresh_action.setEnabled(not busy)
         self._more_btn.setEnabled(not busy)
         if hasattr(self, "_clear_error30_action"):
-            self._clear_error30_action.setEnabled((not busy) and self._target_valid)
+            self._clear_error30_action.setEnabled(
+                (not busy)
+                and self._target_valid
+                and self._clear_error30_action.isVisible()
+            )
         if hasattr(self, "_llave_password_action"):
-            self._llave_password_action.setEnabled((not busy) and self._target_valid)
+            self._llave_password_action.setEnabled(
+                (not busy)
+                and self._target_valid
+                and self._llave_password_action.isVisible()
+            )
         if hasattr(self, "_start_stack_action"):
             self._start_stack_action.setEnabled((not busy) and self._target_valid)
         if self._widget_is_alive(getattr(self, "_auto_start_stack_cb", None)):
@@ -3673,8 +3887,10 @@ class ConfigScannerTabWidget(QFrame):
             return
         self._target_valid = bool(valid and current)
         self._update_scan_status_ui()
+        # Detection just settled: re-resolve slot vs roulette before the enabled
+        # pass, so roulette-only actions are hidden before they are re-enabled.
+        self._refresh_egm_ui_strings()
         self._refresh_action_enabled()
-        self._refresh_live_ruleta_version()
 
     def _on_progress(self, message: str) -> None:
         self._append_status(message, force=True)
@@ -3783,6 +3999,14 @@ class ConfigScannerTabWidget(QFrame):
             ),
             force=True,
         )
+        if result.licence_changed:
+            self._append_status(
+                f"LICENCE CHANGE: {result.licence_change_count} slot licence file(s) "
+                f"differ between {result.baseline_snapshot} (baseline) and "
+                f"{result.target_snapshot}. Use More → Restore slot licence from "
+                "snapshot to put back the baseline dongle files.",
+                force=True,
+            )
         changed = [item for item in result.file_diffs if item.status != "unchanged"]
         if not changed:
             profile_id, profile_label = self._snapshot_profile_for(result.target_snapshot)
@@ -3921,6 +4145,7 @@ class ConfigScannerTabWidget(QFrame):
                 software_file_count=self._last_scan_software_count,
                 software_captured=self._last_scan_software_ok,
                 extra_notes=self._last_scan_user_warnings,
+                profile_id=self._service.profile_id,
             ),
         )
 

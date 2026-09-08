@@ -1,0 +1,172 @@
+{
+  "entries": [
+    {
+      "sha256": "328387adefb5197b0b5afc41585de733634f498b38b45c1711bae2d8bd889dc1",
+      "denom_cents": 10,
+      "relative_path": "slot/themes/Link2WinFeature/Link2WinBonusMath.json",
+      "leaf": "Trinidad&Tobago/Gamestar SAS 10c/Gamestar 2 Screens",
+      "update_id": "CS-Gamestar-TRI-00_SAS"
+    },
+    {
+      "sha256": "bc1404105d965cb35b1229887056f5179bc2a276964e5c8ff27376a789134665",
+      "denom_cents": 10,
+      "relative_path": "slot/themes/Link2WinFeature/Link2WinBonusMath_Config2.json",
+      "leaf": "Trinidad&Tobago/Gamestar SAS 10c/Gamestar 2 Screens",
+      "update_id": "CS-Gamestar-TRI-00_SAS"
+    },
+    {
+      "sha256": "328387adefb5197b0b5afc41585de733634f498b38b45c1711bae2d8bd889dc1",
+      "denom_cents": 10,
+      "relative_path": "slot/themes/Link2WinFeature/Link2WinBonusMath.json",
+      "leaf": "Trinidad&Tobago/Gamestar SAS 10c/Gamestar 3 Screens",
+      "update_id": "CS-Gamestar-TRI-00_SAS"
+    },
+    {
+      "sha256": "bc1404105d965cb35b1229887056f5179bc2a276964e5c8ff27376a789134665",
+      "denom_cents": 10,
+      "relative_path": "slot/themes/Link2WinFeature/Link2WinBonusMath_Config2.json",
+      "leaf": "Trinidad&Tobago/Gamestar SAS 10c/Gamestar 3 Screens",
+      "update_id": "CS-Gamestar-TRI-00_SAS"
+    },
+    {
+      "sha256": "f8ad72f87f1c4bcbc9de158cc002abb206e67f409668d20e33cfd866f0ae4a44",
+      "denom_cents": 2,
+      "relative_path": "slot/themes/Link2WinFeature/Link2WinBonusMath.json",
+      "leaf": "Trinidad&Tobago/Gamestar SAS 2c/Gamestar 2 Screens",
+      "update_id": "CS-Gamestar-TRI-00_SAS"
+    },
+    {
+      "sha256": "b644d9b602e1abd8c1fd51909953786a583033e0370f9d98ec509c198db99986",
+      "denom_cents": 2,
+      "relative_path": "slot/themes/Link2WinFeature/Link2WinBonusMath_Config2.json",
+      "leaf": "Trinidad&Tobago/Gamestar SAS 2c/Gamestar 2 Screens",
+      "update_id": "CS-Gamestar-TRI-00_SAS"
+    },
+    {
+      "sha256": "f8ad72f87f1c4bcbc9de158cc002abb206e67f409668d20e33cfd866f0ae4a44",
+      "denom_cents": 2,
+      "relative_path": "slot/themes/Link2WinFeature/Link2WinBonusMath.json",
+      "leaf": "Trinidad&Tobago/Gamestar SAS 2c/Gamestar 3 Screens",
+      "update_id": "CS-Gamestar-TRI-00_SAS"
+    },
+    {
+      "sha256": "b644d9b602e1abd8c1fd51909953786a583033e0370f9d98ec509c198db99986",
+      "denom_cents": 2,
+      "relative_path": "slot/themes/Link2WinFeature/Link2WinBonusMath_Config2.json",
+      "leaf": "Trinidad&Tobago/Gamestar SAS 2c/Gamestar 3 Screens",
+      "update_id": "CS-Gamestar-TRI-00_SAS"
+    },
+    {
+      "sha256": "497b2e144a04a95ecd9a75a33ddf8ed3eb15bc340c91db965c353b6ad669bc56",
+      "denom_cents": 5,
+      "relative_path": "slot/themes/Link2WinFeature/Link2WinBonusMath.json",
+      "leaf": "Trinidad&Tobago/Gamestar SAS 5c/Gamestar 2 Screens",
+      "update_id": "CS-Gamestar-TRI-00_SAS"
+    },
+    {
+      "sha256": "2b14d791139d23ac531e1d8e12d72733debff70b5175ef1829c014a2a59d9738",
+      "denom_cents": 5,
+      "relative_path": "slot/themes/Link2WinFeature/Link2WinBonusMath_Config2.json",
+      "leaf": "Trinidad&Tobago/Gamestar SAS 5c/Gamestar 2 Screens",
+      "update_id": "CS-Gamestar-TRI-00_SAS"
+    },
+    {
+      "sha256": "497b2e144a04a95ecd9a75a33ddf8ed3eb15bc340c91db965c353b6ad669bc56",
+      "denom_cents": 5,
+      "relative_path": "slot/themes/Link2WinFeature/Link2WinBonusMath.json",
+      "leaf": "Trinidad&Tobago/Gamestar SAS 5c/Gamestar 3 Screens",
+      "update_id": "CS-Gamestar-TRI-00_SAS"
+    },
+    {
+      "sha256": "2b14d791139d23ac531e1d8e12d72733debff70b5175ef1829c014a2a59d9738",
+      "denom_cents": 5,
+      "relative_path": "slot/themes/Link2WinFeature/Link2WinBonusMath_Config2.json",
+      "leaf": "Trinidad&Tobago/Gamestar SAS 5c/Gamestar 3 Screens",
+      "update_id": "CS-Gamestar-TRI-00_SAS"
+    },
+    {
+      "sha256": "328387adefb5197b0b5afc41585de733634f498b38b45c1711bae2d8bd889dc1",
+      "denom_cents": 10,
+      "relative_path": "slot/themes/Link2WinFeature/Link2WinBonusMath.json",
+      "leaf": "Trinidad&Tobago/Gamestar OL+SAS 10c/Gamestar 2 Screens",
+      "update_id": "CS-Gamestar-TRI-00_OL+SAS"
+    },
+    {
+      "sha256": "bc1404105d965cb35b1229887056f5179bc2a276964e5c8ff27376a789134665",
+      "denom_cents": 10,
+      "relative_path": "slot/themes/Link2WinFeature/Link2WinBonusMath_Config2.json",
+      "leaf": "Trinidad&Tobago/Gamestar OL+SAS 10c/Gamestar 2 Screens",
+      "update_id": "CS-Gamestar-TRI-00_OL+SAS"
+    },
+    {
+      "sha256": "328387adefb5197b0b5afc41585de733634f498b38b45c1711bae2d8bd889dc1",
+      "denom_cents": 10,
+      "relative_path": "slot/themes/Link2WinFeature/Link2WinBonusMath.json",
+      "leaf": "Trinidad&Tobago/Gamestar OL+SAS 10c/Gamestar 3 Screens",
+      "update_id": "CS-Gamestar-TRI-00_OL+SAS"
+    },
+    {
+      "sha256": "bc1404105d965cb35b1229887056f5179bc2a276964e5c8ff27376a789134665",
+      "denom_cents": 10,
+      "relative_path": "slot/themes/Link2WinFeature/Link2WinBonusMath_Config2.json",
+      "leaf": "Trinidad&Tobago/Gamestar OL+SAS 10c/Gamestar 3 Screens",
+      "update_id": "CS-Gamestar-TRI-00_OL+SAS"
+    },
+    {
+      "sha256": "f8ad72f87f1c4bcbc9de158cc002abb206e67f409668d20e33cfd866f0ae4a44",
+      "denom_cents": 2,
+      "relative_path": "slot/themes/Link2WinFeature/Link2WinBonusMath.json",
+      "leaf": "Trinidad&Tobago/Gamestar OL+SAS 2c/Gamestar 2 Screens",
+      "update_id": "CS-Gamestar-TRI-00_OL+SAS"
+    },
+    {
+      "sha256": "b644d9b602e1abd8c1fd51909953786a583033e0370f9d98ec509c198db99986",
+      "denom_cents": 2,
+      "relative_path": "slot/themes/Link2WinFeature/Link2WinBonusMath_Config2.json",
+      "leaf": "Trinidad&Tobago/Gamestar OL+SAS 2c/Gamestar 2 Screens",
+      "update_id": "CS-Gamestar-TRI-00_OL+SAS"
+    },
+    {
+      "sha256": "f8ad72f87f1c4bcbc9de158cc002abb206e67f409668d20e33cfd866f0ae4a44",
+      "denom_cents": 2,
+      "relative_path": "slot/themes/Link2WinFeature/Link2WinBonusMath.json",
+      "leaf": "Trinidad&Tobago/Gamestar OL+SAS 2c/Gamestar 3 Screens",
+      "update_id": "CS-Gamestar-TRI-00_OL+SAS"
+    },
+    {
+      "sha256": "b644d9b602e1abd8c1fd51909953786a583033e0370f9d98ec509c198db99986",
+      "denom_cents": 2,
+      "relative_path": "slot/themes/Link2WinFeature/Link2WinBonusMath_Config2.json",
+      "leaf": "Trinidad&Tobago/Gamestar OL+SAS 2c/Gamestar 3 Screens",
+      "update_id": "CS-Gamestar-TRI-00_OL+SAS"
+    },
+    {
+      "sha256": "497b2e144a04a95ecd9a75a33ddf8ed3eb15bc340c91db965c353b6ad669bc56",
+      "denom_cents": 5,
+      "relative_path": "slot/themes/Link2WinFeature/Link2WinBonusMath.json",
+      "leaf": "Trinidad&Tobago/Gamestar OL+SAS 5c/Gamestar 2 Screens",
+      "update_id": "CS-Gamestar-TRI-00_OL+SAS"
+    },
+    {
+      "sha256": "2b14d791139d23ac531e1d8e12d72733debff70b5175ef1829c014a2a59d9738",
+      "denom_cents": 5,
+      "relative_path": "slot/themes/Link2WinFeature/Link2WinBonusMath_Config2.json",
+      "leaf": "Trinidad&Tobago/Gamestar OL+SAS 5c/Gamestar 2 Screens",
+      "update_id": "CS-Gamestar-TRI-00_OL+SAS"
+    },
+    {
+      "sha256": "497b2e144a04a95ecd9a75a33ddf8ed3eb15bc340c91db965c353b6ad669bc56",
+      "denom_cents": 5,
+      "relative_path": "slot/themes/Link2WinFeature/Link2WinBonusMath.json",
+      "leaf": "Trinidad&Tobago/Gamestar OL+SAS 5c/Gamestar 3 Screens",
+      "update_id": "CS-Gamestar-TRI-00_OL+SAS"
+    },
+    {
+      "sha256": "2b14d791139d23ac531e1d8e12d72733debff70b5175ef1829c014a2a59d9738",
+      "denom_cents": 5,
+      "relative_path": "slot/themes/Link2WinFeature/Link2WinBonusMath_Config2.json",
+      "leaf": "Trinidad&Tobago/Gamestar OL+SAS 5c/Gamestar 3 Screens",
+      "update_id": "CS-Gamestar-TRI-00_OL+SAS"
+    }
+  ]
+}

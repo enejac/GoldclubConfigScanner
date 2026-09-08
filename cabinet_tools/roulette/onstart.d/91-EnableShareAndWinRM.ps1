@@ -9,7 +9,8 @@
 #
 # Fix: register AtLogOn scheduled tasks as the auto-logon user for TeamViewer /
 # Total Commander. Startup .cmd is only for the elevated PowerShell trigger -
-# do NOT also launch TV/TC from Startup.
+# do NOT also launch TV/TC from Startup. If onlogon.ps1 already started Total
+# Commander, skip Start-Now (32-bit TOTALCMD and 64-bit TOTALCMD64 count as one).
 # Never Start-Now restore_tv_login_roulette.cmd: it taskkill /F TeamViewer.exe
 # then xcopy+reg import. Use D:\TeamViewerPortable\TeamViewer.exe instead.
 #
@@ -418,6 +419,7 @@ function Find-UsbRoot {
     foreach ($letter in @('D', 'E', 'F', 'G', 'H')) {
         $root = "${letter}:\"
         if (-not (Test-Path -LiteralPath $root)) { continue }
+        if ((Test-Path -LiteralPath (Join-Path $root 'slot\OneHand.exe')) -or (Test-Path -LiteralPath (Join-Path $root 'ruleta\Ruleta.exe'))) { continue }
         $tv = Join-Path $root 'TeamViewerPortable\TeamViewer.exe'
         $restore = Join-Path $root 'TeamViewer_LoginBackup\restore_tv_login_roulette.cmd'
         $tc = Join-Path $root 'totalcmd\TOTALCMD64.EXE'
@@ -838,6 +840,16 @@ function Register-UserLogonAppTask {
     return $true
 }
 
+function Get-AppProcessNames {
+    param([Parameter(Mandatory = $true)][string]$ProcessName)
+    # 32-bit and 64-bit Total Commander are separate processes; treat them as one app
+    # so onlogon + this script cannot leave two windows.
+    if ($ProcessName -in @('TOTALCMD', 'TOTALCMD64')) {
+        return @('TOTALCMD', 'TOTALCMD64')
+    }
+    return @($ProcessName)
+}
+
 function Start-UserAppNow {
     param(
         [Parameter(Mandatory = $true)][string]$TaskName,
@@ -847,7 +859,8 @@ function Start-UserAppNow {
         [switch]$RestartExisting
     )
     # Session 0 copies are invisible / TeamViewer self-exits - do not treat as success
-    $all = @(Get-Process -Name $ProcessName -ErrorAction SilentlyContinue)
+    $names = Get-AppProcessNames -ProcessName $ProcessName
+    $all = @(Get-Process -Name $names -ErrorAction SilentlyContinue)
     $interactive = @($all | Where-Object { $_.SessionId -gt 0 })
     $session0 = @($all | Where-Object { $_.SessionId -eq 0 })
     if ($session0.Count -gt 0) {
@@ -1232,12 +1245,16 @@ if (Test-Path -LiteralPath $tvExe) {
 
 if ($tcExe) {
     $tcProc = if ($tcExe -match '64') { 'TOTALCMD64' } else { 'TOTALCMD' }
-    if (Register-UserLogonAppTask -TaskName 'GoldClub-TotalCommander-USB' -ExePath $tcExe -UserName $logonUser -Label 'TotalCommander' -RunLevelHighest) {
-        if ($script:RepeatSkipHeavy) {
-            Write-TaskLog 'TotalCommander: recent success - restarting so RunLevel Highest applies'
+    # /O = activate existing instance instead of opening a second window
+    if (Register-UserLogonAppTask -TaskName 'GoldClub-TotalCommander-USB' -ExePath $tcExe -UserName $logonUser -Label 'TotalCommander' -Arguments '/O' -RunLevelHighest) {
+        $already = @(Get-Process -Name (Get-AppProcessNames -ProcessName $tcProc) -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -gt 0 })
+        if ($already.Count -gt 0) {
+            Write-TaskLog ("TotalCommander: already running (onlogon or prior) pid={0} - skip second instance" -f ($already.Id -join ','))
+            Set-StepResult -Name 'TotalCommander' -Ok $true -Detail ('SKIP: already running pid={0}' -f ($already.Id -join ','))
+        } else {
+            Start-UserAppNow -TaskName 'GoldClub-TotalCommander-USB' -ExePath $tcExe -ProcessName $tcProc -Label 'TotalCommander'
+            Set-StepResult -Name 'TotalCommander' -Ok $true -Detail $tcExe
         }
-        Start-UserAppNow -TaskName 'GoldClub-TotalCommander-USB' -ExePath $tcExe -ProcessName $tcProc -Label 'TotalCommander' -RestartExisting
-        Set-StepResult -Name 'TotalCommander' -Ok $true -Detail $tcExe
     } else {
         Set-StepResult -Name 'TotalCommander' -Ok $false -Detail 'register failed'
     }

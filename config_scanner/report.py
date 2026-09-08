@@ -11,6 +11,7 @@ from pathlib import Path
 from config_scanner.build_version import BuildInfo, format_build_info_log_line, format_software_display
 from config_scanner.machine_identity import is_licence_path
 from config_scanner.write_scope import is_protected_write_path
+from config_scanner.theme_math import is_theme_math_rel, theme_math_compare_note
 from config_scanner.xml_diff import (
     ContentChange,
     FileDiff,
@@ -44,8 +45,13 @@ def _encode(value: str | None) -> str:
     return html.escape(value)
 
 
-def _content_diff_html(content_diff: list[ContentChange]) -> str:
+def _content_diff_html(
+    content_diff: list[ContentChange],
+    file_diff: FileDiff | None = None,
+) -> str:
     if not content_diff:
+        if file_diff is not None and is_theme_math_rel(file_diff.relative_path):
+            return f'<p class="muted">{html.escape(theme_math_compare_note(file_diff))}</p>'
         return '<p class="muted">No detailed diff available.</p>'
     rows = []
     for change in content_diff:
@@ -84,7 +90,7 @@ def _file_diff_section(file_diff: FileDiff) -> str:
         f"<div><strong>Baseline SHA1:</strong> <code>{_encode(file_diff.baseline_sha1)}</code></div>"
         f"<div><strong>Target SHA1:</strong> <code>{_encode(file_diff.target_sha1)}</code></div>"
         "</div>"
-        f"{_content_diff_html(file_diff.content_diff)}"
+        f"{_content_diff_html(file_diff.content_diff, file_diff)}"
         "</section>"
     )
 
@@ -304,6 +310,8 @@ def file_diff_header_label(relative_path: str, status: str) -> str:
         label = f"{label}  [protected — never written]"
     if is_encrypted_origin_config_path(relative_path):
         return f"{label}  [encrypted on disk]"
+    if is_theme_math_rel(relative_path):
+        return f"{label}  [theme math — SHA1 only]"
     return label
 
 

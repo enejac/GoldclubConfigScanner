@@ -304,6 +304,12 @@ def file_content_diff(
     if baseline_path is None and target_path is None:
         return []
 
+    from config_scanner.theme_math import is_theme_math_rel
+
+    # Encrypted theme math — SHA1 on the FileDiff only; do not dump ciphertext.
+    if is_theme_math_rel(relative_path):
+        return []
+
     # Encrypted ruleta setup.xml → compare decrypted plain settings, not token churn.
     if _is_ruleta_setup_relative(relative_path):
         try:
@@ -583,12 +589,21 @@ def apply_xml_value_at_path(file_path: Path, flat_path: str, value: str | None) 
 
     Whole ``item[@aliasName=…]`` driver rows are structural — refuse leaf Write.
     """
+    from config_scanner.machine_identity import (
+        is_jurisdiction_config_file,
+        normalize_jurisdiction_apply_value,
+        postprocess_jurisdiction_xml_bytes,
+    )
+
     item_prefix = _item_identity_prefix(flat_path)
     if item_prefix is not None and item_prefix == flat_path.replace("\\", "/"):
         raise ValueError(
             f"Cannot Write a whole HW driver/item block via leaf apply: {flat_path}. "
             "Restore the full configuration.xml from a known-good backup instead."
         )
+
+    if is_jurisdiction_config_file(file_path):
+        value = normalize_jurisdiction_apply_value(flat_path, value)
 
     try:
         tree = ET.parse(file_path)
@@ -604,6 +619,11 @@ def apply_xml_value_at_path(file_path: Path, flat_path: str, value: str | None) 
 
     element.text = "" if value is None else value
     tree.write(file_path, encoding="utf-8", xml_declaration=True)
+    if is_jurisdiction_config_file(file_path):
+        raw = file_path.read_bytes()
+        fixed = postprocess_jurisdiction_xml_bytes(raw)
+        if fixed != raw:
+            file_path.write_bytes(fixed)
 
 
 def resolve_apply_value(change: ContentChange, side: str) -> str | None:

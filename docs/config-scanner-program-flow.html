@@ -1,0 +1,715 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Config Scanner — program flow and settings</title>
+<style>
+:root {
+  --ink: #1c2430;
+  --muted: #5b6675;
+  --line: #d8deea;
+  --paper: #f7f5f0;
+  --card: #ffffff;
+  --gold: #b8892a;
+  --gold-soft: #f4ead4;
+  --green: #1f7a4d;
+  --green-bg: #e6f5ec;
+  --amber: #9a6b00;
+  --amber-bg: #fff4d6;
+  --red: #b42318;
+  --red-bg: #fdecea;
+  --gray: #667085;
+  --gray-bg: #eef0f4;
+  --navy: #16324f;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0;
+  font: 16px/1.5 "Segoe UI", Calibri, system-ui, sans-serif;
+  color: var(--ink);
+  background: var(--paper);
+}
+header {
+  background: var(--navy);
+  color: #fff;
+  padding: 40px 28px 36px;
+}
+header .kicker {
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  font-size: 12px;
+  opacity: .75;
+  margin: 0 0 8px;
+}
+header h1 {
+  font-size: 32px;
+  font-weight: 650;
+  margin: 0 0 10px;
+  letter-spacing: -.02em;
+}
+header p { margin: 0; max-width: 46rem; color: #d7e0ea; }
+.wrap { max-width: 1100px; margin: 0 auto; padding: 0 28px 64px; }
+nav.toc {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: -18px auto 28px;
+  max-width: 1100px;
+  padding: 0 28px;
+}
+nav.toc a {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 13px;
+  color: var(--navy);
+  text-decoration: none;
+}
+nav.toc a:hover { border-color: var(--gold); }
+h2 {
+  font-size: 22px;
+  margin: 40px 0 12px;
+  color: var(--navy);
+}
+h3 {
+  font-size: 17px;
+  margin: 28px 0 10px;
+  color: var(--navy);
+}
+h3 .count {
+  font-weight: 500;
+  color: var(--muted);
+  font-size: 13px;
+}
+p, li { color: var(--ink); }
+.lead { font-size: 18px; max-width: 46rem; }
+.cards {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin: 20px 0;
+}
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 18px 20px;
+}
+.card h3 { margin-top: 0; }
+.card ol { margin: 0; padding-left: 1.2rem; }
+.stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin: 20px 0 8px;
+}
+.stat {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 16px;
+  text-align: center;
+}
+.stat b { display: block; font-size: 28px; color: var(--navy); }
+.stat span { font-size: 13px; color: var(--muted); }
+.flow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 8px;
+  margin: 20px 0;
+}
+.step {
+  flex: 1 1 140px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 14px 14px 12px;
+  min-width: 140px;
+  position: relative;
+}
+.step .n {
+  display: inline-block;
+  width: 24px; height: 24px;
+  border-radius: 50%;
+  background: var(--gold-soft);
+  color: var(--navy);
+  font-size: 12px;
+  font-weight: 700;
+  text-align: center;
+  line-height: 24px;
+  margin-bottom: 8px;
+}
+.step strong { display: block; margin-bottom: 4px; }
+.step span { font-size: 13px; color: var(--muted); }
+.arrow {
+  align-self: center;
+  color: var(--gold);
+  font-size: 22px;
+  flex: 0 0 auto;
+}
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 12px 0 20px;
+}
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+.pill i {
+  width: 10px; height: 10px; border-radius: 50%; display: inline-block;
+}
+.ok { background: var(--green-bg); color: var(--green); }
+.warn { background: var(--amber-bg); color: var(--amber); }
+.bad { background: var(--red-bg); color: var(--red); }
+.na { background: var(--gray-bg); color: var(--gray); }
+.split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+ul.plain { margin: 8px 0 0; padding-left: 1.15rem; }
+.never {
+  background: #fff;
+  border-left: 4px solid var(--red);
+  padding: 12px 16px;
+  border-radius: 0 10px 10px 0;
+}
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin: 16px 0;
+  position: sticky;
+  top: 0;
+  background: var(--paper);
+  padding: 10px 0;
+  z-index: 2;
+}
+.toolbar input {
+  flex: 1 1 240px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font: inherit;
+}
+.toolbar button {
+  border: 1px solid var(--line);
+  background: var(--card);
+  border-radius: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  font: inherit;
+}
+.toolbar button.active { background: var(--navy); color: #fff; border-color: var(--navy); }
+.group-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.group-nav a {
+  font-size: 12px;
+  color: var(--navy);
+  text-decoration: none;
+  background: var(--gold-soft);
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+.group-nav a span { color: var(--muted); }
+table.catalog {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+  font-size: 14px;
+  margin-bottom: 8px;
+}
+table.catalog th {
+  text-align: left;
+  background: #eef2f7;
+  padding: 8px 10px;
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--muted);
+}
+table.catalog td {
+  padding: 8px 10px;
+  border-top: 1px solid var(--line);
+  vertical-align: top;
+}
+table.catalog code { font-size: 12px; }
+.note { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.badge {
+  display: inline-block;
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.badge.write { background: var(--gold-soft); color: #6b4e12; }
+.badge.probe { background: var(--gray-bg); color: var(--gray); }
+tr.hidden { display: none; }
+footer {
+  margin-top: 48px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 13px;
+}
+@media (max-width: 800px) {
+  .cards, .split, .stats { grid-template-columns: 1fr; }
+  .arrow { display: none; }
+}
+@media print {
+  header { background: #fff; color: #000; padding: 12px 0; }
+  header p { color: #333; }
+  nav.toc, .toolbar { display: none; }
+  .step, .card { break-inside: avoid; }
+  a { color: inherit; text-decoration: none; }
+}
+</style>
+</head>
+<body>
+<header>
+  <p class="kicker">GoldClub Config Scanner &middot; internal briefing</p>
+  <h1>How country configuration works</h1>
+  <p>A lab tool to pick the right GameStar country pack, check every important setting against the target market, and ship a client update. Restore applies that update on the cabinet.</p>
+</header>
+<nav class="toc wrap" style="margin-left:auto;margin-right:auto;">
+  <a href="#jobs">Two jobs</a>
+  <a href="#share">Lab share map</a>
+  <a href="#flow">Create flow</a>
+  <a href="#colors">Traffic lights</a>
+  <a href="#layers">Compare vs write</a>
+  <a href="#restore">Restore</a>
+  <a href="#never">Never touch</a>
+  <a href="#catalog">All settings</a>
+</nav>
+<div class="wrap">
+
+<p class="lead">Official WinSystems country packs live on the lab share
+<code>\\10.0.0.249\WinSystems_SLOT</code>
+(_B2U, GameStar 2.0.0, GameStar 2.0.1). The program does not invent a country from scratch. It starts from those packs, shows what they actually contain, and flags leftovers (for example Trinidad currency with a Puerto Rico culture tag). Create auto-picks the newest official overlay and hides Debug/Test packs.</p>
+
+<div class="stats">
+  <div class="stat"><b>176</b><span>settings the program can read</span></div>
+  <div class="stat"><b>30</b><span>settings it can also write</span></div>
+  <div class="stat"><b>146</b><span>compare-only (audit)</span></div>
+  <div class="stat"><b>32</b><span>only present in some packs</span></div>
+</div>
+
+<h2 id="jobs">1. Two jobs</h2>
+<div class="cards">
+  <div class="card">
+    <h3>Create (lab)</h3>
+    <ol>
+      <li>Choose the market (Trinidad TTD, Jamaica JMD, Puerto Rico, Panama, Peru, &hellip;).</li>
+      <li>Choose the official Country Selector pack and cabinet variant (denom, 2/3 screens, OL+SAS vs SAS-only).</li>
+      <li>Review the traffic-light table against a live EGM if one is connected.</li>
+      <li>Export a client <strong>.b2u</strong> update.</li>
+    </ol>
+  </div>
+  <div class="card">
+    <h3>Restore (cabinet)</h3>
+    <ol>
+      <li>Open Config Scanner on the machine.</li>
+      <li>Point it at the update that Create produced.</li>
+      <li>Pick the matching leaf (country / screens / denom).</li>
+      <li>Apply. The overlay writes GoldClub config files, not Windows boot or serial-port maps.</li>
+    </ol>
+  </div>
+</div>
+<p>A third path, <strong>More tools</strong>, covers snapshots, companion packs (keyboards, bills, Clovers, offline ticket text, OneHand, TrialReset), and advanced Slot Setup. Country Selectors stay on the Create path.</p>
+
+<h2 id="share">1b. What is on the lab share (and what this program uses)</h2>
+<table class="catalog">
+<thead><tr><th>Folder</th><th>What it is</th><th>In Config Scanner</th></tr></thead>
+<tbody>
+<tr><td><code>_B2U\CS-Gamestar-*</code></td><td>Unpacked Country Selector overlays (Trinidad TRI/TT, Jamaica, Puerto Rico PR-00…06, Panama PANC, Peru PRU Debug)</td><td>Create — authoring</td></tr>
+<tr><td><code>_B2U\encrypted\CS-Gamestar-PER-00.b2u</code></td><td>Official Peru overlay (do not confuse with Puerto Rico <code>PR-*</code>)</td><td>Create — authoring</td></tr>
+<tr><td><code>GameStar 2.0.1\Country Selectors</code></td><td>Trinidad TRI-01 / TT-00, Jamaica JAM-00/01, Puerto Rico PR-05. Panama folder is empty.</td><td>Create — default newest line</td></tr>
+<tr><td><code>GameStar 2.0.0\Country Selectors</code></td><td>Panama PANC-01, Puerto Rico PR-04</td><td>Create — Panama lives here, not on 2.0.1</td></tr>
+<tr><td><code>GameStar+22</code> / <code>GameStar+30</code></td><td>CountrySelector <code>.zip</code> for Colombia, Guyana, Mexico, Panama, Peru, Trinidad</td><td>Listed grey — cabinet Restore only, not Create</td></tr>
+<tr><td><code>GameStar 2.0.1\Updates</code>, <code>_B2U</code> Bills/Keyboards/Dallas/OffLineTicket/MUX</td><td>Companion updates</td><td>More tools → companions</td></tr>
+<tr><td><code>Keyboard Updates</code>, <code>_BILLS</code></td><td>Cabinet keyboard layouts; JCM vs MEI bill software</td><td>Companions / hardware, not CS</td></tr>
+<tr><td><code>JinLong</code></td><td>Different product (<code>.ws</code> CountrySelector packages, jackpot controllers, <code>.mrimg</code>)</td><td>Out of scope</td></tr>
+<tr><td><code>Poland</code>, <code>Netherlands</code>, Adventure / Colors / Fenghuang / L2W / …</td><td>Other brands, mechanical-counter zips, disk images, logs</td><td>Out of scope (Poland mechanical counters are a Hardware setting if a CS leaf has them)</td></tr>
+<tr><td><code>*.mrimg</code>, loggers, WIBU xls, licences of another EGM</td><td>Images / secrets</td><td>Never treat as settings</td></tr>
+</tbody>
+</table>
+<p>GameStar 3.0.0 on the share is empty. Gamestar+36 is a demo image, not a CS overlay tree.</p>
+
+<h2 id="flow">2. Create flow</h2>
+<p>Jurisdiction wizard — four steps the operator walks in order.</p>
+<div class="flow">
+  <div class="step"><div class="n">1</div><strong>Jurisdiction</strong><span>Load the market preset: currency, culture, recommended denoms, SAS / ticket expectations.</span></div>
+  <div class="arrow">&#8594;</div>
+  <div class="step"><div class="n">2</div><strong>Pack &amp; leaf</strong><span>Newest official overlay is pre-selected (2.0.1, then 2.0.0, then _B2U). Debug/Test hidden. Then the cabinet variant inside it.</span></div>
+  <div class="arrow">&#8594;</div>
+  <div class="step"><div class="n">3</div><strong>Review</strong><span>Every setting below is probed on the pack (and live EGM). Green / amber / red / gray.</span></div>
+  <div class="arrow">&#8594;</div>
+  <div class="step"><div class="n">4</div><strong>Export</strong><span>Encrypted Country Selector .b2u for the client. Optional recipe.json for Slot Setup.</span></div>
+</div>
+
+<div class="card">
+  <h3>What “export” actually ships</h3>
+  <p>The client update is the <strong>official country overlay</strong> (the leaf you picked), packed as a GameStar-style B2U. The traffic-light table does not rewrite all 176 fields into that pack. If a recipe is included, Slot Setup can patch a smaller, safer set on top (currency, denoms, SAS address / AFT / lock, Dallas key, keyboard, offline ticket flag).</p>
+</div>
+
+<h2 id="colors">3. How a setting is judged</h2>
+<div class="legend">
+  <span class="pill ok"><i style="background:#1f7a4d"></i> Green — present and matches the market preset</span>
+  <span class="pill warn"><i style="background:#9a6b00"></i> Amber — present, different value (leftover or mismatch)</span>
+  <span class="pill bad"><i style="background:#b42318"></i> Red — expected, but missing on this tree</span>
+  <span class="pill na"><i style="background:#667085"></i> Gray — this pack does not ship that file (or no opinion)</span>
+</div>
+<p>Extra consistency checks catch known pack leftovers even when a field is “present”: Trinidad TTD with CultureName <code>es-PR</code> / TargetMarket PuertoRico, Aurum processor locale <code>sl_SI</code> on every country, and jurisdiction_config Tag vs mgconfig TargetMarket.</p>
+
+<h2 id="layers">4. Compare vs write</h2>
+<div class="split">
+  <div class="card">
+    <h3>Read / compare (176)</h3>
+    <p>Used in the review table so lab and field see the full picture: SAS chirping, Tubo service on/off, ticket layouts, UPS, processor locale, and so on.</p>
+    <p>Some files exist only in later packs (Keyboard.xml, ClientsSet.xml, jurisdiction_config.xml). Those show gray on TRI-00 OL+SAS and light up when the chosen pack actually contains them.</p>
+  </div>
+  <div class="card">
+    <h3>Write (30)</h3>
+    <p>Slot Setup and the optional export recipe only change settings we have a safe patcher for. Gold badges in the catalog below mark that set.</p>
+    <ul class="plain">
+      <li>Market, culture, currency, language, denoms</li>
+      <li>SAS address, AFT, funds-transfer type, lock-when-no-comms</li>
+      <li>Bill tokens and MEI/JCM protocol</li>
+      <li>Offline ticket flag; copy of oticket.xml</li>
+      <li>One Dallas key; keyboard map; MachineID / Aurum hostname</li>
+      <li>Per-game bet multipliers / RTP when authored</li>
+    </ul>
+  </div>
+</div>
+
+<h2 id="restore">5. Restore on the cabinet</h2>
+<div class="flow">
+  <div class="step"><div class="n">1</div><strong>Detect pack</strong><span>Country, EGM setup, or companion update beside the exe or chosen folder.</span></div>
+  <div class="arrow">&#8594;</div>
+  <div class="step"><div class="n">2</div><strong>Choose leaf</strong><span>Same country / screens / denom the lab exported.</span></div>
+  <div class="arrow">&#8594;</div>
+  <div class="step"><div class="n">3</div><strong>Apply overlay</strong><span>Copies allowed GoldClub files onto C:\Goldclub (or the live share).</span></div>
+  <div class="arrow">&#8594;</div>
+  <div class="step"><div class="n">4</div><strong>Done</strong><span>Game config is updated. Windows boot, BitLocker, and COM maps are left alone.</span></div>
+</div>
+
+<h2>6. Companion packs (optional extras)</h2>
+<p>Not Country Selectors. Same lab share, used when a site needs a smaller overlay:</p>
+<ul class="plain">
+  <li>Keyboards — cabinet button layouts</li>
+  <li>Bills / TTD — note acceptor mapping</li>
+  <li>Dallas — OneHandConfigurer</li>
+  <li>Theme overlay — Clovers disable, Tutankhamen config</li>
+  <li>Offline ticket — oticket.xml text</li>
+  <li>OneHand binary update</li>
+  <li>Licences — explicit confirm only, never copied from another EGM by default</li>
+  <li>Serial / MUX — G: drive only, extra confirmation (dangerous)</li>
+</ul>
+
+<h2 id="never">7. What this program never changes</h2>
+<div class="never">
+  <ul class="plain">
+    <li>Windows boot (BCD, EFI, Shell Launcher, hives)</li>
+    <li>Serial-port board maps (<code>layout.json</code> / <code>locations.json</code>)</li>
+    <li>Another machine’s licence XML or <code>licence.dll</code></li>
+    <li>mgconfig artwork / font / layout chrome</li>
+  </ul>
+</div>
+
+<h2 id="catalog">8. Full settings catalog (176)</h2>
+<p>Everything the review table can show, grouped the same way as in the program. Use search or the gold / gray filter. Generated from the live registry (13 groups).</p>
+
+<div class="toolbar">
+  <input id="q" type="search" placeholder="Filter by name, id, or file…" oninput="filterRows()">
+  <button type="button" id="f-all" class="active" onclick="setFilter('all')">All</button>
+  <button type="button" id="f-write" onclick="setFilter('write')">Can be written</button>
+  <button type="button" id="f-probe" onclick="setFilter('probe')">Compare only</button>
+</div>
+<div class="group-nav"><a href="#g-jurisdiction">Jurisdiction <span>15</span></a>
+<a href="#g-denomination">Denomination <span>6</span></a>
+<a href="#g-ui">UI <span>23</span></a>
+<a href="#g-math">Math <span>7</span></a>
+<a href="#g-sas">SAS <span>42</span></a>
+<a href="#g-ticketing">Ticketing <span>23</span></a>
+<a href="#g-bill-acceptor">Bill acceptor <span>4</span></a>
+<a href="#g-hardware">Hardware <span>19</span></a>
+<a href="#g-dallas">Dallas <span>8</span></a>
+<a href="#g-identity">Identity <span>14</span></a>
+<a href="#g-aurum">Aurum <span>13</span></a>
+<a href="#g-audio">Audio <span>1</span></a>
+<a href="#g-buttons">Buttons <span>1</span></a></div>
+<h3 id="g-jurisdiction">Jurisdiction <span class="count">15</span></h3>
+<table class='catalog'><thead><tr>
+<th>Setting</th><th>Id</th><th>File</th><th>In CS pack</th><th>Role</th></tr></thead><tbody>
+<tr class='write' data-role='write' data-q='target market locale.target_market slot/themes/mgconfig.xml jurisdiction'><td><strong>Target market</strong><div class="note">Often left as PuertoRico in Trinidad packs — consistency rule flags this.</div></td><td><code>locale.target_market</code></td><td>mgconfig.xml</td><td>Usually shipped</td><td><span class='badge write'>Compared and can be written</span></td></tr>
+<tr class='write' data-role='write' data-q='culture name locale.culture_name slot/themes/mgconfig.xml jurisdiction'><td><strong>Culture name</strong></td><td><code>locale.culture_name</code></td><td>mgconfig.xml</td><td>Usually shipped</td><td><span class='badge write'>Compared and can be written</span></td></tr>
+<tr class='write' data-role='write' data-q='language locale.language slot/themes/mgconfig.xml jurisdiction'><td><strong>Language</strong></td><td><code>locale.language</code></td><td>mgconfig.xml</td><td>Usually shipped</td><td><span class='badge write'>Compared and can be written</span></td></tr>
+<tr class='write' data-role='write' data-q='currency name (mgconfig) locale.currency_name slot/themes/mgconfig.xml jurisdiction'><td><strong>Currency name (mgconfig)</strong></td><td><code>locale.currency_name</code></td><td>mgconfig.xml</td><td>Usually shipped</td><td><span class='badge write'>Compared and can be written</span></td></tr>
+<tr class='write' data-role='write' data-q='currency format locale.currency_format slot/themes/mgconfig.xml jurisdiction'><td><strong>Currency format</strong></td><td><code>locale.currency_format</code></td><td>mgconfig.xml</td><td>Usually shipped</td><td><span class='badge write'>Compared and can be written</span></td></tr>
+<tr class='write' data-role='write' data-q='currency short symbol locale.currency_short_symbol slot/themes/mgconfig.xml jurisdiction'><td><strong>Currency short symbol</strong></td><td><code>locale.currency_short_symbol</code></td><td>mgconfig.xml</td><td>Usually shipped</td><td><span class='badge write'>Compared and can be written</span></td></tr>
+<tr class='write' data-role='write' data-q='currency name (hardwareconfig) locale.hw_currency_name slot/themes/hardwareconfig.xml jurisdiction'><td><strong>Currency name (HardwareConfig)</strong></td><td><code>locale.hw_currency_name</code></td><td>HardwareConfig.xml</td><td>Usually shipped</td><td><span class='badge write'>Compared and can be written</span></td></tr>
+<tr class='write' data-role='write' data-q='jurisdiction tag locale.jur_tag slot/themes/jurisdiction_config.xml jurisdiction'><td><strong>Jurisdiction tag</strong><div class="note">Present on JAM/PR/PANC/PRU/TRI-01/TT CS leaves; TRI-00 OL+SAS omits the file.</div></td><td><code>locale.jur_tag</code></td><td>jurisdiction_config.xml</td><td>Only if that pack has the file</td><td><span class='badge write'>Compared and can be written</span></td></tr>
+<tr class='write' data-role='write' data-q='jurisdiction currency symbol locale.jur_currency_symbol slot/themes/jurisdiction_config.xml jurisdiction'><td><strong>Jurisdiction currency symbol</strong></td><td><code>locale.jur_currency_symbol</code></td><td>jurisdiction_config.xml</td><td>Only if that pack has the file</td><td><span class='badge write'>Compared and can be written</span></td></tr>
+<tr class='probe' data-role='probe' data-q='jurisdiction currency base symbol locale.jur_currency_base_symbol slot/themes/jurisdiction_config.xml jurisdiction'><td><strong>Jurisdiction currency base symbol</strong></td><td><code>locale.jur_currency_base_symbol</code></td><td>jurisdiction_config.xml</td><td>Only if that pack has the file</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='jurisdiction currency long format locale.jur_long_format slot/themes/jurisdiction_config.xml jurisdiction'><td><strong>Jurisdiction currency long format</strong></td><td><code>locale.jur_long_format</code></td><td>jurisdiction_config.xml</td><td>Only if that pack has the file</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='jurisdiction currency short format locale.jur_short_format slot/themes/jurisdiction_config.xml jurisdiction'><td><strong>Jurisdiction currency short format</strong></td><td><code>locale.jur_short_format</code></td><td>jurisdiction_config.xml</td><td>Only if that pack has the file</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='jurisdiction display decimals locale.jur_display_decimals slot/themes/jurisdiction_config.xml jurisdiction'><td><strong>Jurisdiction display decimals</strong><div class="note">Jamaica leaves are false; Panama/PR/Peru are true.</div></td><td><code>locale.jur_display_decimals</code></td><td>jurisdiction_config.xml</td><td>Only if that pack has the file</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='jurisdiction thousand separator locale.jur_thousand_separator slot/themes/jurisdiction_config.xml jurisdiction'><td><strong>Jurisdiction thousand separator</strong></td><td><code>locale.jur_thousand_separator</code></td><td>jurisdiction_config.xml</td><td>Only if that pack has the file</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='write' data-role='write' data-q='magic wheel money limit locale.jur_magic_wheel_limit slot/themes/jurisdiction_config.xml jurisdiction'><td><strong>Magic wheel money limit</strong></td><td><code>locale.jur_magic_wheel_limit</code></td><td>jurisdiction_config.xml</td><td>Only if that pack has the file</td><td><span class='badge write'>Compared and can be written</span></td></tr>
+</tbody></table>
+<h3 id="g-denomination">Denomination <span class="count">6</span></h3>
+<table class='catalog'><thead><tr>
+<th>Setting</th><th>Id</th><th>File</th><th>In CS pack</th><th>Role</th></tr></thead><tbody>
+<tr class='write' data-role='write' data-q='denomination list denom.list slot/themes/mgconfig.xml denomination'><td><strong>Denomination list</strong></td><td><code>denom.list</code></td><td>mgconfig.xml</td><td>Usually shipped</td><td><span class='badge write'>Compared and can be written</span></td></tr>
+<tr class='write' data-role='write' data-q='credit rate values denom.credit_rate_values slot/themes/mgconfig.xml denomination'><td><strong>Credit rate values</strong></td><td><code>denom.credit_rate_values</code></td><td>mgconfig.xml</td><td>Usually shipped</td><td><span class='badge write'>Compared and can be written</span></td></tr>
+<tr class='probe' data-role='probe' data-q='show denomination selector denom.show_selector slot/themes/mgconfig.xml denomination'><td><strong>Show denomination selector</strong></td><td><code>denom.show_selector</code></td><td>mgconfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='display denom with currency denom.display_with_currency slot/themes/mgconfig.xml denomination'><td><strong>Display denom with currency</strong></td><td><code>denom.display_with_currency</code></td><td>mgconfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='display denom in currency denom.display_in_currency slot/themes/mgconfig.xml denomination'><td><strong>Display denom in currency</strong></td><td><code>denom.display_in_currency</code></td><td>mgconfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='jurisdiction single denomination denom.jur_single_denomination slot/themes/jurisdiction_config.xml denomination'><td><strong>Jurisdiction single denomination</strong></td><td><code>denom.jur_single_denomination</code></td><td>jurisdiction_config.xml</td><td>Only if that pack has the file</td><td><span class='badge probe'>Compared only</span></td></tr>
+</tbody></table>
+<h3 id="g-ui">UI <span class="count">23</span></h3>
+<table class='catalog'><thead><tr>
+<th>Setting</th><th>Id</th><th>File</th><th>In CS pack</th><th>Role</th></tr></thead><tbody>
+<tr class='probe' data-role='probe' data-q='default bet ui.default_bet slot/themes/mgconfig.xml ui'><td><strong>Default bet</strong></td><td><code>ui.default_bet</code></td><td>mgconfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='show all lines ui.show_all_lines slot/themes/mgconfig.xml ui'><td><strong>Show all lines</strong></td><td><code>ui.show_all_lines</code></td><td>mgconfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='write' data-role='write' data-q='inactivity seconds to game selector ui.inactivity_to_selector slot/themes/mgconfig.xml ui'><td><strong>Inactivity seconds to game selector</strong><div class="note">Lab often sets 0 so the selector never auto-returns.</div></td><td><code>ui.inactivity_to_selector</code></td><td>mgconfig.xml</td><td>Usually shipped</td><td><span class='badge write'>Compared and can be written</span></td></tr>
+<tr class='probe' data-role='probe' data-q='inactivity seconds to initial volume ui.inactivity_to_volume slot/themes/mgconfig.xml ui'><td><strong>Inactivity seconds to initial volume</strong></td><td><code>ui.inactivity_to_volume</code></td><td>mgconfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='check accounting denomination ui.check_accounting_denom slot/themes/mgconfig.xml ui'><td><strong>Check accounting denomination</strong></td><td><code>ui.check_accounting_denom</code></td><td>mgconfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='cashout button mode ui.cashout_button_mode slot/themes/mgconfig.xml ui'><td><strong>Cashout button mode</strong><div class="note">Typically Ticket vs Handpay.</div></td><td><code>ui.cashout_button_mode</code></td><td>mgconfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='partial payout enabled ui.partial_payout slot/themes/mgconfig.xml ui'><td><strong>Partial payout enabled</strong></td><td><code>ui.partial_payout</code></td><td>mgconfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='payout when celebration limit ui.payout_celebration_limit slot/themes/mgconfig.xml ui'><td><strong>Payout when celebration limit</strong><div class="note">Typically LockAndHandpay.</div></td><td><code>ui.payout_celebration_limit</code></td><td>mgconfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='multicredit transfer enabled ui.multicredit_transfer slot/themes/mgconfig.xml ui'><td><strong>Multicredit transfer enabled</strong></td><td><code>ui.multicredit_transfer</code></td><td>mgconfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='currency short format ui.currency_short_format slot/themes/mgconfig.xml ui'><td><strong>Currency short format</strong></td><td><code>ui.currency_short_format</code></td><td>mgconfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='currency amounts with symbol ui.currency_amounts_with_symbol slot/themes/mgconfig.xml ui'><td><strong>Currency amounts with symbol</strong></td><td><code>ui.currency_amounts_with_symbol</code></td><td>mgconfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='show theoretical rtp ui.show_theoretical_rtp slot/themes/mgconfig.xml ui'><td><strong>Show theoretical RTP</strong></td><td><code>ui.show_theoretical_rtp</code></td><td>mgconfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='max bet with spin ui.max_bet_with_spin slot/themes/mgconfig.xml ui'><td><strong>Max bet with spin</strong></td><td><code>ui.max_bet_with_spin</code></td><td>mgconfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='gamestar plus enabled ui.gamestar_plus slot/themes/mgconfig.xml ui'><td><strong>GameStar Plus enabled</strong></td><td><code>ui.gamestar_plus</code></td><td>mgconfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='service menu button enabled ui.service_menu_button slot/themes/mgconfig.xml ui'><td><strong>Service menu button enabled</strong></td><td><code>ui.service_menu_button</code></td><td>mgconfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='game selector menu visible ui.game_selector_menu_visible slot/themes/mgconfig.xml ui'><td><strong>Game selector menu visible</strong></td><td><code>ui.game_selector_menu_visible</code></td><td>mgconfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='release-key unlock ui.release_key_unlock slot/themes/mgconfig.xml ui'><td><strong>Release-key unlock</strong></td><td><code>ui.release_key_unlock</code></td><td>mgconfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='credits with number formatting ui.credits_number_formatting slot/themes/mgconfig.xml ui'><td><strong>Credits with number formatting</strong></td><td><code>ui.credits_number_formatting</code></td><td>mgconfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='use egm random providers ui.use_egm_random slot/themes/mgconfig.xml ui'><td><strong>Use EGM random providers</strong></td><td><code>ui.use_egm_random</code></td><td>mgconfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='ask for external bonus timeout ui.external_bonus_timeout slot/themes/mgconfig.xml ui'><td><strong>Ask for external bonus timeout</strong></td><td><code>ui.external_bonus_timeout</code></td><td>mgconfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='allow mute volume on release ui.allow_mute_on_release slot/themes/mgconfig.xml ui'><td><strong>Allow mute volume on release</strong></td><td><code>ui.allow_mute_on_release</code></td><td>mgconfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='dynamic help enabled ui.dynamic_help slot/themes/mgconfig.xml ui'><td><strong>Dynamic help enabled</strong></td><td><code>ui.dynamic_help</code></td><td>mgconfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='game groups enabled ui.groups_enabled slot/themes/mgconfig.xml ui'><td><strong>Game groups enabled</strong></td><td><code>ui.groups_enabled</code></td><td>mgconfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+</tbody></table>
+<h3 id="g-math">Math <span class="count">7</span></h3>
+<table class='catalog'><thead><tr>
+<th>Setting</th><th>Id</th><th>File</th><th>In CS pack</th><th>Role</th></tr></thead><tbody>
+<tr class='probe' data-role='probe' data-q='current return percent math.return_percent slot/themes/*/mathsettings.xml math'><td><strong>Current return percent</strong></td><td><code>math.return_percent</code></td><td>MathSettings.xml (per game)</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='allowed return percents math.allowed_return_percents slot/themes/*/mathsettings.xml math'><td><strong>Allowed return percents</strong></td><td><code>math.allowed_return_percents</code></td><td>MathSettings.xml (per game)</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='write' data-role='write' data-q='fixed bet math.fixed_bet slot/themes/*/mathsettings.xml math'><td><strong>Fixed bet</strong></td><td><code>math.fixed_bet</code></td><td>MathSettings.xml (per game)</td><td>Usually shipped</td><td><span class='badge write'>Compared and can be written</span></td></tr>
+<tr class='probe' data-role='probe' data-q='number of lines math.number_of_lines slot/themes/*/mathsettings.xml math'><td><strong>Number of lines</strong></td><td><code>math.number_of_lines</code></td><td>MathSettings.xml (per game)</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='write' data-role='write' data-q='denomination multiplier math.denomination_multiplier slot/themes/*/mathsettings.xml math'><td><strong>Denomination multiplier</strong></td><td><code>math.denomination_multiplier</code></td><td>MathSettings.xml (per game)</td><td>Usually shipped</td><td><span class='badge write'>Compared and can be written</span></td></tr>
+<tr class='write' data-role='write' data-q='bet multipliers math.bet_multipliers slot/themes/*/mathsettings.xml math'><td><strong>Bet multipliers</strong></td><td><code>math.bet_multipliers</code></td><td>MathSettings.xml (per game)</td><td>Usually shipped</td><td><span class='badge write'>Compared and can be written</span></td></tr>
+<tr class='write' data-role='write' data-q='denom return percent math.denom_return_percent slot/themes/*/mathsettings.xml math'><td><strong>Denom return percent</strong></td><td><code>math.denom_return_percent</code></td><td>MathSettings.xml (per game)</td><td>Usually shipped</td><td><span class='badge write'>Compared and can be written</span></td></tr>
+</tbody></table>
+<h3 id="g-sas">SAS <span class="count">42</span></h3>
+<table class='catalog'><thead><tr>
+<th>Setting</th><th>Id</th><th>File</th><th>In CS pack</th><th>Role</th></tr></thead><tbody>
+<tr class='write' data-role='write' data-q='funds transfer type sas.funds_transfer_type services/aurum/config/sascontroler1/sassetupdata.xml sas'><td><strong>Funds transfer type</strong></td><td><code>sas.funds_transfer_type</code></td><td>SASsetupData.xml</td><td>Usually shipped</td><td><span class='badge write'>Compared and can be written</span></td></tr>
+<tr class='write' data-role='write' data-q='lock game when no sas comms sas.lock_when_no_comms services/aurum/config/sascontroler1/sassetupdata.xml sas'><td><strong>Lock game when no SAS comms</strong></td><td><code>sas.lock_when_no_comms</code></td><td>SASsetupData.xml</td><td>Usually shipped</td><td><span class='badge write'>Compared and can be written</span></td></tr>
+<tr class='probe' data-role='probe' data-q='sas poll rate sas.poll_rate services/aurum/config/sascontroler1/sassetupdata.xml sas'><td><strong>SAS poll rate</strong></td><td><code>sas.poll_rate</code></td><td>SASsetupData.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='partial transfers allowed sas.partial_transfers services/aurum/config/sascontroler1/sassetupdata.xml sas'><td><strong>Partial transfers allowed</strong></td><td><code>sas.partial_transfers</code></td><td>SASsetupData.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='support validation extensions sas.validation_extensions services/aurum/config/sascontroler1/sassetupdata.xml sas'><td><strong>Support validation extensions</strong></td><td><code>sas.validation_extensions</code></td><td>SASsetupData.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='aft transaction id must be unique sas.aft_txn_unique services/aurum/config/sascontroler1/sassetupdata.xml sas'><td><strong>AFT transaction id must be unique</strong></td><td><code>sas.aft_txn_unique</code></td><td>SASsetupData.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='check redeem ticket multiple of account denom sas.check_redeem_multiple services/aurum/config/sascontroler1/sassetupdata.xml sas'><td><strong>Check redeem ticket multiple of account denom</strong></td><td><code>sas.check_redeem_multiple</code></td><td>SASsetupData.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='check redeem ticket exceed credit limit sas.check_redeem_credit_limit services/aurum/config/sascontroler1/sassetupdata.xml sas'><td><strong>Check redeem ticket exceed credit limit</strong></td><td><code>sas.check_redeem_credit_limit</code></td><td>SASsetupData.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='legacy bonusing enabled sas.legacy_bonusing services/aurum/config/sascontroler1/sassetupdata.xml sas'><td><strong>Legacy bonusing enabled</strong></td><td><code>sas.legacy_bonusing</code></td><td>SASsetupData.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='answer only when egm connected sas.answer_only_when_connected services/aurum/config/sascontroler1/sassetupdata.xml sas'><td><strong>Answer only when EGM connected</strong></td><td><code>sas.answer_only_when_connected</code></td><td>SASsetupData.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='system lock handling mode sas.system_lock_mode services/aurum/config/sascontroler1/sassetupdata.xml sas'><td><strong>System lock handling mode</strong></td><td><code>sas.system_lock_mode</code></td><td>SASsetupData.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='sas chirping enabled sas.chirping_enabled services/aurum/config/sascontroler1/sassetupdata.xml sas'><td><strong>SAS chirping enabled</strong></td><td><code>sas.chirping_enabled</code></td><td>SASsetupData.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='delay eft while gm busy sas.delay_eft_gm_busy services/aurum/config/sascontroler1/sassetupdata.xml sas'><td><strong>Delay EFT while GM busy</strong></td><td><code>sas.delay_eft_gm_busy</code></td><td>SASsetupData.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='funds on wat account timeout sas.funds_wat_timeout services/aurum/config/sascontroler1/sassetupdata.xml sas'><td><strong>Funds on WAT account timeout</strong></td><td><code>sas.funds_wat_timeout</code></td><td>SASsetupData.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='lock-successful timer interval sas.lock_success_timer services/aurum/config/sascontroler1/sassetupdata.xml sas'><td><strong>Lock-successful timer interval</strong></td><td><code>sas.lock_success_timer</code></td><td>SASsetupData.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='repeat transfer times before give-up sas.repeat_transfer_times services/aurum/config/sascontroler1/sassetupdata.xml sas'><td><strong>Repeat transfer times before give-up</strong></td><td><code>sas.repeat_transfer_times</code></td><td>SASsetupData.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='repeat transfer after seconds sas.repeat_transfer_seconds services/aurum/config/sascontroler1/sassetupdata.xml sas'><td><strong>Repeat transfer after seconds</strong></td><td><code>sas.repeat_transfer_seconds</code></td><td>SASsetupData.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='must be locked in transaction sas.must_lock_in_txn services/aurum/config/sascontroler1/sassetupdata.xml sas'><td><strong>Must be locked in transaction</strong></td><td><code>sas.must_lock_in_txn</code></td><td>SASsetupData.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='resynch after undelivered sas.resynch_after_undelivered services/aurum/config/sascontroler1/sassetupdata.xml sas'><td><strong>Resynch after undelivered</strong></td><td><code>sas.resynch_after_undelivered</code></td><td>SASsetupData.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='progressive info timeout sas.progressive_info_timeout services/aurum/config/sascontroler1/sassetupdata.xml sas'><td><strong>Progressive info timeout</strong></td><td><code>sas.progressive_info_timeout</code></td><td>SASsetupData.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='answer only when games are mapped sas.answer_only_when_mapped services/aurum/config/sascontroler1/sassetupdata.xml sas'><td><strong>Answer only when games are mapped</strong></td><td><code>sas.answer_only_when_mapped</code></td><td>SASsetupData.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='progressive monitor url sas.progressive_monitor_url services/aurum/config/sascontroler1/sassetupdata.xml sas'><td><strong>Progressive monitor URL</strong><div class="note">CS packs ship a placeholder http://server : port/ProgressiveMonitor.</div></td><td><code>sas.progressive_monitor_url</code></td><td>SASsetupData.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='write' data-role='write' data-q='sas address sas.address services/aurum/config/sascontroler1/clientsset.xml sas'><td><strong>SAS address</strong><div class="note">Often live-only; many CS leaves ship SASsetupData without ClientsSet.</div></td><td><code>sas.address</code></td><td>ClientsSet.xml</td><td>Only if that pack has the file</td><td><span class='badge write'>Compared and can be written</span></td></tr>
+<tr class='write' data-role='write' data-q='aft anyaftenabled sas.aft_enabled services/aurum/config/sascontroler1/clientsset.xml sas'><td><strong>AFT anyAftEnabled</strong></td><td><code>sas.aft_enabled</code></td><td>ClientsSet.xml</td><td>Only if that pack has the file</td><td><span class='badge write'>Compared and can be written</span></td></tr>
+<tr class='write' data-role='write' data-q='aft in-house transfers enabled sas.aft_in_house services/aurum/config/sascontroler1/clientsset.xml sas'><td><strong>AFT in-house transfers enabled</strong></td><td><code>sas.aft_in_house</code></td><td>ClientsSet.xml</td><td>Only if that pack has the file</td><td><span class='badge write'>Compared and can be written</span></td></tr>
+<tr class='probe' data-role='probe' data-q='sas host url sas.host_url services/aurum/config/sascontroler1/clientsset.xml sas'><td><strong>SAS host URL</strong><div class="note">Often live-only; Panama CS leaves typically omit ClientsSet.</div></td><td><code>sas.host_url</code></td><td>ClientsSet.xml</td><td>Only if that pack has the file</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='sas host port sas.port services/aurum/config/sascontroler1/clientsset.xml sas'><td><strong>SAS host port</strong></td><td><code>sas.port</code></td><td>ClientsSet.xml</td><td>Only if that pack has the file</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='sas wake-up port sas.wakeup_port services/aurum/config/sascontroler1/clientsset.xml sas'><td><strong>SAS wake-up port</strong></td><td><code>sas.wakeup_port</code></td><td>ClientsSet.xml</td><td>Only if that pack has the file</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='unique gmid template sas.unique_gmid services/aurum/config/sascontroler1/clientsset.xml sas'><td><strong>Unique GMID template</strong></td><td><code>sas.unique_gmid</code></td><td>ClientsSet.xml</td><td>Only if that pack has the file</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='aurum egm id template (clientsset) sas.aurum_egm_id services/aurum/config/sascontroler1/clientsset.xml sas'><td><strong>Aurum EGM id template (ClientsSet)</strong></td><td><code>sas.aurum_egm_id</code></td><td>ClientsSet.xml</td><td>Only if that pack has the file</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='aft debit transfers enabled sas.aft_debit services/aurum/config/sascontroler1/clientsset.xml sas'><td><strong>AFT debit transfers enabled</strong></td><td><code>sas.aft_debit</code></td><td>ClientsSet.xml</td><td>Only if that pack has the file</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='aft bonus transfers enabled sas.aft_bonus services/aurum/config/sascontroler1/clientsset.xml sas'><td><strong>AFT bonus transfers enabled</strong></td><td><code>sas.aft_bonus</code></td><td>ClientsSet.xml</td><td>Only if that pack has the file</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='aft lock after transfer request sas.aft_lock_after_transfer services/aurum/config/sascontroler1/clientsset.xml sas'><td><strong>AFT lock after transfer request</strong></td><td><code>sas.aft_lock_after_transfer</code></td><td>ClientsSet.xml</td><td>Only if that pack has the file</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='ticket validation mode sas.validation_mode services/aurum/config/sascontroler1/clientsset.xml sas'><td><strong>Ticket validation mode</strong></td><td><code>sas.validation_mode</code></td><td>ClientsSet.xml</td><td>Only if that pack has the file</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='sas accounting denomination sas.accounting_denom services/aurum/config/sascontroler1/clientsset.xml sas'><td><strong>SAS accounting denomination</strong></td><td><code>sas.accounting_denom</code></td><td>ClientsSet.xml</td><td>Only if that pack has the file</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='cashable ticket expiration days sas.cashable_ticket_expiration services/aurum/config/sascontroler1/clientsset.xml sas'><td><strong>Cashable ticket expiration days</strong></td><td><code>sas.cashable_ticket_expiration</code></td><td>ClientsSet.xml</td><td>Only if that pack has the file</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='aft transfer less than full amount to host sas.aft_partial_to_host services/aurum/config/sascontroler1/clientsset.xml sas'><td><strong>AFT transfer less than full amount to host</strong></td><td><code>sas.aft_partial_to_host</code></td><td>ClientsSet.xml</td><td>Only if that pack has the file</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='aft printer available for receipts sas.aft_printer_receipts services/aurum/config/sascontroler1/clientsset.xml sas'><td><strong>AFT printer available for receipts</strong></td><td><code>sas.aft_printer_receipts</code></td><td>ClientsSet.xml</td><td>Only if that pack has the file</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='aft custom ticket data supported sas.aft_custom_ticket services/aurum/config/sascontroler1/clientsset.xml sas'><td><strong>AFT custom ticket data supported</strong></td><td><code>sas.aft_custom_ticket</code></td><td>ClientsSet.xml</td><td>Only if that pack has the file</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='restricted ticket expiration days sas.restricted_ticket_expiration services/aurum/config/sascontroler1/clientsset.xml sas'><td><strong>Restricted ticket expiration days</strong></td><td><code>sas.restricted_ticket_expiration</code></td><td>ClientsSet.xml</td><td>Only if that pack has the file</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='cashable ticket title (clientsset) sas.cashable_ticket_title services/aurum/config/sascontroler1/clientsset.xml sas'><td><strong>Cashable ticket title (ClientsSet)</strong></td><td><code>sas.cashable_ticket_title</code></td><td>ClientsSet.xml</td><td>Only if that pack has the file</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='restricted ticket title (clientsset) sas.restricted_ticket_title services/aurum/config/sascontroler1/clientsset.xml sas'><td><strong>Restricted ticket title (ClientsSet)</strong></td><td><code>sas.restricted_ticket_title</code></td><td>ClientsSet.xml</td><td>Only if that pack has the file</td><td><span class='badge probe'>Compared only</span></td></tr>
+</tbody></table>
+<h3 id="g-ticketing">Ticketing <span class="count">23</span></h3>
+<table class='catalog'><thead><tr>
+<th>Setting</th><th>Id</th><th>File</th><th>In CS pack</th><th>Role</th></tr></thead><tbody>
+<tr class='write' data-role='write' data-q='offline ticket enabled ticket.offline_enabled slot/themes/hardwareconfig.xml ticketing'><td><strong>Offline ticket enabled</strong></td><td><code>ticket.offline_enabled</code></td><td>HardwareConfig.xml</td><td>Usually shipped</td><td><span class='badge write'>Compared and can be written</span></td></tr>
+<tr class='probe' data-role='probe' data-q='ticket redeem enabled ticket.redeem_enabled slot/themes/hardwareconfig.xml ticketing'><td><strong>Ticket redeem enabled</strong></td><td><code>ticket.redeem_enabled</code></td><td>HardwareConfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='use currency iso on tickets ticket.use_currency_iso slot/themes/hardwareconfig.xml ticketing'><td><strong>Use currency ISO on tickets</strong></td><td><code>ticket.use_currency_iso</code></td><td>HardwareConfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='print residuals ticket.print_residuals slot/themes/hardwareconfig.xml ticketing'><td><strong>Print residuals</strong></td><td><code>ticket.print_residuals</code></td><td>HardwareConfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='allow non-cashable print ticket.allow_noncashable slot/themes/hardwareconfig.xml ticketing'><td><strong>Allow non-cashable print</strong></td><td><code>ticket.allow_noncashable</code></td><td>HardwareConfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='ticket printer enabled ticket.printer_enabled slot/themes/hardwareconfig.xml ticketing'><td><strong>Ticket printer enabled</strong></td><td><code>ticket.printer_enabled</code></td><td>HardwareConfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='finance print enabled ticket.finance_print slot/themes/hardwareconfig.xml ticketing'><td><strong>Finance print enabled</strong></td><td><code>ticket.finance_print</code></td><td>HardwareConfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='lock on paper low ticket.lock_on_paper_low slot/themes/hardwareconfig.xml ticketing'><td><strong>Lock on paper low</strong></td><td><code>ticket.lock_on_paper_low</code></td><td>HardwareConfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='non-cashable ticket layout ticket.layout_noncashable slot/themes/hardwareconfig.xml ticketing'><td><strong>Non-cashable ticket layout</strong></td><td><code>ticket.layout_noncashable</code></td><td>HardwareConfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='promo ticket layout ticket.layout_promo slot/themes/hardwareconfig.xml ticketing'><td><strong>Promo ticket layout</strong></td><td><code>ticket.layout_promo</code></td><td>HardwareConfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='handpay receipt layout ticket.layout_handpay slot/themes/hardwareconfig.xml ticketing'><td><strong>Handpay receipt layout</strong></td><td><code>ticket.layout_handpay</code></td><td>HardwareConfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='cashable ticket layout ticket.layout_cashable slot/themes/hardwareconfig.xml ticketing'><td><strong>Cashable ticket layout</strong></td><td><code>ticket.layout_cashable</code></td><td>HardwareConfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='jackpot receipt layout ticket.layout_jackpot slot/themes/hardwareconfig.xml ticketing'><td><strong>Jackpot receipt layout</strong></td><td><code>ticket.layout_jackpot</code></td><td>HardwareConfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='financial report layout ticket.layout_financial slot/themes/hardwareconfig.xml ticketing'><td><strong>Financial report layout</strong></td><td><code>ticket.layout_financial</code></td><td>HardwareConfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='offline ticket location oticket.location bios/etc/application/slot/oticket.xml ticketing'><td><strong>Offline ticket location</strong></td><td><code>oticket.location</code></td><td>oticket.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='offline ticket address 1 oticket.address1 bios/etc/application/slot/oticket.xml ticketing'><td><strong>Offline ticket address 1</strong></td><td><code>oticket.address1</code></td><td>oticket.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='offline ticket address 2 oticket.address2 bios/etc/application/slot/oticket.xml ticketing'><td><strong>Offline ticket address 2</strong></td><td><code>oticket.address2</code></td><td>oticket.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='offline ticket expire days oticket.expire bios/etc/application/slot/oticket.xml ticketing'><td><strong>Offline ticket expire days</strong></td><td><code>oticket.expire</code></td><td>oticket.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='offline ticket cashable title oticket.cashable_title bios/etc/application/slot/oticket.xml ticketing'><td><strong>Offline ticket cashable title</strong></td><td><code>oticket.cashable_title</code></td><td>oticket.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='offline ticket promo title oticket.promo_title bios/etc/application/slot/oticket.xml ticketing'><td><strong>Offline ticket promo title</strong></td><td><code>oticket.promo_title</code></td><td>oticket.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='offline ticket non-cash title oticket.noncash_title bios/etc/application/slot/oticket.xml ticketing'><td><strong>Offline ticket non-cash title</strong></td><td><code>oticket.noncash_title</code></td><td>oticket.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='offline ticket starting number oticket.ticket_no bios/etc/application/slot/oticket.xml ticketing'><td><strong>Offline ticket starting number</strong></td><td><code>oticket.ticket_no</code></td><td>oticket.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='offline ticket machine number oticket.machine bios/etc/application/slot/oticket.xml ticketing'><td><strong>Offline ticket machine number</strong></td><td><code>oticket.machine</code></td><td>oticket.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+</tbody></table>
+<h3 id="g-bill-acceptor">Bill acceptor <span class="count">4</span></h3>
+<table class='catalog'><thead><tr>
+<th>Setting</th><th>Id</th><th>File</th><th>In CS pack</th><th>Role</th></tr></thead><tbody>
+<tr class='write' data-role='write' data-q='bill token mappings bill.tokens slot/themes/hardwareconfig.xml bill acceptor'><td><strong>Bill token mappings</strong></td><td><code>bill.tokens</code></td><td>HardwareConfig.xml</td><td>Usually shipped</td><td><span class='badge write'>Compared and can be written</span></td></tr>
+<tr class='probe' data-role='probe' data-q='bill acceptor enabled bill.enabled slot/themes/hardwareconfig.xml bill acceptor'><td><strong>Bill acceptor enabled</strong></td><td><code>bill.enabled</code></td><td>HardwareConfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='stacker installed auto-unlock bill.stacker_auto_unlock slot/themes/hardwareconfig.xml bill acceptor'><td><strong>Stacker installed auto-unlock</strong></td><td><code>bill.stacker_auto_unlock</code></td><td>HardwareConfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='write' data-role='write' data-q='bill acceptor protocol (mei/jcm) bill.protocol slot/hwdrivers/quixanthardware.xml bill acceptor'><td><strong>Bill acceptor protocol (MEI/JCM)</strong><div class="note">Not in CS packs — live EGM or companion pack only.</div></td><td><code>bill.protocol</code></td><td>QuixantHardware.xml</td><td>Only if that pack has the file</td><td><span class='badge write'>Compared and can be written</span></td></tr>
+</tbody></table>
+<h3 id="g-hardware">Hardware <span class="count">19</span></h3>
+<table class='catalog'><thead><tr>
+<th>Setting</th><th>Id</th><th>File</th><th>In CS pack</th><th>Role</th></tr></thead><tbody>
+<tr class='probe' data-role='probe' data-q='hardware type hw.type slot/themes/hardwareconfig.xml hardware'><td><strong>Hardware type</strong></td><td><code>hw.type</code></td><td>HardwareConfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='buttons enabled hw.buttons_enabled slot/themes/hardwareconfig.xml hardware'><td><strong>Buttons enabled</strong></td><td><code>hw.buttons_enabled</code></td><td>HardwareConfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='led dimming values hw.led_dimming slot/themes/hardwareconfig.xml hardware'><td><strong>LED dimming values</strong></td><td><code>hw.led_dimming</code></td><td>HardwareConfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='ups enabled hw.ups_enabled slot/themes/hardwareconfig.xml hardware'><td><strong>UPS enabled</strong></td><td><code>hw.ups_enabled</code></td><td>HardwareConfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='mechanical counters enabled hw.mechanical_counters slot/themes/hardwareconfig.xml hardware'><td><strong>Mechanical counters enabled</strong></td><td><code>hw.mechanical_counters</code></td><td>HardwareConfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='check mechanical counters ready hw.mechanical_counters_ready slot/themes/hardwareconfig.xml hardware'><td><strong>Check mechanical counters ready</strong></td><td><code>hw.mechanical_counters_ready</code></td><td>HardwareConfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='coin acceptor enabled hw.coin_enabled slot/themes/hardwareconfig.xml hardware'><td><strong>Coin acceptor enabled</strong></td><td><code>hw.coin_enabled</code></td><td>HardwareConfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='aes enabled hw.aes_enabled slot/themes/hardwareconfig.xml hardware'><td><strong>AES enabled</strong></td><td><code>hw.aes_enabled</code></td><td>HardwareConfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='tower lamp enabled hw.tower_enabled slot/themes/hardwareconfig.xml hardware'><td><strong>Tower lamp enabled</strong></td><td><code>hw.tower_enabled</code></td><td>HardwareConfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='tower lamp report for all hw.tower_lamp_report_all slot/themes/hardwareconfig.xml hardware'><td><strong>Tower lamp report for all</strong></td><td><code>hw.tower_lamp_report_all</code></td><td>HardwareConfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='door switches enabled hw.switches_enabled slot/themes/hardwareconfig.xml hardware'><td><strong>Door switches enabled</strong></td><td><code>hw.switches_enabled</code></td><td>HardwareConfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='button lights enabled hw.lights_enabled slot/themes/hardwareconfig.xml hardware'><td><strong>Button lights enabled</strong></td><td><code>hw.lights_enabled</code></td><td>HardwareConfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='led dim value hw.led_dim_value slot/themes/hardwareconfig.xml hardware'><td><strong>LED dim value</strong></td><td><code>hw.led_dim_value</code></td><td>HardwareConfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='ups battery warning percent hw.ups_battery_warning slot/themes/hardwareconfig.xml hardware'><td><strong>UPS battery warning percent</strong></td><td><code>hw.ups_battery_warning</code></td><td>HardwareConfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='ups time before shutdown (s) hw.ups_shutdown_seconds slot/themes/hardwareconfig.xml hardware'><td><strong>UPS time before shutdown (s)</strong></td><td><code>hw.ups_shutdown_seconds</code></td><td>HardwareConfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='note dispenser enabled hw.note_dispenser_enabled slot/themes/hardwareconfig.xml hardware'><td><strong>Note dispenser enabled</strong></td><td><code>hw.note_dispenser_enabled</code></td><td>HardwareConfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='hopper enabled hw.hopper_enabled slot/themes/hardwareconfig.xml hardware'><td><strong>Hopper enabled</strong></td><td><code>hw.hopper_enabled</code></td><td>HardwareConfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='coin diverter enabled hw.diverter_enabled slot/themes/hardwareconfig.xml hardware'><td><strong>Coin diverter enabled</strong></td><td><code>hw.diverter_enabled</code></td><td>HardwareConfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='set note denominations on acceptor hw.set_note_denominations slot/themes/hardwareconfig.xml hardware'><td><strong>Set note denominations on acceptor</strong></td><td><code>hw.set_note_denominations</code></td><td>HardwareConfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+</tbody></table>
+<h3 id="g-dallas">Dallas <span class="count">8</span></h3>
+<table class='catalog'><thead><tr>
+<th>Setting</th><th>Id</th><th>File</th><th>In CS pack</th><th>Role</th></tr></thead><tbody>
+<tr class='probe' data-role='probe' data-q='dallas insert-credits values dallas.insert_credits slot/themes/hardwareconfig.xml dallas'><td><strong>Dallas insert-credits values</strong></td><td><code>dallas.insert_credits</code></td><td>HardwareConfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='write' data-role='write' data-q='dallas key codes dallas.key_codes slot/themes/hardwareconfig.xml dallas'><td><strong>Dallas key codes</strong><div class="note">List of Code values under Permissions/DallasKey.</div></td><td><code>dallas.key_codes</code></td><td>HardwareConfig.xml</td><td>Usually shipped</td><td><span class='badge write'>Compared and can be written</span></td></tr>
+<tr class='probe' data-role='probe' data-q='igt key enable dallas.igt_key_enable slot/themes/hardwareconfig.xml dallas'><td><strong>IGT key enable</strong></td><td><code>dallas.igt_key_enable</code></td><td>HardwareConfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='nfc key enable dallas.nfc_enable slot/themes/hardwareconfig.xml dallas'><td><strong>NFC key enable</strong></td><td><code>dallas.nfc_enable</code></td><td>HardwareConfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='key-stick enable dallas.keystick_enable slot/themes/hardwareconfig.xml dallas'><td><strong>Key-stick enable</strong></td><td><code>dallas.keystick_enable</code></td><td>HardwareConfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='accounting by attendant dallas.accounting_by_attendant slot/themes/hardwareconfig.xml dallas'><td><strong>Accounting by attendant</strong></td><td><code>dallas.accounting_by_attendant</code></td><td>HardwareConfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='event log by attendant dallas.event_log_by_attendant slot/themes/hardwareconfig.xml dallas'><td><strong>Event log by attendant</strong></td><td><code>dallas.event_log_by_attendant</code></td><td>HardwareConfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='use internal dallas setup dallas.use_internal_setup slot/themes/hardwareconfig.xml dallas'><td><strong>Use internal Dallas setup</strong></td><td><code>dallas.use_internal_setup</code></td><td>HardwareConfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+</tbody></table>
+<h3 id="g-identity">Identity <span class="count">14</span></h3>
+<table class='catalog'><thead><tr>
+<th>Setting</th><th>Id</th><th>File</th><th>In CS pack</th><th>Role</th></tr></thead><tbody>
+<tr class='write' data-role='write' data-q='machine id template id.machine_id slot/themes/mgconfig.xml identity'><td><strong>Machine ID template</strong></td><td><code>id.machine_id</code></td><td>mgconfig.xml</td><td>Usually shipped</td><td><span class='badge write'>Compared and can be written</span></td></tr>
+<tr class='write' data-role='write' data-q='aurum network hostname id.network_hostname services/aurum/config/aurumsetup.xml identity'><td><strong>Aurum network hostname</strong></td><td><code>id.network_hostname</code></td><td>AurumSetup.xml</td><td>Usually shipped</td><td><span class='badge write'>Compared and can be written</span></td></tr>
+<tr class='probe' data-role='probe' data-q='aurum currency code id.aurum_currency_code services/aurum/config/aurumsetup.xml identity'><td><strong>Aurum currency code</strong></td><td><code>id.aurum_currency_code</code></td><td>AurumSetup.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='aurum currency base units id.aurum_base_units services/aurum/config/aurumsetup.xml identity'><td><strong>Aurum currency base units</strong></td><td><code>id.aurum_base_units</code></td><td>AurumSetup.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='aurum egm id template id.aurum_egm_id services/aurum/config/aurumsetup.xml identity'><td><strong>Aurum EGM id template</strong><div class="note">First EgmsDevices/EgmId (GCC_ST_!!MachineName!!_01).</div></td><td><code>id.aurum_egm_id</code></td><td>AurumSetup.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='cabinet serial template id.cabinet_serial_template services/aurum/config/aurumsetup.xml identity'><td><strong>Cabinet serial template</strong></td><td><code>id.cabinet_serial_template</code></td><td>AurumSetup.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='processor currency id id.processor_currency_id services/aurum/config/aurumsetup.xml identity'><td><strong>Processor currency id</strong></td><td><code>id.processor_currency_id</code></td><td>AurumSetup.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='processor locale id id.processor_locale services/aurum/config/aurumsetup.xml identity'><td><strong>Processor locale id</strong><div class="note">CS packs leave sl_SI for every country; consistency flags that leftover.</div></td><td><code>id.processor_locale</code></td><td>AurumSetup.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='processor currency base units id.processor_base_units services/aurum/config/aurumsetup.xml identity'><td><strong>Processor currency base units</strong></td><td><code>id.processor_base_units</code></td><td>AurumSetup.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='aurum currency base units name id.base_units_name services/aurum/config/aurumsetup.xml identity'><td><strong>Aurum currency base units name</strong></td><td><code>id.base_units_name</code></td><td>AurumSetup.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='processor egm alias id.egm_alias services/aurum/config/aurumsetup.xml identity'><td><strong>Processor EGM alias</strong></td><td><code>id.egm_alias</code></td><td>AurumSetup.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='stop when no communication id.stop_when_no_comm services/aurum/config/aurumsetup.xml identity'><td><strong>Stop when no communication</strong><div class="note">First communications device. Jamaica SAS leaves are true; Trinidad OL+SAS is false.</div></td><td><code>id.stop_when_no_comm</code></td><td>AurumSetup.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='cabinet type id.cabinet_type services/aurum/config/aurumsetup.xml identity'><td><strong>Cabinet type</strong><div class="note">e.g. SLOT_S2 / SLOT_S3.</div></td><td><code>id.cabinet_type</code></td><td>AurumSetup.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='write' data-role='write' data-q='aurum serviceuri template id.aurum_service_uri services/aurum/config/aurumsetup.xml identity'><td><strong>Aurum ServiceURI template</strong></td><td><code>id.aurum_service_uri</code></td><td>AurumSetup.xml</td><td>Usually shipped</td><td><span class='badge write'>Compared and can be written</span></td></tr>
+</tbody></table>
+<h3 id="g-aurum">Aurum <span class="count">13</span></h3>
+<table class='catalog'><thead><tr>
+<th>Setting</th><th>Id</th><th>File</th><th>In CS pack</th><th>Role</th></tr></thead><tbody>
+<tr class='probe' data-role='probe' data-q='aurumconfigurer currency aurum.conf_currency maintenance/config/configure-aurum.conf aurum'><td><strong>AurumConfigurer currency</strong><div class="note">Shipped Trinidad packs often leave Currency=USD here while HardwareConfig is TTD.</div></td><td><code>aurum.conf_currency</code></td><td>configure-aurum.conf</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='aurumconfigurer cabinet type aurum.conf_cabinet_type maintenance/config/configure-aurum.conf aurum'><td><strong>AurumConfigurer cabinet type</strong></td><td><code>aurum.conf_cabinet_type</code></td><td>configure-aurum.conf</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='aurumconfigurer game name aurum.conf_game_name maintenance/config/configure-aurum.conf aurum'><td><strong>AurumConfigurer game name</strong></td><td><code>aurum.conf_game_name</code></td><td>configure-aurum.conf</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='aurumconfigurer sas ports aurum.conf_sas_ports maintenance/config/configure-aurum.conf aurum'><td><strong>AurumConfigurer SAS ports</strong></td><td><code>aurum.conf_sas_ports</code></td><td>configure-aurum.conf</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='aurumconfigurer sas count aurum.conf_sas_count maintenance/config/configure-aurum.conf aurum'><td><strong>AurumConfigurer SAS count</strong></td><td><code>aurum.conf_sas_count</code></td><td>configure-aurum.conf</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='aurumconfigurer egm count aurum.conf_egm_count maintenance/config/configure-aurum.conf aurum'><td><strong>AurumConfigurer EGM count</strong></td><td><code>aurum.conf_egm_count</code></td><td>configure-aurum.conf</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='aurumconfigurer request timeout aurum.conf_reqtimeout maintenance/config/configure-aurum.conf aurum'><td><strong>AurumConfigurer request timeout</strong></td><td><code>aurum.conf_reqtimeout</code></td><td>configure-aurum.conf</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='aurumconfigurer tubo flag aurum.conf_tubo maintenance/config/configure-aurum.conf aurum'><td><strong>AurumConfigurer Tubo flag</strong><div class="note">Often empty even on OL+SAS leaves; TuboTicket service enable is aurum.svc_tubo.</div></td><td><code>aurum.conf_tubo</code></td><td>configure-aurum.conf</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='aurumconfigurer skip service check aurum.conf_skip_service_check maintenance/config/configure-aurum.conf aurum'><td><strong>AurumConfigurer skip service check</strong><div class="note">Shipped empty on every GameStar CS leaf mined from the lab share.</div></td><td><code>aurum.conf_skip_service_check</code></td><td>configure-aurum.conf</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='aurum sas adapter service enabled aurum.svc_sas services/aurum/aurumservicesconfig.xml aurum'><td><strong>Aurum SAS adapter service enabled</strong></td><td><code>aurum.svc_sas</code></td><td>AurumServicesConfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='aurum tubo ticket service enabled aurum.svc_tubo services/aurum/aurumservicesconfig.xml aurum'><td><strong>Aurum Tubo ticket service enabled</strong><div class="note">true on OL+SAS leaves; SAS-only packs may disable it.</div></td><td><code>aurum.svc_tubo</code></td><td>AurumServicesConfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='aurum progressive controller enabled aurum.svc_progressive services/aurum/aurumservicesconfig.xml aurum'><td><strong>Aurum progressive controller enabled</strong></td><td><code>aurum.svc_progressive</code></td><td>AurumServicesConfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+<tr class='probe' data-role='probe' data-q='aurum scripting service enabled aurum.svc_scripting services/aurum/aurumservicesconfig.xml aurum'><td><strong>Aurum scripting service enabled</strong></td><td><code>aurum.svc_scripting</code></td><td>AurumServicesConfig.xml</td><td>Usually shipped</td><td><span class='badge probe'>Compared only</span></td></tr>
+</tbody></table>
+<h3 id="g-audio">Audio <span class="count">1</span></h3>
+<table class='catalog'><thead><tr>
+<th>Setting</th><th>Id</th><th>File</th><th>In CS pack</th><th>Role</th></tr></thead><tbody>
+<tr class='probe' data-role='probe' data-q='master volume level audio.master_volume bios/etc/application/system/soundvolume.xml audio'><td><strong>Master volume level</strong><div class="note">TT-00 ships this; many TRI leaves omit it.</div></td><td><code>audio.master_volume</code></td><td>soundvolume.xml</td><td>Only if that pack has the file</td><td><span class='badge probe'>Compared only</span></td></tr>
+</tbody></table>
+<h3 id="g-buttons">Buttons <span class="count">1</span></h3>
+<table class='catalog'><thead><tr>
+<th>Setting</th><th>Id</th><th>File</th><th>In CS pack</th><th>Role</th></tr></thead><tbody>
+<tr class='write' data-role='write' data-q='keyboard button mappings buttons.keyboard_map slot/hwdrivers/keyboard.xml buttons'><td><strong>Keyboard button mappings</strong><div class="note">TRI-00 OL+SAS omits Keyboard.xml; JAM/PR/PANC-02/TRI-01/TT CS leaves ship it.</div></td><td><code>buttons.keyboard_map</code></td><td>Keyboard.xml</td><td>Only if that pack has the file</td><td><span class='badge write'>Compared and can be written</span></td></tr>
+</tbody></table>
+
+<footer>
+  Config Scanner internal briefing. Counts and labels are taken from
+  <code>config_scanner/setting_spec.py</code>. Open this file in a browser; no network required.
+</footer>
+</div>
+<script>
+let FILTER = "all";
+function setFilter(mode) {
+  FILTER = mode;
+  document.getElementById("f-all").classList.toggle("active", mode === "all");
+  document.getElementById("f-write").classList.toggle("active", mode === "write");
+  document.getElementById("f-probe").classList.toggle("active", mode === "probe");
+  filterRows();
+}
+function filterRows() {
+  const q = (document.getElementById("q").value || "").toLowerCase().trim();
+  document.querySelectorAll("table.catalog tbody tr").forEach((tr) => {
+    const role = tr.getAttribute("data-role");
+    const hay = tr.getAttribute("data-q") || "";
+    const okRole = FILTER === "all" || role === FILTER;
+    const okQ = !q || hay.indexOf(q) !== -1;
+    tr.classList.toggle("hidden", !(okRole && okQ));
+  });
+}
+</script>
+</body>
+</html>

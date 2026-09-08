@@ -23,7 +23,7 @@ param(
     [string] $SettingsDll = 'C:\Goldclub\bin\lib\GoldClub.Settings.dll',
     [string] $Keyword = 'settings',
     [switch] $WhatIf,
-    # Decrypt to stdout only (no PlainPath write) — used by LogInvestigator AI Helper.
+    # Decrypt to stdout only (no PlainPath write) - used by LogInvestigator AI Helper.
     [switch] $Stdout
 )
 
@@ -133,7 +133,7 @@ function Invoke-Decrypt {
         Write-PlainTree -XmlSettings $xml -Path '' -Sb $sb -Depth 0
         $text = $sb.ToString()
         if ($Stdout) {
-            # No disk write — AI Helper / callers capture stdout only.
+            # No disk write - AI Helper / callers capture stdout only.
             [Console]::Out.Write($text)
             return
         }

@@ -26,6 +26,6 @@ SHA1 snapshots of GoldClub **config** for QA diff and restore. This repo is the 
 ## Scan scope
 
 - Roulette: `config\`, `bios\etc\`, `data\` — build tag from `ruleta\BuildVersion.txt`
-- Slot (`slot_lab_90`): slot root + hwdrivers + languages + themes/*.xml only
+- Slot (`slot_lab_90`): B2U software+config on a fresh Slot image — slot root + hwdrivers + languages + theme overlay (`mgconfig.xml`, `HardwareConfig.xml`, `jurisdiction_config.xml`, `MathSettings.xml`, `config_SetClear*.xml`, `themes/data` gameselector XML) + bios/etc (`oticket.xml`, `checksum.sha1`) + `bios/License` + `Licenses` + `services` + `maintenance/config` + `platform/user/init`. Full snapshot software copies binaries/licence/hardware and that same overlay, never `themes/` game assets.
 
-Read **`config-scanner/AGENT.md`**. Slot auto-adapt (OneHand / mgconfig / themes) is the next structural work.
+Read **`config-scanner/AGENT.md`**.

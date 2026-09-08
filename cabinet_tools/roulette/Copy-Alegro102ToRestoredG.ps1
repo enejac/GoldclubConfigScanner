@@ -94,9 +94,9 @@ function Mount-10_2Browse {
 
 function Ensure-BiwinG {
     $biwin = Get-Disk -ErrorAction SilentlyContinue | Where-Object { $_.FriendlyName -match 'BIWIN' } | Select-Object -First 1
-    if (-not $biwin) { throw 'BIWIN not visible — replug USB 2.0 port and rerun' }
+    if (-not $biwin) { throw 'BIWIN not visible - replug USB 2.0 port and rerun' }
     $num = [int]$biwin.Number
-    Log ("BIWIN disk $num — $($biwin.FriendlyName)")
+    Log ("BIWIN disk $num - $($biwin.FriendlyName)")
     if ($biwin.OperationalStatus -ne 'Online') {
         Invoke-DiskPart @("select disk $num", 'online disk noerr', 'attributes disk clear readonly noerr')
         Set-Disk -Number $num -IsOffline $false -ErrorAction SilentlyContinue
@@ -155,5 +155,5 @@ Reset-UsbMassStorage
 Mount-10_2Browse
 Ensure-BiwinG
 Copy-Payload
-Log '=== DONE — 10.2 VHDs copied to G:. Detach P: browse in Macrium when ready. ==='
+Log '=== DONE - 10.2 VHDs copied to G:. Detach P: browse in Macrium when ready. ==='
 exit 0

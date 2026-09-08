@@ -92,17 +92,40 @@ class RollbackDetails:
 
     version: str
     has_software: bool
+    profile_id: str | None = None
 
     @property
     def is_self_contained(self) -> bool:
         """True when reverting does not depend on a software_versions pack."""
         return self.has_software
 
-    def summary(self) -> str:
-        software = (
-            "config + Ruleta binaries" if self.has_software else "config only"
+    def summary(
+        self,
+        *,
+        game_kind: str | None = None,
+        restored_from: str | None = None,
+        snapshot_name: str | None = None,
+    ) -> str:
+        from config_scanner.egm_ui_labels import (
+            GameKind,
+            resolve_rollback_game_kind,
+            rollback_summary,
         )
-        return f"Ruleta {self.version or '?'}, {software}"
+
+        kind: GameKind
+        if game_kind in ("slot", "roulette"):
+            kind = game_kind  # type: ignore[assignment]
+        else:
+            kind = resolve_rollback_game_kind(
+                self.profile_id,
+                restored_from=restored_from,
+                snapshot_name=snapshot_name,
+            )
+        return rollback_summary(
+            self.version,
+            has_software=self.has_software,
+            kind=kind,
+        )
 
 
 def describe_rollback(
@@ -125,9 +148,11 @@ def describe_rollback(
     version = (
         build_info.exe_product_version or build_info.product_version or ""
     ).strip()
+    profile_id = (build_info.profile_id or "").strip() or None
     return RollbackDetails(
         version=version,
         has_software=snapshot_has_embedded_software(snap_dir),
+        profile_id=profile_id,
     )
 
 

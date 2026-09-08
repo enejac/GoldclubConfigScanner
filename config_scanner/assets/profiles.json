@@ -39,23 +39,32 @@
     {
       "id": "slot_lab_90",
       "label": "Slot",
-      "defaultTarget": "C:\\Goldclub\\slot",
+      "defaultTarget": "C:\\Goldclub",
       "discoverTargets": [
+        "C:\\Goldclub",
         "G:",
+        "G:\\Goldclub",
         "G:\\Goldclub\\slot",
         "C:\\Goldclub\\slot",
         "D:",
+        "D:\\Goldclub",
         "D:\\Goldclub\\slot",
+        "\\\\10.0.0.90\\c$\\Goldclub",
         "\\\\10.0.0.90\\c$\\Goldclub\\slot",
-        "\\\\10.0.0.90\\d$\\Goldclub\\slot"
+        "\\\\10.0.0.90\\d$\\Goldclub\\slot",
+        "\\\\10.0.0.111\\slot",
+        "\\\\10.0.0.111\\c$\\Goldclub"
       ],
       "buildVersionRelativePath": null,
       "buildFingerprint": {
         "type": "binary_sha1_prefix",
         "files": [
           "OneHand.exe",
+          "slot/OneHand.exe",
           "game-start.exe",
-          "GoldClub.Settings.dll"
+          "slot/game-start.exe",
+          "GoldClub.Settings.dll",
+          "slot/GoldClub.Settings.dll"
         ]
       },
       "scanRoots": [
@@ -74,6 +83,82 @@
         {
           "path": "themes",
           "recursive": false
+        },
+        {
+          "path": "slot",
+          "recursive": false
+        },
+        {
+          "path": "slot/hwdrivers",
+          "recursive": true
+        },
+        {
+          "path": "slot/languages",
+          "recursive": true
+        },
+        {
+          "path": "slot/themes",
+          "recursive": false
+        },
+        {
+          "path": "themes/data",
+          "recursive": true
+        },
+        {
+          "path": "slot/themes/data",
+          "recursive": true
+        },
+        {
+          "path": "maintenance",
+          "recursive": true
+        },
+        {
+          "path": "maintenance/config",
+          "recursive": true
+        },
+        {
+          "path": "platform",
+          "recursive": true
+        },
+        {
+          "path": "platform/user/init",
+          "recursive": true
+        },
+        {
+          "path": "bios/etc",
+          "recursive": true
+        },
+        {
+          "path": "bios/License",
+          "recursive": true
+        },
+        {
+          "path": "config",
+          "recursive": true
+        },
+        {
+          "path": "data",
+          "recursive": true
+        },
+        {
+          "path": "Licenses",
+          "recursive": true
+        },
+        {
+          "path": "services",
+          "recursive": true
+        },
+        {
+          "path": "Services",
+          "recursive": true
+        },
+        {
+          "path": "Services/aurum",
+          "recursive": true
+        },
+        {
+          "path": "services/aurum",
+          "recursive": true
         }
       ],
       "includePatterns": [
@@ -82,7 +167,46 @@
         "*.conf",
         "*.json",
         "*.dat",
-        "*.config"
+        "*.config",
+        "*.lic",
+        "*.xsd",
+        "*.sha1",
+        "*.md5",
+        "*.txt",
+        "*.ps1",
+        "*.cmd"
+      ],
+      "extraFileGlobs": [
+        "themes/*/MathSettings.xml",
+        "slot/themes/*/MathSettings.xml",
+        "themes/*/config_SetClear*.xml",
+        "slot/themes/*/config_SetClear*.xml",
+        "themes/*/*Math.json",
+        "slot/themes/*/*Math.json",
+        "themes/*/*Math*.json",
+        "slot/themes/*/*Math*.json",
+        "themes/*/ProgressiveSetup.xml",
+        "slot/themes/*/ProgressiveSetup.xml",
+        "themes/*/*.json",
+        "slot/themes/*/*.json",
+        "themes/jurisdiction_config.xml",
+        "slot/themes/jurisdiction_config.xml",
+        "themes/HardwareConfig.xml",
+        "slot/themes/HardwareConfig.xml",
+        "themes/mgconfig.xml",
+        "slot/themes/mgconfig.xml",
+        "Confirmation.txt",
+        "slot/Confirmation.txt",
+        "hello.txt",
+        "bios/etc/game-start/checksum.sha1",
+        "bios/etc/game-start/checksum.md5",
+        "bios/etc/game-start/list-game.sha1",
+        "licence.dll",
+        "slot/licence.dll",
+        "license.dll",
+        "slot/license.dll",
+        "Services/aurum/config/SASControler1/crcfileslist.txt",
+        "services/aurum/config/SASControler1/crcfileslist.txt"
       ]
     }
   ]

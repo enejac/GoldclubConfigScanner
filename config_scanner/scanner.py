@@ -387,6 +387,7 @@ def collect_scan_files(
     game_drive: Path,
     scan_roots: list[str] | list[ScanRootSpec],
     include_patterns: list[str],
+    extra_file_globs: list[str] | tuple[str, ...] | None = None,
 ) -> list[Path]:
     from config_scanner.path_mirror import select_highest_etc_mirror_paths
 
@@ -413,6 +414,34 @@ def collect_scan_files(
                 if path.is_file() and path not in seen:
                     seen.add(path)
                     files.append(path)
+
+    for glob_pat in extra_file_globs or ():
+        pattern = str(glob_pat).replace("\\", "/").lstrip("/")
+        if not pattern:
+            continue
+        try:
+            matches = game_drive.glob(pattern)
+        except (OSError, ValueError):
+            continue
+        for path in matches:
+            try:
+                if path.is_file() and path not in seen:
+                    seen.add(path)
+                    files.append(path)
+            except OSError:
+                continue
+
+    # Theme math by filename (any game folder). Globs above miss a rename
+    # depth or *Math_Config2.json; this walk never names a game path.
+    from config_scanner.theme_math import iter_theme_math_files
+
+    for path in iter_theme_math_files(game_drive):
+        try:
+            if path.is_file() and path not in seen:
+                seen.add(path)
+                files.append(path)
+        except OSError:
+            continue
 
     # config/etc and bios/etc are the same settings tree — keep highest path only.
     rel_to_path = {_relative_path(game_drive, path): path for path in files}
@@ -461,7 +490,12 @@ def build_manifest(
     include_patterns = profile.include_patterns if profile else config.include_patterns
     parallel_workers = profile.parallel_workers if profile else config.parallel_workers
     started = time.perf_counter()
-    files = collect_scan_files(drive_path, scan_roots, include_patterns)
+    files = collect_scan_files(
+        drive_path,
+        scan_roots,
+        include_patterns,
+        extra_file_globs=profile.extra_file_globs if profile else None,
+    )
 
     def hash_one(path: Path) -> tuple[FileEntry, bytes | None]:
         entry, archive_bytes = _hash_file(path)

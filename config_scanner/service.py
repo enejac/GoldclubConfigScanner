@@ -125,8 +125,10 @@ def scan_scope_zero_diff_hint(
         )
     if pid == "slot_lab_90" or "slot" in label.casefold():
         return (
-            "The game change may be outside scan scope (only top-level slot XML/INI; "
-            "not var\\state or nested theme assets). Re-scan after the file is saved to disk."
+            "The game change may be outside scan scope (Slot B2U overlay: "
+            "hwdrivers, mgconfig, HardwareConfig, MathSettings, Licenses, "
+            "bios\\etc checksums, maintenance\\config; not theme game assets "
+            "or var\\state). Re-scan after the file is saved to disk."
         )
     scope = label or pid or "this profile"
     return (
@@ -156,6 +158,8 @@ class CompareResult:
     summary: dict[str, int]
     file_diffs: list[FileDiff]
     warnings: tuple[str, ...] = ()
+    licence_changed: bool = False
+    licence_change_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -458,11 +462,21 @@ class ConfigScannerService:
             )
         return order_snapshots_newest_first(rows)
 
+    def game_kind_for_target(self, scan_target: str | None = None) -> str:
+        """'slot' or 'roulette' for the active profile / live tree."""
+        from config_scanner.egm_ui_labels import resolve_game_kind
+
+        return resolve_game_kind(
+            profile_id=self.profile.id,
+            scan_target=(scan_target or "").strip() or None,
+        )
+
     def run_scan(
         self,
         scan_target: str | None = None,
         *,
         include_software: bool = False,
+        snapshot_tag: str | None = None,
     ) -> ScanResult:
         resolved_target = self.prepare_for_target(scan_target)
         scan_timestamp = resolve_snapshot_datetime()
@@ -474,6 +488,8 @@ class ConfigScannerService:
         manifest, content_overrides = build_manifest(
             resolved_target, self.config, profile=self.profile
         )
+        from config_scanner.build_version import _safe_folder_token
+
         base_name = snapshot_folder_name(
             build_info.build_number,
             scan_timestamp,
@@ -482,6 +498,9 @@ class ConfigScannerService:
             exe_product_version=build_info.exe_product_version,
             machine_serial=build_info.machine_serial,
         )
+        tag = _safe_folder_token(snapshot_tag, fallback="") if snapshot_tag else ""
+        if tag:
+            base_name = f"{base_name}_{tag}"
         snapshot_name, snapshot_dir = allocate_snapshot_dir(
             snapshots_path(self.root),
             base_name,
@@ -496,10 +515,23 @@ class ConfigScannerService:
         save_json(snapshot_dir / "build-info.json", build_info_to_dict(build_info))
         save_json(snapshot_dir / "manifest.json", manifest_to_dict(manifest))
         from config_scanner.build_version import scan_target_path
-        from roulette_trial import capture_trial_state_for_rollback
 
+        # ruleta/persistent LLAVE tokens do not exist on a slot cabinet; capturing
+        # them there only produces "was absent on machine" noise in the scan log.
+        if self.game_kind_for_target(resolved_target) != "slot":
+            from roulette_trial import capture_trial_state_for_rollback
+
+            try:
+                capture_trial_state_for_rollback(
+                    scan_target_path(resolved_target),
+                    snapshot_dir,
+                )
+            except OSError:
+                pass
         try:
-            capture_trial_state_for_rollback(
+            from config_scanner.slot_licence import capture_licence_state_for_rollback
+
+            capture_licence_state_for_rollback(
                 scan_target_path(resolved_target),
                 snapshot_dir,
             )
@@ -509,11 +541,9 @@ class ConfigScannerService:
         software_count = 0
         software_ok = False
         if include_software:
-            from config_scanner.software_compat import (
-                capture_ruleta_software_into_snapshot,
-            )
+            from config_scanner.software_compat import capture_software_into_snapshot
 
-            captured = capture_ruleta_software_into_snapshot(
+            captured = capture_software_into_snapshot(
                 resolved_target, snapshot_dir
             )
             software_count = captured.file_count
@@ -559,11 +589,15 @@ class ConfigScannerService:
             warnings.append(f"Baseline: {note}")
         for note in target_manifest.warnings:
             warnings.append(f"Target: {note}")
+        from config_scanner.egm_ui_labels import (
+            encrypted_setup_noun,
+            game_kind_from_profile_id,
+        )
         from config_scanner.xml_diff import is_encrypted_origin_config_path
 
-        for label, man, snap_dir in (
-            ("Baseline", baseline_manifest, baseline_dir),
-            ("Target", target_manifest, target_dir),
+        for label, man, snap_dir, info in (
+            ("Baseline", baseline_manifest, baseline_dir, baseline_info),
+            ("Target", target_manifest, target_dir, target_info),
         ):
             bad = [
                 e.relative_path
@@ -571,8 +605,11 @@ class ConfigScannerService:
                 if e.decrypt_ok is False
             ]
             if bad:
+                noun = encrypted_setup_noun(
+                    game_kind_from_profile_id(info.profile_id)
+                )
                 warnings.append(
-                    f"{label} hashed ciphertext for live ruleta setup "
+                    f"{label} hashed ciphertext for live {noun} "
                     f"({', '.join(bad[:3])}{'…' if len(bad) > 3 else ''}) — "
                     "setting changes may be invisible."
                 )
@@ -608,6 +645,13 @@ class ConfigScannerService:
                     "paths only on one side). Confirm both snapshots use the same profile "
                     "and scan scope before trusting added/removed counts."
                 )
+        try:
+            from config_scanner.slot_licence import compare_slot_licence_between_snapshots
+
+            licence_cmp = compare_slot_licence_between_snapshots(baseline_dir, target_dir)
+            warnings.extend(licence_cmp.warnings)
+        except (OSError, ValueError, TypeError):
+            pass
         return warnings
 
     def snapshot_apply_warnings(
@@ -974,11 +1018,36 @@ class ConfigScannerService:
         from roulette_trial import capture_trial_state_for_rollback
 
         resolved = self.prepare_for_target(scan_target)
+        if self.game_kind_for_target(resolved) == "slot":
+            return []
         dest = scan_target_path(resolved)
         snap_dir = snapshots_path(self.root) / snapshot_name
         if not snap_dir.is_dir():
             raise FileNotFoundError(f"Snapshot not found: {snapshot_name}")
         return capture_trial_state_for_rollback(dest, snap_dir)
+
+    def restore_slot_licence_from_snapshot(
+        self,
+        snapshot_name: str,
+        scan_target: str | None = None,
+    ) -> list[str]:
+        """Explicitly restore slot licence XML/dll from a snapshot (overwrites live)."""
+        from config_scanner.build_version import read_machine_serial_from_target, scan_target_path
+        from config_scanner.scanner import load_build_info
+        from config_scanner.slot_licence import restore_slot_licence_from_snapshot
+
+        resolved = self.prepare_for_target(scan_target)
+        snap_dir = snapshots_path(self.root) / snapshot_name
+        if not snap_dir.is_dir():
+            raise FileNotFoundError(f"Snapshot not found: {snapshot_name}")
+        build_info = load_build_info(snap_dir)
+
+        return restore_slot_licence_from_snapshot(
+            scan_target_path(resolved),
+            snap_dir,
+            live_serial=read_machine_serial_from_target(resolved),
+            snapshot_serial=(build_info.machine_serial or "").strip() or None,
+        )
 
     def apply_snapshot_to_target(
         self,
@@ -1363,6 +1432,33 @@ class ConfigScannerService:
         removed.extend(clear_trial_persistent(dest))
         return removed
 
+    def diagnose_cabinet(
+        self,
+        scan_target: str | None = None,
+        *,
+        progress=None,
+    ):
+        """Check the live cabinet against the known faults in cabinet_repairs."""
+        from config_scanner.cabinet_repairs import build_context, diagnose_cabinet
+
+        resolved = self.prepare_for_target(scan_target)
+        ctx = build_context(resolved, self.game_kind_for_target(resolved))
+        return diagnose_cabinet(ctx, progress=progress)
+
+    def repair_cabinet(
+        self,
+        repair_ids,
+        scan_target: str | None = None,
+        *,
+        progress=None,
+    ):
+        """Apply the named cabinet repairs (see docs/cabinet-repairs.md)."""
+        from config_scanner.cabinet_repairs import apply_repairs, build_context
+
+        resolved = self.prepare_for_target(scan_target)
+        ctx = build_context(resolved, self.game_kind_for_target(resolved))
+        return apply_repairs(ctx, list(repair_ids), progress=progress)
+
     def read_llave_challenge(self, scan_target: str | None = None):
         from config_scanner.llave_bind import read_llave_challenge
 
@@ -1543,6 +1639,14 @@ class ConfigScannerService:
                 f"No value to apply for {side} side of {change.path}"
             )
 
+        from config_scanner.machine_identity import (
+            is_jurisdiction_config_path,
+            normalize_jurisdiction_apply_value,
+        )
+
+        if is_jurisdiction_config_path(relative_path):
+            value = normalize_jurisdiction_apply_value(change.path, value)
+
         # Live application/ruleta/setup.xml is gcxml ciphertext — decrypt, patch, re-encrypt.
         from config_scanner.xml_diff import is_encrypted_origin_config_path
 
@@ -1584,7 +1688,17 @@ class ConfigScannerService:
         target_info = load_build_info(target_dir)
         baseline_manifest = load_manifest(baseline_dir)
         target_manifest = load_manifest(target_dir)
-        warnings = tuple(self.compare_warnings(baseline_snapshot, target_snapshot))
+        warnings = list(self.compare_warnings(baseline_snapshot, target_snapshot))
+        licence_changed = False
+        licence_change_count = 0
+        try:
+            from config_scanner.slot_licence import compare_slot_licence_between_snapshots
+
+            licence_cmp = compare_slot_licence_between_snapshots(baseline_dir, target_dir)
+            licence_changed = licence_cmp.changed
+            licence_change_count = len(licence_cmp.changes)
+        except (OSError, ValueError, TypeError):
+            pass
         file_diffs = compare_manifests(
             baseline_manifest,
             target_manifest,
@@ -1603,7 +1717,7 @@ class ConfigScannerService:
             file_diffs=file_diffs,
             template_path=template_path(self.root),
             output_path=report_file,
-            warnings=warnings,
+            warnings=tuple(warnings),
         )
         return CompareResult(
             baseline_snapshot=baseline_snapshot,
@@ -1611,5 +1725,7 @@ class ConfigScannerService:
             report_path=report_file,
             summary=change_summary(file_diffs),
             file_diffs=file_diffs,
-            warnings=warnings,
+            warnings=tuple(warnings),
+            licence_changed=licence_changed,
+            licence_change_count=licence_change_count,
         )

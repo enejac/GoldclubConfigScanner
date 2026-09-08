@@ -185,6 +185,67 @@ def error_border_color(palette: QPalette) -> QColor:
     return QColor(176, 0, 32) if surface_is_light(palette) else QColor(244, 71, 71)
 
 
+def live_match_field_stylesheet(palette: QPalette) -> str:
+    """Green tint for a control whose value is what the live cabinet is running.
+
+    Darker green on light themes, pastel green on dark — same pair as
+    ``text_success`` so Light / Dark / System stay readable.
+    """
+    light = surface_is_light(palette)
+    accent = text_success(palette)
+    if light:
+        bg = QColor(226, 245, 230)
+        fg = QColor(18, 90, 48)
+    else:
+        bg = blend_colors(palette.color(QPalette.ColorRole.Base), accent, 0.45)
+        fg = palette.color(QPalette.ColorRole.Text)
+    return (
+        f"background-color: {bg.name()}; "
+        f"color: {fg.name()}; "
+        f"border: 1px solid {accent.name()}; "
+        "border-radius: 4px;"
+    )
+
+
+def live_changed_field_stylesheet(palette: QPalette) -> str:
+    """Orange tint for an editable Live Push control that differs from the cabinet.
+
+    Uses the same warning/orange pair as ``text_warning`` for light/dark themes.
+    """
+    light = surface_is_light(palette)
+    accent = text_warning(palette)
+    if light:
+        bg = QColor(255, 241, 220)
+        fg = QColor(102, 58, 0)
+    else:
+        bg = blend_colors(palette.color(QPalette.ColorRole.Base), accent, 0.42)
+        fg = palette.color(QPalette.ColorRole.Text)
+    return (
+        f"background-color: {bg.name()}; "
+        f"color: {fg.name()}; "
+        f"border: 1px solid {accent.name()}; "
+        "border-radius: 4px;"
+    )
+
+
+def live_invalid_field_stylesheet(palette: QPalette) -> str:
+    """Red tint for a proposed value that fails Live Push validation."""
+    light = surface_is_light(palette)
+    accent = text_danger(palette)
+    if light:
+        bg = QColor(255, 235, 235)
+        fg = QColor(120, 20, 20)
+    else:
+        bg = blend_colors(palette.color(QPalette.ColorRole.Base), accent, 0.42)
+        fg = palette.color(QPalette.ColorRole.Text)
+    return (
+        f"background-color: {bg.name()}; "
+        f"color: {fg.name()}; "
+        f"border: 1px solid {accent.name()}; "
+        "border-radius: 4px;"
+    )
+
+
 def time_filter_active_stylesheet(palette: QPalette) -> str:
     """Active time-filter button tint — readable in light and dark themes."""
     light = surface_is_light(palette)

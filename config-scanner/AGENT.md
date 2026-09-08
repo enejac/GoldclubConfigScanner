@@ -38,7 +38,7 @@ Settings: scan target + profile persisted in QSettings (`config_scanner/game_dri
 | Profile | Scan target | Build tag | Scope |
 |---------|-------------|-----------|--------|
 | `roulette_usb` | `\\10.0.0.90\c$\Goldclub` (or local D:/G:) | `ruleta/BuildVersion.txt` | `config\**` |
-| `slot_lab_90` | `C:\Goldclub\slot` (or lab UNC) | SHA1 prefix of OneHand/game-start/Settings DLLs | slot root + hwdrivers + languages + themes/*.xml only |
+| `slot_lab_90` | `C:\Goldclub\slot` (or lab UNC) | SHA1 prefix of OneHand/game-start/Settings DLLs | B2U Slot update set: slot root + hwdrivers + languages + themes overlay (`mgconfig` / `HardwareConfig` / `MathSettings` / gameselector XML, not gamepack assets) + bios/etc + License.lic + Licenses + services/aurum + maintenance/config + platform onlogon serial map |
 
 Slot profile avoids scanning thousands of per-game theme assets under `themes\<Game>\`.
 

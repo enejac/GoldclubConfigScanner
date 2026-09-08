@@ -1,0 +1,158 @@
+---
+description: Slot GST22377 on 10.0.0.111 — fullstack boot, Aurum host, Dallas key
+alwaysApply: true
+---
+
+# Slot on 10.0.0.111 (GST22377)
+
+Live GOLDCLUB share: `\\10.0.0.111\slot` (`C:\goldclub`). Auth: workgroup **`10.0.0.111\test`** / `test` (`LabAccess.ps1`), not GOLD-CLUB\test.
+
+Windows hostname is **GST22377**. Overlay identity is still **GST20664** (`mgconfig` MachineID, Aurum EGM `GCC_ST_20664_01`, cabinet serial 20664). Do not copy another EGM’s licence XML/`licence.dll`. Do not edit serialport `layout.json` / `locations.json`.
+
+## Boot / OneHand `AurumEGM` NRE
+
+A Slot image can have **no GoldClub Windows services**. OneHand then dies in `AurumEGM..ctor`. `onlogon.ps1` must `Start-SlotFullStack` then `Start-StockGoldClubGame` (`Bootstrap.exe` in session 1). USB extras are optional.
+
+Winlogon **Shell=`eshell.exe`** (Embedded Shell Launcher). Custom shell is `OO_Security.ps1`. That command line may pass `-WorkingDirectory` as a *script* arg — `OO_Security.ps1` must `param([string]$WorkingDirectory)` or powershell exits and the screen stays black (`DefaultReturnCodeAction=3` = do nothing).
+
+`OO_Security.ps1` must **UnlockerDisk → sleep 30 → `G:\Bootstrap.exe` → onlogon from `G:\`**. Never touch `C:\goldclub` from the custom shell (BitLocker junction hangs → black screen). Do **not** plug the lab USB until the game is on screen (USB at POST = BSOD / reboot while Windows is loading). Copy **only** those two scripts onto SYSTEM (`Platform\Security\OO_Security.ps1`) and GOLDCLUB (`platform\user\init\onlogon.ps1`) over SMB. USB extras are optional after the game is up.
+
+## Never do this on this disk / EGM
+
+- `bcdboot`, `bcdedit`, EFI BCD, `bootx64.efi`
+- Load/unload `SYSTEM` / `SOFTWARE` hives, CrashControl, Winlogon Userinit, Shell Launcher registry
+- Macrium/Alegro restore onto this GameStar disk
+
+Aurum `--install` is modal; use `sc.exe create` only. Service `--install` must timeout so boot cannot hang.
+
+## `AurumEGM..ctor` NRE = AurumSetup host block (proven 31 Aug 2026)
+
+`AurumSetup.xml` `NetworkHostName` / `ServiceURI` / `MessengerURI` **must** be **GST22377**. A hosts alias (`127.0.0.1 GST20664`) is **not enough** — `AurumSetup.LoadSetup` picks the `<Network>` block by `[Environment]::MachineName`, so a `GST20664` block leaves `SelectedNetworkHostName=GST22377` with **no** configs:
+
+- Aurum service: `CRIT Exception: CONFIG FOR SASControler1 NOT FOUND!` at `GCMessenger.Init`, no listener on **50011**
+- OneHand: `AurumEGM..ctor` **NullReferenceException** -> `AurumEGM creation error` dialog
+
+Verify with the cabinet's own engine before/after:
+
+```powershell
+$t = ([Reflection.Assembly]::LoadFrom('G:\services\aurum\bin\lib\GoldClub.Aurum.Engine.dll')).GetTypes() |
+     Where-Object Name -eq 'AurumSetup'
+$a = [Activator]::CreateInstance($t)
+$t.GetMethod('LoadSetup', [Type[]]@([string], $t)).Invoke($null, @('G:\services\aurum\config\AurumSetup.xml', $a))
+$a.SelectedNetworkHostName; [bool]$a.Item('SASControler1')
+```
+
+Patch only the 4 `GST20664` host tokens (same byte length, in-place). Keep EGM id `GCC_ST_20664_01` and `CabinetSerialNumber` 20664. Backup: `AurumSetup.xml.bak-host-GST20664`. Healthy = **50010** (OneHand GM2AU) + **50011** (Aurum SAS host) listening and `Aurum EGM messenger created and started`.
+
+## RAM clear (licence change -> `RAMCLEAR REQUIRED`)
+
+Changing the slot licence makes OneHand raise `Object reference not set... RAMCLEAR REQUIRED` and `Trial expired with trial type ErrorRegistryDataNotFound`.
+
+`begin-ramclear.cmd` only drops `var\state\maintenance\invoke-task-ramclear` and reboots. The consumer is stock `platform\user\init\onlogon\05-04-CheckForRamClear.ps1`.
+
+**Correction (31 Aug 2026): that chain is NOT dead.** An earlier note here claimed `goldclub.init.1` was missing, `Initialize-Platform` failed and the whole onlogon.d chain was skipped. Wrong. `G:\var\log\onlogon.log` shows all 22 steps running to completion — `00-00` through `05-03-SetupGCServices`, `05-04-CheckForRamClear`, `16-SetFirewallRules`, `17-SetSerialPorts`, `50-Slot`, `90-StartServices`. The marker was unconsumed only because those boots never got past `UnlockerDisk` (`FATAL: G:\Bootstrap.exe missing`), so `Bootstrap.exe` never ran the chain at all.
+
+`Bootstrap.exe` is what drives it: it runs stock `G:\platform\user\init\onlogon.ps1` (a WinForms "Initializing Machine" splash) which calls `RunManteinanceTasks.1.ps1 -path ...\onlogon` and then starts the game. So `05-04` and `90-StartServices` are already covered on any boot that reaches Bootstrap; lab `Invoke-PendingRamClear` / `Start-SlotFullStack` are a **fallback**, not the normal path.
+
+To run a ramclear by hand (no `-nested`, so the runner builds its own `PSModulePath`/`Path`):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File G:\bin\RunManteinanceTasks.1.ps1 -path G:\maintenance\tasks\ramclear\
+```
+
+Backs up `slot\var` + aurum state + `bios\etc` to `var\state\maintenance\ramclear\backup\*.7z`, then empties `slot\var`, `var\state\OneHand`, `var\state\goldclub.aurum.services`, `services\aurum\var`. Leaves `Licenses\`, `licence.dll` and `HardwareConfig.xml` alone.
+
+## Black-screen boots are a PRIVILEGE problem, not a BitLocker race (proven 31 Aug 2026)
+
+`eshell` launches `OO_Security.ps1` as **`goldclub`** with a **UAC-filtered token**. `goldclub` *is* in the administrators group, which is why this looks like it should work, but the shell's token reports:
+
+```
+BUILTIN\Administrators   Alias   S-1-5-32-544   Group used for deny only
+```
+
+BitLocker unlock of a data volume needs a real admin token, so `UnlockerDisk.exe` **exits 0 and does nothing**. On the 12:11 boot the shell retried **18 times over 8 minutes** and never unlocked `G:`; a single elevated run unlocked it in ~5 s. Verified with a controlled pair of scheduled tasks (`/RL LIMITED` -> `elevated=False`, deny-only; `/RL HIGHEST` -> `elevated=True`).
+
+Do **not** add more retries to the shell. The unlock belongs to an **AtStartup task running as SYSTEM**:
+
+- `Install-GoldClubBootTasks.ps1` (run once, elevated) registers `GoldClub-Unlock-Volume` and `GoldClub-Clear-MuxGhosts`, `/SC ONSTART /RU SYSTEM /RL HIGHEST`, and stages `devcon.exe` to `C:\Platform\Security\` (G: is still locked when the MUX task runs).
+- `Unlock-GoldClubVolume.ps1` exits immediately with code 2 if not elevated rather than spinning.
+- `OO_Security.ps1` logs `shell token elevated=<bool>`, kicks the task, waits up to 12 minutes, and **never returns without starting the game** - the old code slept 600 s and gave up, which is why the 12:11 boot stayed black even after `G:` unlocked later.
+
+## Boot order in `OO_Security.ps1` (31 Aug 2026)
+
+1. Unlock `G:` (retry loop).
+2. `G:\Bootstrap.exe` — the **only** unconditional game start. It owns the stock chain (services + ramclear + serial ports + game).
+3. `Start-LabDesktop.ps1 -PollForUsb` async — USB extras only, exits by itself with no USB. Identical line whether or not the stick is in.
+4. Fallback **only** if no game process after 180 s: `Start-GoldClubHardware.ps1` + `onlogon.ps1 -StackOnly`, then one Bootstrap retry.
+
+Do **not** start `onlogon.ps1` / the stack alongside Bootstrap. That ran every step twice and raced `17-SetSerialPorts` against `90-StartServices`.
+
+### Two encoding/logging traps
+
+- These `.ps1` must be **pure ASCII**. They have no BOM, so PowerShell 5.1 reads them as ANSI and a single em dash (`U+2014`) in a comment or string breaks the parse. The copy deployed 31 Aug 09:55 had 12 non-ASCII bytes and **11 parse errors** — it would have black-screened the next boot. `tests/test_onlogon_totalcmd.py::test_boot_scripts_are_ascii_for_powershell_51` guards this.
+- Lab `onlogon.ps1` logs to `G:\var\log\onlogon-lab.log`, **not** `onlogon.log`. The stock chain writes the latter with `Tee-Object`, which truncates, so shared use silently wiped the timestamped lab lines and made it impossible to date a `17-SetSerialPorts` entry.
+
+Residual lab state after all of the above was `Locked by Host. NO SAS COMMUNICATIONS!`.
+
+**Superseded 31 Aug 2026.** An earlier note here read "no SAS poller on 31100 (CommCtrlSAS listens 40000) -> expected in lab, no SAS host on the net". That was wrong on both counts: nothing was listening on 31100 because CommCtrlSAS could not open COM11 (a ghost node owned it), and once it could, the lock cleared on its own with no host added to the lab network. See the MUX section below. Still true: do **not** "fix" this by rewriting serialport maps.
+
+## MUX lands on COM14, never COM11 — the board's USB serial is not stable
+
+Config is correct and consistent: `maintenance\config\serialports.conf` and `platform\user\init\onlogon\Serial\USBtoSerialPorts.conf` both map `[Port_#0003.Hub_#0003]` → `PortNumber=11`, `FriendlyName=MUX/SAS`, and `bios\etc\application\CommCtrlSAS\CommControler.ini` is `<11> <921600>`. Nothing in the image or the CountrySelector sets COM14.
+
+The cause is the **MUX board itself: it does not report a stable USB serial number**. A healthy STM32 VCP derives its serial from the chip's immutable unique ID, so it is identical on every enumeration. This one is not, so Windows creates a new device node per identity, each keeping its own COM. Registry under `Enum\USB\VID_0483&PID_5740` held **six instances at the same physical location** `Port_#0003.Hub_#0003`:
+
+| serial | COM | present |
+|---|---|---|
+| `207C39555241` | COM3 | no |
+| `206237634741` | COM10 | no |
+| `2062375B4741` | **COM11** (`MUX/SAS (COM:11)`) | no |
+| `206937794741` | COM12 | no |
+| `205E31524B42` | COM13 | no |
+| `206139555241` | **COM14** (`USB Serial Device`) | **yes** |
+
+**It is not `17-SetSerialPorts.ps1`.** An earlier note here blamed that script's `devcon disable` / `enable` for minting new serials. `C:\Windows\INF\setupapi.dev.log` disproves it: only five identities were created in fourteen months (2025/07/03, 2025/10/31, 2026/05/28, 2026/06/30, 2026/08/30), clustered on **power events** — the 31 Oct one landed one second after an unexpected shutdown. The three boots on 31 Aug ran that script each time and created none. The board also *reuses* old identities: the 09:46 boot enumerated as `206937794741`, the 12:11 boot as `206139555241`.
+
+Consequence: `CommCtrlSAS` cannot open COM11 (a ghost holds the reservation) so it only listens on its control port **40000**; generic `CommCtrl` picks the live board up on COM14 and exposes it at **31400** at the wrong baud; Aurum's `SASControler1` dials `localhost:31100`, finds nothing, and `LockGameWhenNoComms=true` locks the game.
+
+**Why a reboot sometimes "fixes" SAS:** it is a ~1-in-6 lottery. Only `2062375B4741` ever carried `PortName=COM11` + `MUX/SAS (COM:11)`. If a cold boot happens to bring the board up as that identity, CommCtrlSAS opens COM11 and SAS works; any other identity and it lands on COM3/10/12/13/14 and SAS is dead.
+
+### Fix applied 31 Aug 2026
+
+`Clear-MuxGhostPorts.ps1`, run as SYSTEM from the AtStartup task `GoldClub-Clear-MuxGhosts`, removes the **non-present** `VID_0483&PID_5740` nodes with `devcon remove` before the stock chain reaches `17-SetSerialPorts`, so COM11 is free and the assignment sticks. Guards: only that hardware ID, only ghosts, refuses to act when no MUX is present, never releases a COM a live port uses, and keeps the documented GoldClub numbers (3/4/6/7) reserved. `pnputil` on 1809 (17763) has no `/remove-device`, hence devcon.
+
+First run removed all five ghosts; reservations went from `2,3,4,5,6,7,8,9,10,11,12,13,14` to `2,4,5,6,7,8,9,14` with the live board untouched on COM14. Note the device removal releases the ComDB bit itself, so the preserve list only skips the *explicit* clear.
+
+### Verified end to end, no reboot (31 Aug 2026 13:06)
+
+With COM11 free, stock `17-SetSerialPorts.ps1` run standalone (it uses absolute `C:\Goldclub\...` paths, so it needs no task runner) reassigned the **live** node `206139555241` to COM11 + `MUX/SAS (COM:11)`, and **created no new ghost** — further proof the warm disable/enable does not change the serial.
+
+`devcon` reported *"Disabled on reboot ... requires reboot to complete"* because CommCtrl held the port open. Releasing it first is what avoids a reboot:
+
+1. Stop `GoldClub Serial Communication Gateway SAS`, then `GoldClub Serial Communication Gateway`.
+2. `devcon disable` / `devcon enable` the live MUX instance.
+3. Start both services again.
+
+Result: `SERIALCOMM \Device\USBSER000 = COM11`, CommCtrlSAS listening on **31100** *and* 40000 (same PID), the bogus **31400** gone, and `127.0.0.1:31100 ESTABLISHED` from the Aurum process. The SAS messenger log started cycling `qGST20664:80/:81` general polls.
+
+OneHand then cleared the lock by itself:
+
+```
+13:06:11 Lock item removed: OnlineLock
+13:06:11 Information item removed: 'Locked by Host. NO SAS COMMUNICATIONS!'
+13:06:11 Information item added:   'Unlocked by Host.'
+13:06:14 Slot unlocked
+13:06:16 'Select A Game'
+```
+
+So `NO SAS COMMUNICATIONS` on this cabinet was **only** the COM11 ghost, not a missing lab SAS host as previously assumed here.
+
+This makes the COM assignment deterministic, but the unstable serial is still a **board-level fault** — the real fix is reflashing or replacing the MUX. **Do not** edit `layout.json` / `locations.json`.
+
+## Dallas key (HardwareConfig)
+
+Physical iButton on this cabinet: **`01D68A721B000019`** (SlotLog `Dallas code received`). Official store is `slot\themes\HardwareConfig.xml` → `DallasKeySettings/Permissions` as **Service**, `Unlock=true`.
+
+`0100000000000282` is the shipped **IGTKeyAudit** placeholder (`Keyboard.xml`), not the stick. `mgconfig.xml` has no Dallas section when HardwareConfig exists. Cloud UniversalDallas is unreachable in lab (TLS) — local Permissions is what matters.
+
+`onlogon` `Ensure-SlotDallasKey` re-inserts `01D68A721B000019` if an overlay drops it. Re-apply after ramclear/B2U if HardwareConfig is replaced.

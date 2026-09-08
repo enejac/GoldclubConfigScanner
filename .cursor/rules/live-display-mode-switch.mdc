@@ -1,0 +1,38 @@
+# Live display mode switch (2 ↔ 3 screens)
+
+## What switches
+
+Country Selector **Gamestar 2 Screens** vs **Gamestar 3 Screens** leaves differ only in seven `slot/themes/mgconfig.xml` path elements:
+
+- `EffectSettingsFile`, `GameSelectorSettingsFile`, `GameSelectorDefaultSettingsFile`, `GameCatalogSettingsFile`, `ResidualSpinPath`, `MagicWheelPath`, `InfoScreenSharedPath`
+
+Live Push patches those paths in place (`config_scanner/slot_setup.py`: `patch_mgconfig_display_mode`). It does **not** copy the full Country Selector overlay.
+
+## Seamless apply
+
+1. **Stop OneHand first** — Live Push already kills the slot stack before writing. Never run `Set-ScreenLayout.ps1` or `ChangeDisplaySettingsEx` on a running game (SlimDX device lost → forced restart).
+2. Patch `mgconfig.xml`, then start `Bootstrap.exe`.
+3. **Asset check** — before write, `missing_display_mode_assets()` verifies the target `_3Screens` / `2_Screens` theme files exist under `slot/themes/`. If missing, apply aborts; use a full Country Selector 3 Screens leaf once to seed assets.
+
+## Windows desktop vs game config
+
+- **mgconfig** = which UI assets OneHand loads (2 vs 3 screen layouts).
+- **Windows monitor stack** = `bios/etc/application/configuredisplays/config.xml` + onlogon display chain. A 3-screen mgconfig on a horizontal extended desktop still shows black top panels until stock display config is correct (one-time EGM fix — not recurring lab `Set-ScreenLayout` at logon).
+
+## Verified on GST22377 / 10.0.0.111 (Sep 2 2026)
+
+- Live mode was **3-screen**; all `_3Screens` and 2-screen theme assets present on share.
+- Round-trip **3→2→3** via Live Push: mgconfig paths swap, Bootstrap restarts, InfoScreen canvas height **3240 ↔ 2160**.
+- **Not modified:** `bios/etc/application/configuredisplays/config.xml` (`Y`: 0, -1080, -2160), `OneHand.exe.config` (`starty=-2160`, 1920×1080 window).
+- Coordinate layouts live in separate theme files (`2_Screens_GSC_Settings.xml` vs `3_Screens_GSC_Settings.xml`); mgconfig only retargets pointers.
+
+Probe / test on cabinet:
+
+```powershell
+net use \\10.0.0.111\slot /user:10.0.0.111\test test
+py -3 scripts\probe_display_switch.py --target "\\10.0.0.111\slot"
+py -3 scripts\probe_display_switch.py --target "\\10.0.0.111\slot" --round-trip --backup
+```
+
+- **`TargetMarket=TT` crash** — see rule `mgconfig-targetmarket-tt.mdc`. Never write `TT` to mgconfig; `jurisdiction_config` `<Tag>TT</Tag>` must not be mirrored into `TargetMarket`. Display-only Live Push must not re-run locale patch.
+- Do not edit serialport `layout.json` / `locations.json` for display issues.

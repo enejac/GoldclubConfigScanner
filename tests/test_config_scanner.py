@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -19,7 +20,7 @@ from config_scanner.build_version import (
     resolve_scan_for_target,
     snapshot_folder_name,
 )
-from config_scanner.paths import _migrate_legacy_nested_layout, _resolve_tool_root
+from config_scanner.paths import _migrate_legacy_nested_layout, _resolve_tool_root, tool_root
 from config_scanner.profiles import get_profile, load_profiles
 from config_scanner.scanner import (
     FileEntry,
@@ -101,9 +102,28 @@ def test_normalize_scan_target_unc() -> None:
 
 def test_slot_profile_definition() -> None:
     profile = get_profile("slot_lab_90")
-    assert profile.default_target == r"C:\Goldclub\slot"
+    assert profile.default_target == r"C:\Goldclub"
     assert "G:" in profile.discover_targets
     assert any(root.path == "themes" and not root.recursive for root in profile.scan_roots)
+    assert any(root.path == "slot/themes" and not root.recursive for root in profile.scan_roots)
+    assert any(root.path == "themes/data" and root.recursive for root in profile.scan_roots)
+    assert any(root.path == "slot/themes/data" and root.recursive for root in profile.scan_roots)
+    assert any(root.path == "maintenance/config" and root.recursive for root in profile.scan_roots)
+    assert any(root.path == "platform/user/init" and root.recursive for root in profile.scan_roots)
+    assert any(root.path == "bios/etc" and root.recursive for root in profile.scan_roots)
+    assert any(root.path == "bios/License" and root.recursive for root in profile.scan_roots)
+    assert any(root.path == "Licenses" and root.recursive for root in profile.scan_roots)
+    assert "*.sha1" in profile.include_patterns
+    assert "*.txt" in profile.include_patterns
+    assert "slot/themes/*/MathSettings.xml" in profile.extra_file_globs
+    assert "themes/*/config_SetClear*.xml" in profile.extra_file_globs
+    assert "slot/themes/*/*Math*.json" in profile.extra_file_globs
+    assert all(
+        "link2win" not in glob_pat.casefold() and "tutankhamen" not in glob_pat.casefold()
+        for glob_pat in profile.extra_file_globs
+    )
+    assert "slot/Confirmation.txt" in profile.extra_file_globs
+    assert any(root.path.casefold() == "services" for root in profile.scan_roots)
 
 
 def test_unified_scan_candidates_local_before_unc() -> None:
@@ -128,7 +148,92 @@ def test_scan_target_is_valid_slot_fingerprint(tmp_path: Path) -> None:
     for name in ("OneHand.exe", "game-start.exe", "GoldClub.Settings.dll"):
         (slot_root / name).write_bytes(b"data")
     assert scan_target_is_valid(profile, str(slot_root)) is True
+    assert scan_target_is_valid(profile, str(tmp_path)) is True
     assert scan_target_is_valid(profile, str(tmp_path / "missing")) is False
+
+
+def test_collect_scan_files_includes_mgconfig_hardware_licence_not_gamepack(
+    tmp_path: Path,
+) -> None:
+    profile = get_profile("slot_lab_90")
+    slot = tmp_path / "slot"
+    (slot / "themes" / "PR2_Foo").mkdir(parents=True)
+    (slot / "themes" / "data" / "GameStarColors" / "1080p" / "Red").mkdir(parents=True)
+    (slot / "hwdrivers").mkdir()
+    (slot / "OneHand.exe").write_bytes(b"MZ")
+    (slot / "licence.dll").write_bytes(b"wibu")
+    (slot / "OneHand.exe.config").write_text("<cfg/>", encoding="utf-8")
+    (slot / "HWSubsys.xml").write_text("<hw/>", encoding="utf-8")
+    (slot / "hwdrivers" / "device.xml").write_text("<dev/>", encoding="utf-8")
+    (slot / "themes" / "mgconfig.xml").write_text("<mg/>", encoding="utf-8")
+    (slot / "themes" / "HardwareConfig.xml").write_text("<hwcfg/>", encoding="utf-8")
+    (slot / "themes" / "jurisdiction_config.xml").write_text("<jur/>", encoding="utf-8")
+    (slot / "themes" / "PR2_Foo" / "game.xml").write_text("<g/>", encoding="utf-8")
+    (slot / "themes" / "PR2_Foo" / "MathSettings.xml").write_text("<math/>", encoding="utf-8")
+    (slot / "themes" / "RenamedTitle_X").mkdir()
+    (slot / "themes" / "RenamedTitle_X" / "RenamedTitle_XMath.json").write_bytes(
+        b"\x00\x01encrypted-math"
+    )
+    (slot / "themes" / "OtherBonus").mkdir()
+    (slot / "themes" / "OtherBonus" / "OtherBonusMath_Config2.json").write_bytes(
+        b"\x00\x02encrypted-config2"
+    )
+    (slot / "themes" / "TutankhamenGSBHW").mkdir()
+    (slot / "themes" / "TutankhamenGSBHW" / "config_SetClear.xml").write_text(
+        "<clear/>", encoding="utf-8"
+    )
+    (slot / "themes" / "data" / "GameStarColors" / "1080p" / "Red" / "gameselector_GSC_config.xml").write_text(
+        "<gs/>", encoding="utf-8"
+    )
+    bios = tmp_path / "bios" / "etc" / "game-start"
+    bios.mkdir(parents=True)
+    (tmp_path / "bios" / "etc" / "logger.xml").write_text("<log/>", encoding="utf-8")
+    (bios / "checksum.sha1").write_text("abc", encoding="utf-8")
+    (tmp_path / "bios" / "etc" / "application" / "slot").mkdir(parents=True)
+    (tmp_path / "bios" / "etc" / "application" / "slot" / "oticket.xml").write_text(
+        "<ot/>", encoding="utf-8"
+    )
+    license_dir = tmp_path / "bios" / "License"
+    license_dir.mkdir(parents=True)
+    (license_dir / "License.lic").write_bytes(b"lic")
+    licenses = tmp_path / "Licenses"
+    licenses.mkdir()
+    (licenses / "dongle.xml").write_text("<licence/>", encoding="utf-8")
+    maint = tmp_path / "maintenance" / "config"
+    maint.mkdir(parents=True)
+    (maint / "serialports.conf").write_text("COM4=ticket", encoding="utf-8")
+    (maint / "configure-aurum.conf").write_text("mode=sas", encoding="utf-8")
+    serial = tmp_path / "platform" / "user" / "init" / "onlogon" / "Serial"
+    serial.mkdir(parents=True)
+    (serial / "USBtoSerialPorts.conf").write_text("map", encoding="utf-8")
+    files = collect_scan_files(
+        tmp_path,
+        profile.scan_roots,
+        profile.include_patterns,
+        extra_file_globs=profile.extra_file_globs,
+    )
+    rels = {path.relative_to(tmp_path).as_posix() for path in files}
+    assert "slot/HWSubsys.xml" in rels
+    assert "slot/hwdrivers/device.xml" in rels
+    assert "slot/themes/mgconfig.xml" in rels
+    assert "slot/themes/HardwareConfig.xml" in rels
+    assert "slot/themes/jurisdiction_config.xml" in rels
+    assert "slot/OneHand.exe.config" in rels
+    assert "slot/themes/PR2_Foo/MathSettings.xml" in rels
+    assert "slot/themes/RenamedTitle_X/RenamedTitle_XMath.json" in rels
+    assert "slot/themes/OtherBonus/OtherBonusMath_Config2.json" in rels
+    assert "slot/themes/TutankhamenGSBHW/config_SetClear.xml" in rels
+    assert "slot/themes/data/GameStarColors/1080p/Red/gameselector_GSC_config.xml" in rels
+    assert "slot/themes/PR2_Foo/game.xml" not in rels
+    assert "bios/etc/logger.xml" in rels
+    assert "bios/etc/game-start/checksum.sha1" in rels
+    assert "bios/etc/application/slot/oticket.xml" in rels
+    assert "bios/License/License.lic" in rels
+    assert "Licenses/dongle.xml" in rels
+    assert "slot/licence.dll" in rels
+    assert "maintenance/config/serialports.conf" in rels
+    assert "maintenance/config/configure-aurum.conf" in rels
+    assert "platform/user/init/onlogon/Serial/USBtoSerialPorts.conf" in rels
 
 
 @pytest.mark.integration
@@ -243,7 +348,12 @@ def test_collect_scan_files_non_recursive_themes(tmp_path: Path) -> None:
     (slot_root / "themes" / "nested" / "skip.xml").write_text("<root/>", encoding="utf-8")
     (slot_root / "HWSubsys.xml").write_text("<root/>", encoding="utf-8")
     profile = get_profile("slot_lab_90")
-    files = collect_scan_files(slot_root, profile.scan_roots, profile.include_patterns)
+    files = collect_scan_files(
+        slot_root,
+        profile.scan_roots,
+        profile.include_patterns,
+        extra_file_globs=profile.extra_file_globs,
+    )
     rels = {path.relative_to(slot_root).as_posix() for path in files}
     assert "themes/mgconfig.xml" in rels
     assert "HWSubsys.xml" in rels
@@ -523,9 +633,11 @@ def test_build_info_to_dict_uses_camel_case() -> None:
 def test_scan_scope_zero_diff_hint_slot_vs_roulette() -> None:
     slot_hint = scan_scope_zero_diff_hint("slot_lab_90", "Slot lab")
     roulette_hint = scan_scope_zero_diff_hint("roulette_usb", "Roulette USB")
-    assert "top-level slot XML/INI" in slot_hint
+    assert "mgconfig" in slot_hint
+    assert "hwdrivers" in slot_hint
     assert "roulette config" in roulette_hint
-    assert "top-level slot XML/INI" not in roulette_hint
+    assert "theme game assets" in slot_hint
+    assert "gamepack themes" not in roulette_hint
 
 
 def test_list_snapshots_includes_rich_version_fields(tmp_path: Path) -> None:
@@ -1414,6 +1526,60 @@ def test_resolve_tool_root_uses_exe_dir_not_usb_snapshots(
     monkeypatch.setattr("config_scanner.paths._default_exe_dir", lambda: exe_dir)
 
     assert _resolve_tool_root() == exe_dir
+
+
+def test_resolve_tool_root_frozen_unwritable_uses_appdata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    exe_dir = tmp_path / "usb"
+    exe_dir.mkdir()
+    appdata = tmp_path / "appdata"
+    monkeypatch.setattr("config_scanner.paths._default_exe_dir", lambda: exe_dir)
+    monkeypatch.setattr("sys.frozen", True, raising=False)
+    monkeypatch.setattr("app_paths.dir_is_writable", lambda _path: False)
+    monkeypatch.setenv("LOCALAPPDATA", str(appdata))
+    monkeypatch.delenv("LOGINV_CONFIG_SCANNER_ROOT", raising=False)
+
+    assert _resolve_tool_root() == appdata / "LogInvestigator"
+
+
+def test_resolve_tool_root_frozen_writable_stays_on_exe_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    exe_dir = tmp_path / "usb"
+    exe_dir.mkdir()
+    monkeypatch.setattr("config_scanner.paths._default_exe_dir", lambda: exe_dir)
+    monkeypatch.setattr("sys.frozen", True, raising=False)
+    monkeypatch.setattr("app_paths.dir_is_writable", lambda _path: True)
+    monkeypatch.delenv("LOGINV_CONFIG_SCANNER_ROOT", raising=False)
+
+    assert _resolve_tool_root() == exe_dir
+
+
+def test_tool_root_falls_back_when_ensure_cannot_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    exe_dir = tmp_path / "usb"
+    exe_dir.mkdir()
+    appdata = tmp_path / "appdata"
+    monkeypatch.setattr("config_scanner.paths._default_exe_dir", lambda: exe_dir)
+    monkeypatch.delenv("LOGINV_CONFIG_SCANNER_ROOT", raising=False)
+    monkeypatch.setenv("LOCALAPPDATA", str(appdata))
+
+    import config_scanner.paths as paths_mod
+
+    real_ensure = paths_mod.ensure_tool_data
+
+    def boom(root: Path) -> None:
+        if Path(root).resolve() == exe_dir.resolve():
+            raise PermissionError(13, "Access is denied")
+        real_ensure(root)
+
+    monkeypatch.setattr(paths_mod, "ensure_tool_data", boom)
+
+    got = tool_root()
+    assert got == appdata / "LogInvestigator"
+    assert (got / "snapshots").is_dir()
 
 
 def test_resolve_tool_root_honors_env_override(
@@ -2994,6 +3160,34 @@ def test_merge_xml_preserves_live_serial() -> None:
     assert b">19737</" not in merged
 
 
+def test_merge_xml_aurum_setup_uses_incoming_network_host() -> None:
+    from config_scanner.machine_identity import merge_xml_bytes_preserving_identity
+
+    live = b"""<?xml version='1.0'?>
+<AurumSetup>
+  <NetworkHostName>GST20664</NetworkHostName>
+  <ServiceURI>net.tcp://GST20664:50011/aurum</ServiceURI>
+  <MessengerURI>net.tcp://GST20664:50010/msg</MessengerURI>
+  <EGM id="GCC_ST_20664_01" CabinetSerialNumber="20664" />
+</AurumSetup>"""
+    incoming = b"""<?xml version='1.0'?>
+<AurumSetup>
+  <NetworkHostName>GST22377</NetworkHostName>
+  <ServiceURI>net.tcp://GST22377:50011/aurum</ServiceURI>
+  <MessengerURI>net.tcp://GST22377:50010/msg</MessengerURI>
+  <EGM id="GCC_ST_20664_01" CabinetSerialNumber="20664" />
+</AurumSetup>"""
+    merged = merge_xml_bytes_preserving_identity(
+        live,
+        incoming,
+        relative_path="Services/aurum/config/AurumSetup.xml",
+    )
+    assert b">GST22377</" in merged
+    assert b"net.tcp://GST22377:50011/aurum" in merged
+    assert b">GST20664</" not in merged
+    assert b'CabinetSerialNumber="20664"' in merged
+
+
 def test_restore_skips_licence_file(tmp_path: Path) -> None:
     from config_scanner.scanner import (
         FileEntry,
@@ -3413,13 +3607,143 @@ def test_plan_stack_restart_local_drive_on_egm(monkeypatch) -> None:
     assert plan.host is None
 
 
-def test_plan_stack_restart_unc_remote() -> None:
+def test_plan_stack_restart_unc_remote(monkeypatch) -> None:
+    from config_scanner import stack_restart as sr
     from config_scanner.stack_restart import plan_stack_restart, unc_host_from_target
 
+    # Force roulette so a live Slot tree at \\10.0.0.111\c$\Goldclub cannot
+    # flip this unit test when the lab cabinet is reachable.
+    monkeypatch.setattr(sr, "stack_kind_for_target", lambda _t: "roulette")
     assert unc_host_from_target(r"\\10.0.0.111\c$\Goldclub") == "10.0.0.111"
     plan = plan_stack_restart(r"\\10.0.0.111\c$\Goldclub")
     assert plan is not None
     assert plan.mode == "remote"
     assert plan.host == "10.0.0.111"
+    assert plan.kind == "roulette"
     assert plan.run_ps1.endswith("Run-FullStack.ps1")
+
+
+def test_plan_stack_restart_slot_unc_skips_roulette_elevate(monkeypatch) -> None:
+    from config_scanner import stack_restart as sr
+
+    monkeypatch.setattr(sr, "stack_kind_for_target", lambda _t: "slot")
+    plan = sr.plan_stack_restart(r"\\10.0.0.111\slot")
+    assert plan is not None
+    assert plan.kind == "slot"
+    assert plan.mode == "remote"
+    assert plan.host == "10.0.0.111"
+    assert plan.kill_ps1 == ""
+    assert plan.run_ps1 == ""
+    assert plan.scan_target.replace("/", "\\").endswith(r"\slot")
+
+
+def test_plan_stack_restart_slot_unc_local_on_egm_ip(monkeypatch) -> None:
+    from config_scanner import stack_restart as sr
+
+    monkeypatch.setattr(sr, "stack_kind_for_target", lambda _t: "slot")
+    monkeypatch.setattr(sr, "scan_target_is_local_machine", lambda _t: True)
+    plan = sr.plan_stack_restart(r"\\10.0.0.111\slot")
+    assert plan is not None
+    assert plan.kind == "slot"
+    assert plan.mode == "local"
+    assert plan.host is None
+
+
+def test_scan_target_is_local_machine_letter_path() -> None:
+    from config_scanner.stack_restart import scan_target_is_local_machine
+
+    assert scan_target_is_local_machine(r"G:\Goldclub") is True
+    assert scan_target_is_local_machine(r"\\10.0.0.111\slot") is False
+
+
+def test_is_local_host_includes_computername(monkeypatch) -> None:
+    from config_scanner.build_version import is_local_host
+
+    monkeypatch.setenv("COMPUTERNAME", "GST22377")
+    monkeypatch.setattr(
+        "config_scanner.build_version._local_host_keys",
+        lambda: {"gst22377", "10.0.0.111"},
+    )
+    assert is_local_host("GST22377") is True
+    assert is_local_host("10.0.0.111") is True
+    assert is_local_host("10.0.0.90") is False
+
+
+def test_run_slot_stack_kill_local_skips_winrm(monkeypatch) -> None:
+    from config_scanner.live_push import run_slot_stack_kill
+
+    calls: list[str] = []
+
+    def fake_local(script: str, *, timeout: int):
+        calls.append(script)
+        return True, "OK"
+
+    monkeypatch.setattr(
+        "config_scanner.stack_restart.scan_target_is_local_machine",
+        lambda _t: True,
+    )
+    monkeypatch.setattr("config_scanner.live_push._run_local_powershell", fake_local)
+    monkeypatch.setattr(
+        "automation.remote_exec.winrm_run_inline",
+        lambda **_k: (_ for _ in ()).throw(AssertionError("WinRM must not run")),
+    )
+    ok, detail = run_slot_stack_kill(r"\\10.0.0.111\slot")
+    assert ok is True
+    assert calls
+    assert "OneHand" in calls[0]
+
+
+def test_run_stack_kill_slot_uses_onehand_stop(monkeypatch) -> None:
+    from config_scanner import stack_restart as sr
+    from config_scanner.stack_restart import StackRestartPlan
+
+    calls: list[str] = []
+
+    def fake_slot_kill(target: str):
+        calls.append(target)
+        return True, "Slot game stopped"
+
+    monkeypatch.setattr(sr, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(
+        "config_scanner.live_push.run_slot_stack_kill", fake_slot_kill
+    )
+    monkeypatch.setattr(
+        sr, "_verify_slot_stopped_after_kill", lambda _p, detail: (True, detail)
+    )
+    plan = StackRestartPlan(
+        mode="remote",
+        host="10.0.0.111",
+        kill_ps1="",
+        run_ps1="",
+        kind="slot",
+        scan_target=r"\\10.0.0.111\slot",
+    )
+    ok, detail = sr.run_stack_kill(plan)
+    assert ok
+    assert "stopped" in detail.casefold()
+    assert calls == [r"\\10.0.0.111\slot"]
+
+
+def test_run_stack_start_slot_uses_bootstrap(monkeypatch) -> None:
+    from config_scanner import stack_restart as sr
+    from config_scanner.stack_restart import StackRestartPlan
+
+    def fake_start(target: str, dest=None):
+        return True, f"Bootstrap started on {target}"
+
+    monkeypatch.setattr(sr, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(
+        "config_scanner.live_push.run_slot_stack_start", fake_start
+    )
+    plan = StackRestartPlan(
+        mode="remote",
+        host="10.0.0.111",
+        kill_ps1="",
+        run_ps1="",
+        kind="slot",
+        scan_target=r"\\10.0.0.111\slot",
+    )
+    ok, detail = sr.run_stack_start(plan)
+    assert ok
+    assert "Bootstrap" in detail
 

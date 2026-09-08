@@ -9,6 +9,7 @@ so restore does not depend on a matching folder under software_versions.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 from dataclasses import dataclass
@@ -43,10 +44,10 @@ class SoftwareCaptureResult:
 def is_software_capture_info_note(note: str) -> bool:
     """True for a successful capture line — not an operator warning."""
     text = (note or "").strip()
-    if not (
-        text.startswith("Captured ")
-        and "Ruleta software files into the snapshot" in text
-    ):
+    if not text.startswith("Captured "):
+        return False
+    lowered = text.casefold()
+    if "software files into the snapshot" not in lowered:
         return False
     return "needs 64-bit" not in text
 
@@ -232,9 +233,13 @@ def snapshot_embedded_software_dir(snapshot_dir: Path | None) -> Path | None:
         return None
     root = Path(snapshot_dir) / SNAPSHOT_SOFTWARE_SUBDIR
     try:
+        if not root.is_dir():
+            return None
+        if (root / "slot" / "OneHand.exe").is_file() or (root / "OneHand.exe").is_file():
+            return root
         from network.software_version_swap import preflight_source
 
-        if root.is_dir() and not preflight_source(root):
+        if not preflight_source(root):
             return root
     except OSError:
         return None
@@ -242,13 +247,253 @@ def snapshot_embedded_software_dir(snapshot_dir: Path | None) -> Path | None:
 
 
 def snapshot_has_embedded_software(snapshot_dir: Path | None) -> bool:
-    """Fast list badge: Ruleta.exe under ``software/`` (full pack check is on restore)."""
+    """Fast list badge: Ruleta.exe or slot OneHand.exe under ``software/``."""
     if snapshot_dir is None:
         return False
     try:
-        return (Path(snapshot_dir) / SNAPSHOT_SOFTWARE_SUBDIR / "Ruleta.exe").is_file()
+        root = Path(snapshot_dir) / SNAPSHOT_SOFTWARE_SUBDIR
+        return (
+            (root / "Ruleta.exe").is_file()
+            or (root / "OneHand.exe").is_file()
+            or (root / "slot" / "OneHand.exe").is_file()
+        )
     except OSError:
         return False
+
+
+_SLOT_SKIP_DIR_NAMES = frozenset(
+    {
+        "themes",  # gamepack assets (videos/textures), not SW/config
+        "var",
+        "cache",
+        "installed",  # bios firmware blobs
+        "$recycle.bin",
+        "system volume information",
+    }
+)
+_SLOT_SOFTWARE_TREES = (
+    "slot",
+    "bios",
+    "bin",
+    "platform",
+    "services",
+    "maintenance",
+    "hih",
+    "Licenses",
+)
+_SLOT_SKIP_SUFFIXES = frozenset(
+    {
+        ".pdb",
+        ".lib",
+        ".exp",
+        ".vhd",
+        ".vhdx",
+        ".iso",
+        ".pak",
+        ".mp4",
+        ".webm",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".wav",
+        ".ogg",
+    }
+)
+_SLOT_SOFTWARE_SUFFIXES = frozenset(
+    {
+        ".exe",
+        ".dll",
+        ".config",
+        ".ini",
+        ".lic",
+        ".xml",
+        ".xsd",
+        ".conf",
+        ".json",
+        ".sha1",
+        ".md5",
+    }
+)
+_SLOT_SKIP_ROOT_SUFFIXES = frozenset({".vhd", ".vhdx", ".iso"})
+
+
+def goldclub_root_for_slot_software(scan_target: str) -> Path:
+    """Goldclub root that contains ``slot\\`` (parent when the target is the slot folder)."""
+    from config_scanner.build_version import has_slot_game_exe
+
+    root = scan_target_path(scan_target)
+    if (root / "slot" / "OneHand.exe").is_file() or (
+        root / "slot" / "game-start.exe"
+    ).is_file():
+        return root
+    if has_slot_game_exe(root):
+        return root.parent
+    return root
+
+
+def _slot_should_skip_file(relative_posix: str, name: str) -> bool:
+    """Skip gamepack/debug blobs; keep binaries, licence, and hardware XML."""
+    del relative_posix
+    suffix = Path(name).suffix.casefold()
+    if suffix in _SLOT_SKIP_SUFFIXES:
+        return True
+    if suffix and suffix not in _SLOT_SOFTWARE_SUFFIXES:
+        return True
+    return False
+
+
+def _copy_slot_tree(src: Path, dest: Path, prefix: str) -> int:
+    copied = 0
+    dest.mkdir(parents=True, exist_ok=True)
+    for dirpath, dirnames, filenames in os.walk(src):
+        dirnames[:] = [
+            name for name in dirnames if name.casefold() not in _SLOT_SKIP_DIR_NAMES
+        ]
+        current = Path(dirpath)
+        try:
+            rel_dir = current.relative_to(src).as_posix()
+        except ValueError:
+            rel_dir = "."
+        for name in filenames:
+            rel = name if rel_dir in {".", ""} else f"{rel_dir}/{name}"
+            full_rel = f"{prefix}/{rel}".replace("\\", "/")
+            if _slot_should_skip_file(full_rel, name):
+                continue
+            source = current / name
+            target = dest / Path(*rel.split("/"))
+            try:
+                if not source.is_file():
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, target)
+                copied += 1
+            except OSError:
+                continue
+    return copied
+
+
+def _copy_slot_theme_update_files(slot_src: Path, slot_dest: Path) -> int:
+    """Copy CS / B2U theme config only — not gamepack videos or per-game UI XML."""
+    from config_scanner.theme_math import math_files_under_theme_game_dir
+
+    themes = slot_src / "themes"
+    if not themes.is_dir():
+        return 0
+    copied = 0
+    dest_themes = slot_dest / "themes"
+    dest_themes.mkdir(parents=True, exist_ok=True)
+    for src in themes.iterdir():
+        if not src.is_file():
+            continue
+        if src.suffix.casefold() not in {".xml", ".json", ".ini"}:
+            continue
+        try:
+            shutil.copy2(src, dest_themes / src.name)
+            copied += 1
+        except OSError:
+            continue
+    data = themes / "data"
+    if data.is_dir():
+        copied += _copy_slot_tree(data, dest_themes / "data", "slot/themes/data")
+    for game_dir in themes.iterdir():
+        if not game_dir.is_dir() or game_dir.name.casefold() == "data":
+            continue
+        dest_game = dest_themes / game_dir.name
+        matches: list[Path] = []
+        matches.extend(game_dir.glob("MathSettings.xml"))
+        matches.extend(game_dir.glob("config_SetClear*.xml"))
+        matches.extend(math_files_under_theme_game_dir(game_dir))
+        for src in matches:
+            if not src.is_file():
+                continue
+            try:
+                rel = src.relative_to(game_dir)
+                dest = dest_game / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dest)
+                copied += 1
+            except OSError:
+                continue
+    return copied
+
+
+def capture_slot_software_into_snapshot(
+    scan_target: str,
+    snapshot_dir: Path,
+) -> SoftwareCaptureResult:
+    """Copy live slot binaries, licence, and B2U update config — not the gamepack.
+
+    Skips ``themes\\`` game assets (videos/UI XML), ``var\\``, ``Cache\\``, and
+    ``bios\\Installed``. Keeps CS overlay files: ``HardwareConfig.xml``,
+    ``mgconfig.xml``, ``MathSettings.xml``, gameselector XML, ``licence.dll``,
+    ``Licenses\\``, ``*.lic``, ``maintenance\\config``, checksums.
+    """
+    dest = Path(snapshot_dir) / SNAPSHOT_SOFTWARE_SUBDIR
+    try:
+        live = goldclub_root_for_slot_software(scan_target)
+        slot_exe = live / "slot" / "OneHand.exe"
+        if not slot_exe.is_file() and not (live / "OneHand.exe").is_file():
+            return SoftwareCaptureResult(
+                False,
+                0,
+                (),
+                None,
+                "No live OneHand.exe — config was saved, software was not captured.",
+            )
+        dest.mkdir(parents=True, exist_ok=True)
+        copied = 0
+        for tree in _SLOT_SOFTWARE_TREES:
+            src = live / tree
+            if src.is_dir():
+                copied += _copy_slot_tree(src, dest / tree, tree)
+        slot_live = live / "slot" if (live / "slot").is_dir() else live
+        if (slot_live / "themes").is_dir():
+            slot_dest = dest / "slot" if slot_live.name.casefold() == "slot" else dest
+            copied += _copy_slot_theme_update_files(slot_live, slot_dest)
+        for src in live.iterdir():
+            if not src.is_file():
+                continue
+            if src.suffix.casefold() in _SLOT_SKIP_ROOT_SUFFIXES:
+                continue
+            if src.suffix.casefold() not in {".exe", ".dll", ".ini"}:
+                continue
+            if _slot_should_skip_file(src.name, src.name):
+                continue
+            shutil.copy2(src, dest / src.name)
+            copied += 1
+    except (OSError, ValueError) as exc:
+        return SoftwareCaptureResult(False, 0, (), None, str(exc))
+    if copied == 0:
+        return SoftwareCaptureResult(
+            False,
+            0,
+            (),
+            dest,
+            "No slot software files found to capture.",
+        )
+    return SoftwareCaptureResult(
+        True,
+        copied,
+        (),
+        dest,
+        f"Captured {copied} Slot software files into the snapshot.",
+    )
+
+
+def capture_software_into_snapshot(
+    scan_target: str,
+    snapshot_dir: Path,
+) -> SoftwareCaptureResult:
+    """Capture Ruleta or slot software for a full snapshot."""
+    from config_scanner.build_version import has_slot_game_exe
+
+    try:
+        root = scan_target_path(scan_target)
+        if has_slot_game_exe(root) or (root / "slot" / "OneHand.exe").is_file():
+            return capture_slot_software_into_snapshot(scan_target, snapshot_dir)
+    except (OSError, ValueError):
+        pass
+    return capture_ruleta_software_into_snapshot(scan_target, snapshot_dir)
 
 
 def capture_ruleta_software_into_snapshot(

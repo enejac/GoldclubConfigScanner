@@ -28,7 +28,7 @@ SRC = (
 
 def test_create_full_snapshot_is_a_toolbar_action() -> None:
     assert 'QPushButton("Create full snapshot")' in SRC
-    assert 'QAction("Create full snapshot", self)' in SRC
+    assert 'more_menu.addAction(self._create_snapshot_action)' not in SRC
     assert "_on_create_snapshot_clicked" in SRC
     assert "_start_live_scan(compare_after=False, include_software=True)" in SRC
     assert "_start_live_scan(compare_after=True, include_software=False)" in SRC
@@ -66,6 +66,7 @@ def test_full_snapshot_saved_message_includes_software() -> None:
         457,
         software_file_count=7,
         software_captured=True,
+        profile_id="roulette_usb",
     )
     assert "This machine is saved." in text
     assert "2026-08-21_GRT330106_v10.2_b40119" in text
@@ -74,6 +75,15 @@ def test_full_snapshot_saved_message_includes_software() -> None:
     assert "The machine was not changed." in text
     assert "Restore snapshot" in text
     assert "Scan completed with warnings" not in text
+    slot_text = full_snapshot_saved_message(
+        "2026-08-30_GST20664_Slot_b98170458_075646",
+        185,
+        software_file_count=959,
+        software_captured=True,
+        profile_id="slot_lab_90",
+    )
+    assert "959 slot software files" in slot_text
+    assert "Ruleta software files" not in slot_text
     missing = full_snapshot_saved_message("x", 1, software_captured=False)
     assert "software was not included" in missing
     with_note = full_snapshot_saved_message(
@@ -167,17 +177,17 @@ def test_revert_uses_recorded_write_scope() -> None:
 
 def test_swap_confirm_asks_backup_in_the_same_dialog() -> None:
     assert "Swap this machine to:" in SRC
-    assert "Save a backup of what is running now" in SRC
+    assert "undo_backup_step_line" in SRC
     assert "How it works:" not in SRC
     assert "Config Scanner — confirm restore" in SRC
 
 
-def test_live_ruleta_version_banner_is_bold() -> None:
-    assert 'setObjectName("liveRuletaVersion")' in SRC
-    assert "format_live_ruleta_sw_banner" in SRC
-    assert "_refresh_live_ruleta_version" in SRC
+def test_live_game_version_banner_is_bold() -> None:
+    assert 'setObjectName("liveGameVersion")' in SRC
+    assert "format_live_sw_banner" in SRC
+    assert "_refresh_live_game_version" in SRC
     assert "font-weight: 700" in SRC
-    assert "live_ruleta_exe_version_for_target" in SRC
+    assert "live_exe_version_for_target" in SRC
 
 
 def test_pre_restore_undo_point_captures_ruleta_binaries() -> None:
@@ -196,7 +206,7 @@ def test_restore_stops_when_undo_point_has_no_binaries() -> None:
     assert "WriteScope.FULL_SOFTWARE, WriteScope.BINARIES_ONLY" in SRC
     assert "result.software_captured" in SRC
     assert "undo point is incomplete" in SRC
-    assert "Restore cancelled — undo point has no Ruleta binaries." in SRC
+    assert "incomplete_undo_cancel_status" in SRC
 
 
 def test_revert_ui_says_what_it_puts_back() -> None:
@@ -211,8 +221,10 @@ def test_auto_start_stack_is_optional_kill_is_not() -> None:
     assert "_auto_start_stack_cb" in SRC
     assert "should_autostart_after_write" in SRC
     assert "Stopping GoldClub stack before restore" in SRC
+    assert "Stopping OneHand / Bootstrap before restore" in SRC
     assert "Start GoldClub stack…" in SRC
     assert "_on_start_stack_clicked" in SRC
+    assert 'getattr(plan, "kind", "roulette") == "slot"' in SRC
 
 
 def test_restore_does_not_auto_prompt_llave_code() -> None:
@@ -240,6 +252,14 @@ def test_start_llave_kwargs_computed_before_pending_snapshot_clear() -> None:
     assert kwargs_idx < clear_idx
     assert "snapshot_should_auto_enter_llave" in SRC
     assert "ensure_llave" in SRC
+
+
+def test_more_menu_skips_toolbar_and_drawer_duplicates() -> None:
+    assert 'more_menu.addAction(self._restore_selected_action)' not in SRC
+    assert 'more_menu.addAction(self._restore_selected_config_action)' not in SRC
+    assert 'more_menu.addAction(self._compare_action)' not in SRC
+    assert 'more_menu.addAction(self._refresh_action)' not in SRC
+    assert "Restore software only (keep profile)…" in SRC
 
 
 def test_more_menu_offers_clear_error30() -> None:

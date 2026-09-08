@@ -27,3 +27,9 @@ python -m pytest tests -q
 ## Profiles
 
 See `config_scanner/assets/profiles.json` — `roulette_usb` and `slot_lab_90`. Slot adaptation belongs in this repo, not in Log Investigator.
+
+## Cabinet repairs
+
+[`docs/cabinet-repairs.md`](docs/cabinet-repairs.md) documents the cabinet faults we have hit in the field — licence XMLs not next to `OneHand.exe`, an `AurumSetup.xml` host block that does not match the Windows hostname, the MUX stuck off COM11 (`NO SAS COMMUNICATIONS`), the black-screen boot caused by the shell's UAC-filtered token, and a pending slot RAM clear — with the root cause, the evidence, and the manual procedure for each.
+
+All of them are automated in the app under **More → Diagnose & repair cabinet…** ([`config_scanner/cabinet_repairs.py`](config_scanner/cabinet_repairs.py)).

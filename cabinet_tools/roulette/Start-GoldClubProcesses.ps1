@@ -5,7 +5,7 @@
 .DESCRIPTION
     Ensures key GoldClub Windows services are Running (starts if Stopped),
     then launches C:\goldclub\bin\HIH.exe which relaunches the game via
-    RUN_GAME → game-start. Does NOT start Bootstrap (slot START_ONEHAND style).
+    RUN_GAME -> game-start. Does NOT start Bootstrap (slot START_ONEHAND style).
 
     Refuses to start HIH if platform\user\shell.ps1 is already running (that shell
     owns the HIH/game chain; a second HIH causes dual Godot). Use -Force to override,
@@ -83,7 +83,7 @@ if ($shells.Count -gt 0 -and -not $Force) {
     exit 2
 }
 if ($shells.Count -gt 0 -and $Force) {
-    Write-Host 'WARNING: -Force with live shell.ps1 — dual Godot risk.' -ForegroundColor Yellow
+    Write-Host 'WARNING: -Force with live shell.ps1 - dual Godot risk.' -ForegroundColor Yellow
 }
 
 Write-Host 'Checking GoldClub services ...' -ForegroundColor Cyan
@@ -96,7 +96,7 @@ $hih = Get-Process -Name 'HIH' -ErrorAction SilentlyContinue
 if ($hih) {
     $hih |
         Format-Table Id, ProcessName, @{ N = 'MB'; E = { [math]::Round($_.WorkingSet64 / 1MB, 1) } } -AutoSize
-    Write-Host 'HIH.exe is already running — not starting another instance.' -ForegroundColor Yellow
+    Write-Host 'HIH.exe is already running - not starting another instance.' -ForegroundColor Yellow
     exit 0
 }
 

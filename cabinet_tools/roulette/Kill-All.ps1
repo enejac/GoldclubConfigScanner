@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Kill-All — master stop for roulette game stack (merged Kill-GoldClubProcesses + Kill-ActiveGame).
+    Kill-All - master stop for roulette game stack (merged Kill-GoldClubProcesses + Kill-ActiveGame).
 
 .DESCRIPTION
     1) Suspend platform\user\shell.ps1 (keep alive; do not kill)
@@ -129,7 +129,7 @@ function Test-ProtectedProcess {
     return $false
 }
 
-# Explicit allow-lists only (no goldclub path / Aurum / CommCtrl globs — those are service hosts).
+# Explicit allow-lists only (no goldclub path / Aurum / CommCtrl globs - those are service hosts).
 $script:RelauncherNames = @(
     'HIH.exe', 'hih.exe',
     'game-start.exe', 'Start-Game.exe',
@@ -331,7 +331,7 @@ function Stop-GoldClubServices {
     $missing = 0
     $seen = @{}
 
-    # Primary: every live GoldClub* service (Name or DisplayName) — do not rely on list alone.
+    # Primary: every live GoldClub* service (Name or DisplayName) - do not rely on list alone.
     $all = @(Get-AllGoldClubServices)
     if ($all.Count -eq 0) {
         Write-Host '  WARN: Get-Service found zero GoldClub* services' -ForegroundColor Yellow

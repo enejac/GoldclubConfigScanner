@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8" ?> 
+<config>
+	<mapping>
+		<Help>263</Help>
+		<Collect>261</Collect>
+		<WaitBonus>262</WaitBonus>
+		<CycleSelectedLines>269</CycleSelectedLines>
+		<BetOne>264</BetOne>
+		<BetMinus>266</BetMinus>
+		<BetPlus>268</BetPlus>
+		<MultiGameSelection>267</MultiGameSelection>
+		<MaxBet>270</MaxBet>
+		<Problem>265</Problem>
+		<Spin>271</Spin>
+	</mapping>
+	<color>
+		<white>1</white>
+	</color>
+	<mode>
+		<blink>1</blink>
+	</mode>
+</config>

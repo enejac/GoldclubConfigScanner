@@ -34,6 +34,8 @@ class ConfigScannerEmitter(QObject):
     apply_finished = Signal(bool, object, str)
     apply_change_finished = Signal(bool, object, str)
     apply_file_finished = Signal(bool, object, str)
+    repairs_diagnosed = Signal(bool, object, str)
+    repairs_applied = Signal(bool, object, str)
     target_validated = Signal(str, bool)  # path, valid
 
 
@@ -313,21 +315,41 @@ class _StackRestartRunnable(QRunnable):
                         self._emitter.progress.emit(
                             f"Trial prep warning: {prep_detail}"
                         )
-                self._emitter.progress.emit("Stopping GoldClub stack (Kill-All) …")
+                kind = getattr(self._plan, "kind", "roulette")
+                if kind == "slot":
+                    self._emitter.progress.emit(
+                        "Stopping slot game (OneHand / Bootstrap) …"
+                    )
+                else:
+                    self._emitter.progress.emit(
+                        "Stopping GoldClub stack (Kill-All) …"
+                    )
                 ok, detail = run_stack_kill(self._plan)
             elif self._phase == "start":
-                self._emitter.progress.emit("Starting GoldClub stack (Run-FullStack) …")
+                kind = getattr(self._plan, "kind", "roulette")
+                if kind == "slot":
+                    self._emitter.progress.emit("Starting Bootstrap / OneHand …")
+                else:
+                    self._emitter.progress.emit(
+                        "Starting GoldClub stack (Run-FullStack) …"
+                    )
                 ok, detail = run_stack_start(
                     self._plan,
                     scan_target=self._scan_target or None,
-                    ensure_llave=self._ensure_llave,
+                    ensure_llave=self._ensure_llave and kind != "slot",
                     machine_serial=None,
                     tool_root=self._service.root if self._service else None,
                 )
             else:
-                self._emitter.progress.emit(
-                    "Restarting GoldClub stack (Kill-All + Run-FullStack) …"
-                )
+                kind = getattr(self._plan, "kind", "roulette")
+                if kind == "slot":
+                    self._emitter.progress.emit(
+                        "Restarting slot game (stop OneHand + Bootstrap) …"
+                    )
+                else:
+                    self._emitter.progress.emit(
+                        "Restarting GoldClub stack (Kill-All + Run-FullStack) …"
+                    )
                 ok, detail = run_full_stack_restart(self._plan)
             self._emitter.stack_restart_finished.emit(ok, detail)
         except Exception as exc:  # noqa: BLE001
@@ -711,3 +733,77 @@ def schedule_apply_archived_file(
             emitter,
         )
     )
+
+
+class _DiagnoseCabinetRunnable(QRunnable):
+    """Probe the cabinet for known faults (WinRM + SMB — never on the UI thread)."""
+
+    def __init__(
+        self,
+        service: ConfigScannerService,
+        scan_target: str,
+        emitter: ConfigScannerEmitter,
+    ) -> None:
+        super().__init__()
+        self.setAutoDelete(True)
+        self._service = service
+        self._scan_target = scan_target
+        self._emitter = emitter
+
+    def run(self) -> None:
+        try:
+            findings = self._service.diagnose_cabinet(
+                self._scan_target,
+                progress=self._emitter.progress.emit,
+            )
+            self._emitter.repairs_diagnosed.emit(True, findings, "")
+        except Exception as exc:  # noqa: BLE001
+            self._emitter.repairs_diagnosed.emit(False, None, str(exc))
+
+
+class _RepairCabinetRunnable(QRunnable):
+    """Apply the selected cabinet repairs."""
+
+    def __init__(
+        self,
+        service: ConfigScannerService,
+        scan_target: str,
+        repair_ids: list[str],
+        emitter: ConfigScannerEmitter,
+    ) -> None:
+        super().__init__()
+        self.setAutoDelete(True)
+        self._service = service
+        self._scan_target = scan_target
+        self._repair_ids = list(repair_ids)
+        self._emitter = emitter
+
+    def run(self) -> None:
+        try:
+            outcomes = self._service.repair_cabinet(
+                self._repair_ids,
+                self._scan_target,
+                progress=self._emitter.progress.emit,
+            )
+            self._emitter.repairs_applied.emit(True, outcomes, "")
+        except Exception as exc:  # noqa: BLE001
+            self._emitter.repairs_applied.emit(False, None, str(exc))
+
+
+def schedule_diagnose_cabinet(
+    pool: QThreadPool,
+    service: ConfigScannerService,
+    scan_target: str,
+    emitter: ConfigScannerEmitter,
+) -> None:
+    pool.start(_DiagnoseCabinetRunnable(service, scan_target, emitter))
+
+
+def schedule_repair_cabinet(
+    pool: QThreadPool,
+    service: ConfigScannerService,
+    scan_target: str,
+    repair_ids: list[str],
+    emitter: ConfigScannerEmitter,
+) -> None:
+    pool.start(_RepairCabinetRunnable(service, scan_target, repair_ids, emitter))

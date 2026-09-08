@@ -5,6 +5,8 @@ alwaysApply: true
 
 # Ruleta trial lock (ERROR 30 / 99) — persistence
 
+**Scope: roulette cabinets only.** Does **not** apply to Slot / OneHand EGMs (e.g. `10.0.0.111` GST22377). On a Slot machine a licence/trial problem is `RAMCLEAR REQUIRED` + `Trial expired with trial type ErrorRegistryDataNotFound` — fixed by the maintenance **RAM clear**, not by `ruleta\persistent`. Never mention ERROR 30/99, `RouletteActivate.dat` or clock rollback when diagnosing a slot.
+
 Proven on **GRT330106 / 10.0.0.111** (20 Aug 2026, cabinet clock rolled to 10 Aug). Two licence systems: Aurum XML+WIBU vs Ruleta exe trial keypad. Do not confuse them. Do not copy another EGM's XML/`licence.dll`.
 
 ## Cause (not the database)

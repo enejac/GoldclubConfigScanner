@@ -1,0 +1,81 @@
+# mgconfig TargetMarket: never write `TT` (GST22377 / all GameStar slots)
+
+## Symptom (proven 2 Sep 2026 on 10.0.0.111)
+
+OneHand dies on startup loading `slot/themes/mgconfig.xml`:
+
+```
+System.InvalidOperationException: Instance validation error: 'TT' is not a valid value for Market.
+  at ... Read142_Market(String s)
+  at OneHand.MainFrm.LoadMgConfiguration()
+```
+
+Line ~3238: `<TargetMarket>TT</TargetMarket>` inside `MarketSpecific`.
+
+## Two different fields — do not conflate
+
+| File | Field | `TT` OK? |
+|------|--------|----------|
+| `slot/themes/jurisdiction_config.xml` | `<Tag>TT</Tag>` | Yes (BiOS / jurisdiction shorthand) |
+| `slot/themes/mgconfig.xml` | `<TargetMarket>…</TargetMarket>` | **No** — OneHand `Market` enum |
+
+Valid `TargetMarket` values depend on **this cabinet's OneHand.exe**, not the
+union of every Country Selector SKU.
+
+| OneHand | Proven on `.111` | `Jamaica` in Market enum? |
+|---------|------------------|---------------------------|
+| GameStar **2.0.1** TRI (crash 3 Sep 2026) | `l0pexaoh, Version=2.0.1.0` | **No** — only `PuertoRico` in the exe |
+| GameStar **3.x** (`3.0.0+RC2+…`) | not this image | **Maybe** — probe the live `OneHand.exe` before writing |
+
+Shipped TRI 2.0.1 packs and a working `.111` use **`PuertoRico`** with
+`CultureName=en-TT`, `CurrencyName=TTD`. `Jamaica` is a **JAM SKU**
+(`CS-Gamestar-JAM-*`) and also a 3.x market; writing it onto 2.0.1 TRI is the
+same crash class as `TT`:
+
+```
+Instance validation error: 'Jamaica' is not a valid value for Market.
+```
+
+Live Push must not copy the market combo into `TargetMarket` unless that token
+is in the live OneHand Market enum (`markets_accepted_by_onehand`).
+
+## What broke it (2 Sep 2026)
+
+1. `jurisdiction_config.xml` had `<Tag>TT</Tag>`.
+2. `load_recipe_from_goldclub` / `read_jurisdiction_settings` copies that Tag into `recipe.jurisdiction.tag`.
+3. Any Live Push apply that runs **`patch_mgconfig_locale`** wrote `TT` into `TargetMarket`.
+4. Triggers: Live Push **market combo** showing `TT`, display-mode switch round-trip (locale re-patch), or stack restart after mgconfig already had `TT`.
+
+Display switch backup **before** round-trip had `PuertoRico`; **after** apply it was `TT` again — locale patch from `jurisdiction_config`, not the display path swap itself.
+
+## Fix on cabinet
+
+```powershell
+net use \\10.0.0.111\slot /user:10.0.0.111\test test
+# mgconfig only — do not RAM clear
+(Get-Content \\10.0.0.111\slot\slot\themes\mgconfig.xml -Raw) `
+  -replace '<TargetMarket>TT</TargetMarket>', '<TargetMarket>PuertoRico</TargetMarket>' |
+  Set-Content ... # or [IO.File]::WriteAllText UTF-8 no BOM
+# Restart: Bootstrap.exe (kill OneHand first)
+```
+
+Leave `jurisdiction_config.xml` `<Tag>TT</Tag>` alone unless deliberately normalizing — code must not mirror Tag into TargetMarket verbatim.
+
+## Fix in ConfigScanner (repo)
+
+- `resolve_target_market_for_mgconfig()` — `TT` → keep PuertoRico / TrinidadTobago, else **`PuertoRico`**. Never keep leftover `Jamaica` for a TT alias.
+- `markets_accepted_by_onehand()` / `validate_onehand_target_market()` — Live Push aborts if the resolved `TargetMarket` is not an ASCII token in the live `OneHand.exe` (blocks Jamaica on 2.0.1 TRI; allows it on a 3.x binary that actually contains `Jamaica`).
+- `patch_mgconfig_locale()` always uses the resolver.
+- **Display-only** Live Push skips locale patch so `Tag=TT` cannot clobber `TargetMarket`.
+
+Tests: `tests/test_display_mode.py` (`test_tt_alias_*`, `test_live_onehand_*`).
+
+## Do not
+
+- Put `TT` in Live Push / preset `target_market` for mgconfig writes.
+- Assume `jurisdiction_config` Tag is safe to copy into `mgconfig.TargetMarket`.
+- Confuse this with roulette ERROR 30/99 or RAMCLEAR — this is pure mgconfig XmlSerializer validation.
+
+## After fix
+
+Cabinet `.111` confirmed up with `TargetMarket=PuertoRico`, OneHand running. Rebuild `ConfigScanner.exe` to ship the guard in the GUI binary.

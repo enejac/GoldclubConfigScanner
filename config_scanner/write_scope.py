@@ -25,26 +25,25 @@ WRITE_SCOPE_LABELS: dict[WriteScope, str] = {
     WriteScope.HARDWARE: "Hardware only",
     WriteScope.SOFTWARE: "Software only",
     WriteScope.NO_PAYTABLE: "Config except paytables",
-    WriteScope.FULL_SOFTWARE: "Config + Ruleta software",
-    WriteScope.BINARIES_ONLY: "Ruleta software only (keep cabinet profile)",
+    WriteScope.FULL_SOFTWARE: "Config + game software",
+    WriteScope.BINARIES_ONLY: "Game software only (keep cabinet profile)",
 }
 
 WRITE_SCOPE_DESCRIPTIONS: dict[WriteScope, str] = {
     WriteScope.FULL: "All config except serialport/ and EGM identity",
     WriteScope.HARDWARE: "Bill / ticket / switches / LEDs / counters / SAS / CommCtrl",
-    WriteScope.SOFTWARE: "Ruleta / mgconfig / themes / app behaviour",
+    WriteScope.SOFTWARE: "Game / mgconfig / themes / app behaviour",
     WriteScope.NO_PAYTABLE: (
-        "All restorable config except paytable JSON — use when live Ruleta "
+        "All restorable config except paytable JSON — use when the live game "
         "cannot load the snapshot paytables"
     ),
     WriteScope.FULL_SOFTWARE: (
-        "Restore config, then push the matching Ruleta software pack "
-        "(software_versions) so paytables and the exe stay aligned"
+        "Restore config, then push the matching game software pack "
+        "(software_versions or snapshot software/) so paytables and the exe stay aligned"
     ),
     WriteScope.BINARIES_ONLY: (
-        "Push matching Ruleta binaries only. Keep this cabinet's setup, "
-        "switches, wheel, SAS, serialport, and licence. Refuses the "
-        "10.2.0.684 trial and Downloads 10.2.0.0."
+        "Push matching game binaries only. Keep this cabinet's setup, "
+        "switches, wheel, SAS, serialport, and licence."
     ),
 }
 
@@ -53,8 +52,8 @@ WRITE_SCOPE_SHORT: dict[WriteScope, str] = {
     WriteScope.HARDWARE: "hardware",
     WriteScope.SOFTWARE: "software",
     WriteScope.NO_PAYTABLE: "config except paytables",
-    WriteScope.FULL_SOFTWARE: "config + Ruleta software",
-    WriteScope.BINARIES_ONLY: "Ruleta binaries (keep profile)",
+    WriteScope.FULL_SOFTWARE: "config + game software",
+    WriteScope.BINARIES_ONLY: "game binaries (keep profile)",
 }
 
 

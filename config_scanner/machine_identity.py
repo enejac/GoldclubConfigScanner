@@ -568,17 +568,100 @@ def _find_element_for_path_key(
     return candidates[0] if len(candidates) == 1 else None
 
 
+_JURISDICTION_CONFIG_SUFFIX = "slot/themes/jurisdiction_config.xml"
+
+
+def is_jurisdiction_config_path(relative_path: str) -> bool:
+    """True for ``slot/themes/jurisdiction_config.xml`` (OneHand reads as ANSI)."""
+    return normalize_rel_path(relative_path).casefold().endswith(
+        _JURISDICTION_CONFIG_SUFFIX
+    )
+
+
+def is_jurisdiction_config_file(file_path: Path) -> bool:
+    return file_path.name.casefold() == "jurisdiction_config.xml"
+
+
+def normalize_jurisdiction_apply_value(
+    flat_path: str, value: str | None
+) -> str | None:
+    """Normalize Compare Write values for OneHand ANSI jurisdiction fields."""
+    if value is None:
+        return None
+    norm = flat_path.replace("\\", "/").casefold()
+    leaf = norm.rsplit("/", 1)[-1]
+    if leaf == "currencybasesymbol":
+        if value in ("c", "C"):
+            return "c"
+        if "\u00a2" in value or "¢" in value:
+            return "c"
+        if any(ord(ch) > 127 for ch in value):
+            raise ValueError(
+                "CurrencyBaseSymbol must be ASCII (OneHand reads "
+                "jurisdiction_config as ANSI). Use 'c' for cent."
+            )
+        return value
+    if leaf == "currencybaseformat":
+        cleaned = value.replace("\u00a2", "c").replace("¢", "c")
+        if any(ord(ch) > 127 for ch in cleaned):
+            raise ValueError(
+                "CurrencyBaseFormat must be ASCII (OneHand reads "
+                "jurisdiction_config as ANSI). Use '{0}c'."
+            )
+        return cleaned
+    return value
+
+
+def postprocess_jurisdiction_xml_bytes(raw: bytes) -> bytes:
+    """Normalize jurisdiction currency-base tags for OneHand ANSI parsing.
+
+    UTF-8 cent (U+00A2) in CurrencyBaseSymbol shows as ``?¢`` on the DENOM
+    label. Official leaves use ASCII ``c`` / ``{0}c`` instead.
+    """
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw
+    text = re.sub(
+        r"(<CurrencyBaseSymbol>)[^<]*(</CurrencyBaseSymbol>)",
+        r"\1c\2",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r"(<CurrencyBaseFormat>)[^<]*(</CurrencyBaseFormat>)",
+        r"\1{0}c\2",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return text.encode("utf-8")
+
+
 def merge_xml_bytes_preserving_identity(
     live_bytes: bytes,
     incoming_bytes: bytes,
+    *,
+    relative_path: str = "",
 ) -> bytes:
-    """Return incoming XML with live identity leaf values overlaid."""
+    """Return incoming XML with live identity leaf values overlaid.
+
+    AurumSetup network host tokens (NetworkHostName, ServiceURI, MessengerURI)
+    always come from ``incoming_bytes``. LoadSetup selects the <Network> block by
+    Windows hostname; preserving stale overlay hosts (e.g. GST20664 on GST22377)
+    breaks Aurum after Live Push.
+    """
     live_root = ET.fromstring(live_bytes)
     incoming_root = ET.fromstring(incoming_bytes)
     merged = copy.deepcopy(incoming_root)
     live_values = _identity_leaf_map(live_root)
+    rel_low = normalize_rel_path(relative_path).casefold()
+    skip_aurum_network = rel_low.endswith("services/aurum/config/aurumsetup.xml")
     changed = False
     for path_key, live_text in live_values.items():
+        if skip_aurum_network:
+            leaf = path_key[-1] if path_key else ""
+            if leaf in {"NetworkHostName", "ServiceURI", "MessengerURI"}:
+                continue
         target_el = _find_element_for_path_key(merged, path_key)
         if target_el is None or list(target_el):
             continue
@@ -589,8 +672,12 @@ def merge_xml_bytes_preserving_identity(
     if not changed:
         # Reserializing rewrites comments, whitespace and attribute quoting, so a
         # write-back that changes no identity value must stay byte-for-byte.
-        return incoming_bytes
-    return ET.tostring(merged, encoding="utf-8", xml_declaration=True)
+        out = incoming_bytes
+    else:
+        out = ET.tostring(merged, encoding="utf-8", xml_declaration=True)
+    if is_jurisdiction_config_path(relative_path):
+        out = postprocess_jurisdiction_xml_bytes(out)
+    return out
 
 
 def prepare_restore_bytes_preserving_identity(
@@ -603,6 +690,8 @@ def prepare_restore_bytes_preserving_identity(
     if is_protected_machine_identity_path(rel):
         raise ValueError(protected_machine_identity_reason(rel))
     if not rel.lower().endswith(".xml") or not dest.is_file():
+        if is_jurisdiction_config_path(rel):
+            return postprocess_jurisdiction_xml_bytes(incoming_raw)
         return incoming_raw
 
     from config_scanner.xml_diff import is_encrypted_origin_config_path
@@ -622,11 +711,15 @@ def prepare_restore_bytes_preserving_identity(
         incoming_plain = incoming_raw
         if not incoming_plain.lstrip().startswith(b"<"):
             return incoming_raw
-        merged_plain = merge_xml_bytes_preserving_identity(live_plain, incoming_plain)
+        merged_plain = merge_xml_bytes_preserving_identity(
+            live_plain, incoming_plain, relative_path=rel
+        )
         return merged_plain
 
     if not live_raw.lstrip().startswith(b"<") or not incoming_raw.lstrip().startswith(
         b"<"
     ):
         return incoming_raw
-    return merge_xml_bytes_preserving_identity(live_raw, incoming_raw)
+    return merge_xml_bytes_preserving_identity(
+        live_raw, incoming_raw, relative_path=rel
+    )

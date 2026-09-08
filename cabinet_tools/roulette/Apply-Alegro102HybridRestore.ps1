@@ -95,7 +95,7 @@ if (-not (Test-Path $Image10_1)) {
 Enable-BiwinDisk
 $biwin = Get-BiwinDisk
 if (-not $biwin) {
-    Log 'FAIL: BIWIN not visible — replug USB 2.0 port and rerun'
+    Log 'FAIL: BIWIN not visible - replug USB 2.0 port and rerun'
     exit 3
 }
 $diskNum = [int]$biwin.Number
@@ -148,7 +148,7 @@ $efiDest = 'E:\'
 $gDest = 'G:\'
 foreach ($p in @($efiDest, $gDest)) {
     if (-not (Test-Path $p)) {
-        Log "FAIL: target $p missing — BIWIN partition prep failed"
+        Log "FAIL: target $p missing - BIWIN partition prep failed"
         exit 5
     }
 }

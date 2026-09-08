@@ -19,6 +19,22 @@
         "matcher": "Write|StrReplace|EditNotebook",
         "timeout": 15
       }
+    ],
+    "beforeShellExecution": [
+      {
+        "command": "py -3 .cursor/hooks/block_goldclub_boot_tamper.py",
+        "matcher": "bcdboot|bcdedit\\s+/store|BIWINSYS|BIWINSOFT|_fix-biwin|_patch-biwin-boot|_repair-biwin|_unload-biwin-hive|CrashControl|bootmgfw\\.efi",
+        "failClosed": true,
+        "timeout": 10
+      }
+    ],
+    "preToolUse": [
+      {
+        "command": "py -3 .cursor/hooks/block_goldclub_boot_tamper.py",
+        "matcher": "bcdboot|bcdedit\\s+/store|BIWINSYS|BIWINSOFT|_fix-biwin|_patch-biwin-boot|_repair-biwin|_unload-biwin-hive|CrashControl|bootmgfw\\.efi",
+        "failClosed": true,
+        "timeout": 10
+      }
     ]
   }
 }

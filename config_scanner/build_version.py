@@ -5,6 +5,7 @@ from __future__ import annotations
 import glob
 import hashlib
 import json
+import os
 import re
 import socket
 from dataclasses import dataclass, replace
@@ -99,6 +100,27 @@ def _machine_name_from_product_serial_json(path: Path) -> str | None:
     return token or None
 
 
+_MGCONFIG_MACHINE_ID_RE = re.compile(
+    r"<MachineID>\s*([^<]+)\s*</MachineID>",
+    re.IGNORECASE,
+)
+
+
+def _machine_id_from_mgconfig(path: Path) -> str | None:
+    """Slot mgconfig.xml ``<MachineID>GST22377</MachineID>``."""
+    try:
+        if not path.is_file():
+            return None
+        text = path.read_text(encoding="utf-8-sig", errors="replace")
+    except OSError:
+        return None
+    match = _MGCONFIG_MACHINE_ID_RE.search(text)
+    if not match:
+        return None
+    token = _safe_folder_token(match.group(1).strip().upper(), fallback="")
+    return token or None
+
+
 def read_machine_serial_from_target(target: str | None) -> str | None:
     """
     Resolve cabinet MachineName / SN for snapshot folder names.
@@ -134,6 +156,18 @@ def read_machine_serial_from_target(target: str | None) -> str | None:
                 continue
             seen.add(key)
             name = _machine_name_from_product_serial_json(cand)
+            if name:
+                return name
+        for rel in (
+            "slot/themes/mgconfig.xml",
+            "themes/mgconfig.xml",
+        ):
+            cand = base / rel
+            key = str(cand).casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            name = _machine_id_from_mgconfig(cand)
             if name:
                 return name
 
@@ -232,19 +266,39 @@ def is_unc_path(target: str) -> bool:
 
 
 def _local_host_keys() -> set[str]:
-    keys: set[str] = {"localhost", "127.0.0.1", "::1"}
+    """Every hostname / IPv4 that refers to this Windows PC."""
+    keys: set[str] = {"localhost", "127.0.0.1", "::1", "."}
+    machine = (os.environ.get("COMPUTERNAME") or "").strip()
+    if machine:
+        keys.add(machine.casefold())
     try:
-        keys.add(socket.gethostname().casefold())
-        keys.add(socket.getfqdn().casefold())
-        for info in socket.getaddrinfo(socket.gethostname(), None):
+        hn = socket.gethostname()
+        keys.add(hn.casefold())
+        fqdn = socket.getfqdn().casefold()
+        keys.add(fqdn)
+        if fqdn and "." in fqdn:
+            keys.add(fqdn.split(".", 1)[0])
+        for info in socket.getaddrinfo(hn, None, socket.AF_INET, socket.SOCK_STREAM):
             keys.add(str(info[4][0]).casefold())
+        _, _, ips = socket.gethostbyname_ex(hn)
+        keys.update(ip.casefold() for ip in ips)
+    except OSError:
+        pass
+    # When getaddrinfo omits interface IPs (common on EGMs), use outbound route.
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("8.8.8.8", 80))
+            keys.add(sock.getsockname()[0].casefold())
     except OSError:
         pass
     return keys
 
 
 def is_local_host(host: str) -> bool:
-    return host.strip().casefold() in _local_host_keys()
+    token = (host or "").strip().strip(".").casefold()
+    if not token:
+        return False
+    return token in _local_host_keys()
 
 
 def unc_admin_share_to_local_path(target: str) -> str | None:
@@ -294,10 +348,19 @@ _RAMCLEAR_REPO_PREFIXES = ("", "Goldclub/")
 
 
 
+_SLOT_GAME_EXE_RELS = (
+    "OneHand.exe",
+    "bin/OneHand.exe",
+    "game-start.exe",
+    "slot/OneHand.exe",
+    "slot/game-start.exe",
+)
+
+
 def has_slot_game_exe(root: Path) -> bool:
     """True when a real slot client binary exists (folder alone is not enough)."""
     base = Path(root)
-    for rel in ("OneHand.exe", "bin/OneHand.exe", "game-start.exe"):
+    for rel in _SLOT_GAME_EXE_RELS:
         try:
             if (base / rel).is_file():
                 return True
@@ -383,7 +446,7 @@ class _ExeVersionInfo:
 
 
 def _find_onehand_exe(scan_root: Path) -> Path | None:
-    for rel in ("OneHand.exe", "bin/OneHand.exe"):
+    for rel in ("OneHand.exe", "bin/OneHand.exe", "slot/OneHand.exe"):
         path = scan_root / rel
         try:
             if path.is_file():
@@ -702,7 +765,8 @@ def _build_info_from_binary_fingerprint(
     if not has_slot_game_exe(scan_root):
         raise FileNotFoundError(
             f"No slot game EXE under {scan_root} "
-            "(expected OneHand.exe, bin\\OneHand.exe, or game-start.exe). "
+            "(expected OneHand.exe, bin\\OneHand.exe, game-start.exe, "
+            "or the same under slot\\). "
             "An empty C:\\Goldclub\\slot folder is not a valid scan target."
         )
     build_number = digest.hexdigest()[:8].upper()

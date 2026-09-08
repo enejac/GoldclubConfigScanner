@@ -1,10 +1,13 @@
-"""Kill-All + Run-FullStack after Config Scanner bulk restore (no EGM reboot)."""
+"""Kill-All + Run-FullStack after Config Scanner bulk restore (no EGM reboot).
+
+Slot cabinets use OneHand/Bootstrap stop+start (same as Live Push) instead of
+the roulette Kill-All / GCI-ELEVATE path.
+"""
 
 from __future__ import annotations
 
 import os
 import re
-import socket
 import subprocess
 import sys
 import time
@@ -12,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app_paths import app_install_dir
-from config_scanner.build_version import is_unc_path, normalize_scan_target
+from config_scanner.build_version import is_local_host, is_unc_path, normalize_scan_target
 
 _PS_ARGS = ("-NoProfile", "-ExecutionPolicy", "Bypass", "-File")
 _REMOTE_KILL = r"D:\usb_scripts\roulette\Kill-All.ps1"
@@ -21,12 +24,14 @@ _REMOTE_RUN = r"D:\usb_scripts\roulette\Run-FullStack.ps1"
 
 @dataclass(frozen=True)
 class StackRestartPlan:
-    """How to restart the GoldClub roulette stack."""
+    """How to restart the GoldClub stack (roulette Kill-All or slot OneHand)."""
 
     mode: str  # "local" | "remote"
     kill_ps1: str
     run_ps1: str
     host: str | None = None
+    kind: str = "roulette"  # "roulette" | "slot"
+    scan_target: str = ""
 
 
 def running_on_egm() -> bool:
@@ -42,21 +47,21 @@ def running_on_egm() -> bool:
 
 
 def _hostname_matches(host: str) -> bool:
-    token = (host or "").strip().strip(".").casefold()
-    if not token:
+    """True when *host* is this PC (hostname, FQDN, or any local IPv4)."""
+    return is_local_host(host)
+
+
+def scan_target_is_local_machine(scan_target: str) -> bool:
+    """True when *scan_target* points at this Windows PC, not a remote cabinet."""
+    normalized = normalize_scan_target((scan_target or "").strip())
+    if not normalized:
         return False
-    if token in {"localhost", "127.0.0.1", "."}:
+    if not is_unc_path(normalized):
         return True
-    local = (os.environ.get("COMPUTERNAME") or "").strip().casefold()
-    if local and token == local:
-        return True
-    try:
-        fqdn = socket.getfqdn().casefold()
-        if fqdn and (token == fqdn or fqdn.startswith(f"{token}.")):
-            return True
-    except OSError:
-        pass
-    return False
+    host = unc_host_from_target(normalized)
+    if not host:
+        return False
+    return _hostname_matches(host)
 
 
 def unc_host_from_target(target: str) -> str | None:
@@ -91,15 +96,77 @@ def find_stack_scripts() -> tuple[Path, Path] | None:
     return kill, run
 
 
-def plan_stack_restart(scan_target: str) -> StackRestartPlan | None:
-    """Return a stack-restart plan, or None when scripts or target are unavailable."""
-    scripts = find_stack_scripts()
-    normalized = normalize_scan_target(scan_target)
+def stack_kind_for_target(scan_target: str) -> str:
+    """``slot`` or ``roulette`` for stack stop/start on this scan path."""
+    from config_scanner.build_version import (
+        is_slot_cabinet_scan_target,
+        scan_target_path,
+    )
+
+    cleaned = (scan_target or "").strip()
+    if not cleaned:
+        return "roulette"
+    if is_slot_cabinet_scan_target(cleaned):
+        return "slot"
+    try:
+        from config_scanner.live_push import goldclub_stack_kind
+
+        kind = goldclub_stack_kind(scan_target_path(cleaned))
+    except (OSError, ValueError, TypeError, ImportError):
+        return "roulette"
+    if kind == "slot":
+        return "slot"
+    return "roulette"
+
+
+def _slot_stack_plan(normalized: str) -> StackRestartPlan | None:
+    """Slot cabinets: stop OneHand / start Bootstrap (no USB Kill-All scripts)."""
     if is_unc_path(normalized):
         host = unc_host_from_target(normalized)
         if not host:
             return None
-        if _hostname_matches(host):
+        if scan_target_is_local_machine(normalized):
+            return StackRestartPlan(
+                mode="local",
+                host=None,
+                kill_ps1="",
+                run_ps1="",
+                kind="slot",
+                scan_target=normalized,
+            )
+        return StackRestartPlan(
+            mode="remote",
+            host=host,
+            kill_ps1="",
+            run_ps1="",
+            kind="slot",
+            scan_target=normalized,
+        )
+    # Local letter / Goldclub path only when we are on the EGM itself.
+    if running_on_egm():
+        return StackRestartPlan(
+            mode="local",
+            host=None,
+            kill_ps1="",
+            run_ps1="",
+            kind="slot",
+            scan_target=normalized,
+        )
+    return None
+
+
+def plan_stack_restart(scan_target: str) -> StackRestartPlan | None:
+    """Return a stack-restart plan, or None when scripts or target are unavailable."""
+    normalized = normalize_scan_target(scan_target)
+    if stack_kind_for_target(normalized) == "slot":
+        return _slot_stack_plan(normalized)
+
+    scripts = find_stack_scripts()
+    if is_unc_path(normalized):
+        host = unc_host_from_target(normalized)
+        if not host:
+            return None
+        if scan_target_is_local_machine(normalized):
             if scripts is None:
                 return None
             kill, run = scripts
@@ -108,6 +175,8 @@ def plan_stack_restart(scan_target: str) -> StackRestartPlan | None:
                 host=None,
                 kill_ps1=str(kill),
                 run_ps1=str(run),
+                kind="roulette",
+                scan_target=normalized,
             )
         kill_path, run_path = _remote_script_paths(host, scripts)
         if scripts is None:
@@ -128,6 +197,8 @@ def plan_stack_restart(scan_target: str) -> StackRestartPlan | None:
             host=host,
             kill_ps1=kill_path,
             run_ps1=run_path,
+            kind="roulette",
+            scan_target=normalized,
         )
 
     if running_on_egm():
@@ -139,6 +210,8 @@ def plan_stack_restart(scan_target: str) -> StackRestartPlan | None:
             host=None,
             kill_ps1=str(kill),
             run_ps1=str(run),
+            kind="roulette",
+            scan_target=normalized,
         )
     return None
 
@@ -172,7 +245,14 @@ def stack_restart_message() -> str:
     )
 
 
-def stack_stop_before_write_text() -> str:
+def stack_stop_before_write_text(*, kind: str = "roulette") -> str:
+    if (kind or "").casefold() == "slot":
+        return (
+            "This target looks like a running slot cabinet: OneHand/Bootstrap "
+            "always stop before restore or revert so files can be written. If "
+            "Auto-start stack is on, Bootstrap starts afterward. Offline VHD / "
+            "lettered disks skip this."
+        )
     return (
         "This target looks like a running cabinet: Kill-All always runs "
         "before restore or revert so files can be written. If Auto-start "
@@ -187,14 +267,28 @@ def should_autostart_after_write(
     stack_killed: bool,
     has_plan: bool,
 ) -> bool:
-    """Run-FullStack only after a successful Kill-All when the operator wants it."""
+    """Run-FullStack / Bootstrap only after a successful stop when the operator wants it."""
     return bool(auto_start and stack_killed and has_plan)
+
+
+def _plan_scan_target(plan: StackRestartPlan, scan_target: str | None = None) -> str:
+    return (scan_target or plan.scan_target or "").strip()
 
 
 def run_stack_kill(plan: StackRestartPlan) -> tuple[bool, str]:
     """Stop the GoldClub stack so config and DeviceManagerData can be written."""
     if sys.platform != "win32":
         return False, "Stack stop is only supported on Windows."
+    if plan.kind == "slot":
+        from config_scanner.live_push import run_slot_stack_kill
+
+        target = _plan_scan_target(plan)
+        if not target:
+            return False, "Slot stack stop requires a scan target."
+        ok, detail = run_slot_stack_kill(target)
+        if not ok:
+            return False, detail
+        return _verify_slot_stopped_after_kill(plan, detail)
     if plan.mode == "local":
         ok, detail = _run_powershell_file(
             plan.kill_ps1,
@@ -231,6 +325,13 @@ def run_stack_start(
     """Start the GoldClub stack after a restore."""
     if sys.platform != "win32":
         return False, "Stack start is only supported on Windows."
+    if plan.kind == "slot":
+        from config_scanner.live_push import run_slot_stack_start
+
+        target = _plan_scan_target(plan, scan_target)
+        if not target:
+            return False, "Slot stack start requires a scan target."
+        return run_slot_stack_start(target)
     if plan.mode == "local":
         ok, detail = _run_powershell_file(
             plan.run_ps1,
@@ -256,11 +357,11 @@ def run_stack_start(
         )
     if not ok:
         return False, detail
-    if ensure_llave and scan_target:
+    if ensure_llave and (scan_target or plan.scan_target):
         from config_scanner.cabinet_trial_prep import ensure_llave_bound_after_start
 
         llave_ok, llave_detail = ensure_llave_bound_after_start(
-            scan_target,
+            scan_target or plan.scan_target,
             machine_serial=machine_serial,
             tool_root=tool_root,
         )
@@ -315,6 +416,43 @@ def _run_powershell_file(
         return True, f"{label} finished (exit 1, continuing)"
     tail = detail.splitlines()[-1] if detail else f"exit {result.returncode}"
     return False, f"{label} failed: {tail}"
+
+
+def _verify_slot_stopped_after_kill(
+    plan: StackRestartPlan, kill_detail: str
+) -> tuple[bool, str]:
+    """Confirm OneHand/Bootstrap are gone after a slot stop."""
+    host = (plan.host or "").strip() or None
+    if plan.mode == "local":
+        host = None
+    script = (
+        "$n=@('OneHand','Bootstrap','game-start'); "
+        "(Get-Process -Name $n -ErrorAction SilentlyContinue | "
+        "Select-Object -ExpandProperty ProcessName -Unique) -join ','"
+    )
+    blob = ""
+    try:
+        if host:
+            from automation.remote_exec import winrm_run_inline
+            from network.lab_access import ensure_lab_smb_credential, require_lab_fleet_ip
+
+            ip = require_lab_fleet_ip(host)
+            ensure_lab_smb_credential(ip)
+            result = winrm_run_inline(ip=ip, script=script, timeout=60)
+            blob = ((result.stdout or "") + (result.stderr or "")).strip()
+        else:
+            from network.ruleta_stack_probe import _probe_local_powershell
+
+            blob = _probe_local_powershell(script)
+    except Exception:  # noqa: BLE001
+        blob = ""
+    running = tuple(
+        sorted({part.strip() for part in blob.split(",") if part.strip()})
+    )
+    if not running:
+        return True, kill_detail
+    left = ", ".join(running)
+    return False, f"Slot stop finished but still running: {left}"
 
 
 def _verify_stack_stopped_after_kill(kill_detail: str) -> tuple[bool, str]:

@@ -1,0 +1,23 @@
+---
+description: Never rewrite GoldClub/EGM boot (BCD, EFI, offline hives)
+alwaysApply: true
+---
+
+# Never touch GoldClub boot
+
+If Windows shows the logo or a black screen, **boot already works**. Do not "repair" it.
+
+27 Aug 2026: `bcdboot` + offline hive edits on the GST22377 BIWIN turned a working boot into a BSOD. The image had to be restored by hand.
+
+## Forbidden (no exceptions, including "offline USB disk", "lab", "authorized")
+
+- `bcdboot`, `bcdedit /store`, EFI `BCD`, `bootmgfw.efi`, `bootx64.efi`
+- `reg load` of another Windows `SYSTEM` / `SOFTWARE` hive (`BIWINSYS`, `BIWINSOFT`)
+- CrashControl, Winlogon `Userinit`, Shell Launcher registry
+- `_fix-biwin-efi.ps1`, `_fix-biwin-bcd-portable.ps1`, `_patch-biwin-boot.ps1`, `_repair-biwin-bsod.ps1`
+- Alegro / Macrium restore onto a GameStar disk
+- USB stick at POST (BSOD). Unplug until the game is on screen.
+
+## Allowed
+
+Copy **only** `OO_Security.ps1` and `onlogon.ps1` onto a machine that **already boots**, over SMB. Custom shell: `param([string]$WorkingDirectory)`, start `G:\Bootstrap.exe`, never probe `C:\goldclub`, never run USB CopyOnlogon from the shell.

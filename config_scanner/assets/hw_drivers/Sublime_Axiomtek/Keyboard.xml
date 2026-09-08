@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8" ?> 
+<config>
+	<mapping>
+		<a name="263">Help</a>
+		<b name="261">Collect</b>
+		<c name="262">WaitBonus</c>
+		<d name="273">CycleSelectedLines</d>
+		<e name="274">BetOne</e>
+		<g name="264">BetMinus</g>
+		<i name="266">BetPlus</i>
+		<k name="268">MaxBet</k>
+		<l name="265">Problem</l>
+		<n name="269">Spin</n>
+		<n name="267">MultiGameSelection</n>
+	</mapping>
+</config>

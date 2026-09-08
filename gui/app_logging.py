@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import sys
 import traceback
+from datetime import date
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -12,21 +13,42 @@ _CONFIGURED = False
 _LOG_PATH: Path | None = None
 
 
-from app_paths import app_writable_dir
+from app_paths import app_local_data_dir, app_writable_dir
+
+
+def default_app_log_filename(*, when: date | None = None) -> str:
+    """``CG logs YYYY-MM-DD.log`` for the Config Scanner process log."""
+    day = when or date.today()
+    return f"CG logs {day.isoformat()}.log"
 
 
 def app_log_dir() -> Path:
-    """Directory for LogInvestigator.log.
+    """Directory for the dated Config Scanner log.
 
-    Uses the writable root (local AppData when the exe lives on a UNC share) so a
-    rotating log handle never keeps ``\\\\cabinet\\USB_Remote`` locked.
+    Uses the writable root (local AppData when the exe lives on a UNC share or
+    a USB that refuses writes) so a rotating log handle never keeps a share
+    locked and never crashes startup with ``PermissionError``.
     """
     return app_writable_dir()
 
 
 def log_file_path(*, filename: str | None = None) -> Path:
-    name = (filename or "").strip() or "LogInvestigator.log"
+    name = (filename or "").strip() or default_app_log_filename()
     return app_log_dir() / name
+
+
+def _log_path_candidates(requested: Path, *, filename: str | None) -> list[Path]:
+    name = (filename or "").strip() or default_app_log_filename()
+    fallback = app_local_data_dir() / name
+    out: list[Path] = []
+    seen: set[str] = set()
+    for path in (requested, fallback):
+        key = str(path).replace("/", "\\").casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(path)
+    return out
 
 
 def configure_app_logging(
@@ -36,15 +58,16 @@ def configure_app_logging(
 ) -> Path:
     """Attach rotating file log + stderr; safe to call once at startup.
 
-    Pass ``filename`` (e.g. ``SasVerifyMeters.log``) for standalone tools so the
-    log sits next to that exe instead of sharing ``LogInvestigator.log``.
+    Pass ``filename`` to override the default ``CG logs YYYY-MM-DD.log``.
+
+    Never raises for a non-writable install dir: logs go to AppData, or file
+    logging is skipped so the GUI can still open.
     """
     global _CONFIGURED, _LOG_PATH
-    path = log_file_path(filename=filename)
+    requested = log_file_path(filename=filename)
     if _CONFIGURED:
-        return _LOG_PATH or path
+        return _LOG_PATH or requested
 
-    path.parent.mkdir(parents=True, exist_ok=True)
     root = logging.getLogger()
     root.setLevel(level)
 
@@ -53,15 +76,25 @@ def configure_app_logging(
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    file_handler = RotatingFileHandler(
-        path,
-        maxBytes=2_000_000,
-        backupCount=3,
-        encoding="utf-8",
-    )
-    file_handler.setLevel(level)
-    file_handler.setFormatter(fmt)
-    root.addHandler(file_handler)
+    path = requested
+    file_ok = False
+    for candidate in _log_path_candidates(requested, filename=filename):
+        try:
+            candidate.parent.mkdir(parents=True, exist_ok=True)
+            file_handler = RotatingFileHandler(
+                candidate,
+                maxBytes=2_000_000,
+                backupCount=3,
+                encoding="utf-8",
+            )
+            file_handler.setLevel(level)
+            file_handler.setFormatter(fmt)
+            root.addHandler(file_handler)
+            path = candidate
+            file_ok = True
+            break
+        except OSError:
+            continue
 
     if not getattr(sys, "frozen", False):
         stream = logging.StreamHandler(sys.stderr)
@@ -74,12 +107,20 @@ def configure_app_logging(
     _LOG_PATH = path
 
     log = logging.getLogger("gui.app_logging")
-    log.info(
-        "Logging started path=%s frozen=%s executable=%s",
-        path,
-        getattr(sys, "frozen", False),
-        sys.executable,
-    )
+    if file_ok:
+        log.info(
+            "Logging started path=%s frozen=%s executable=%s",
+            path,
+            getattr(sys, "frozen", False),
+            sys.executable,
+        )
+    else:
+        log.warning(
+            "File logging disabled (not writable) requested=%s frozen=%s executable=%s",
+            requested,
+            getattr(sys, "frozen", False),
+            sys.executable,
+        )
     return path
 
 
