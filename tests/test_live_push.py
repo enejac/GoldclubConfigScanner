@@ -433,6 +433,35 @@ def test_goldclub_root_helpers(tmp_path: Path) -> None:
     assert not _unc_parent_is_host_only(gold / "slot")
 
 
+def test_prepare_live_goldclub_retries_1326_then_explains(monkeypatch) -> None:
+    from config_scanner.live_push import prepare_live_goldclub
+
+    monkeypatch.setattr(
+        "config_scanner.live_push.cabinet_host_reachable",
+        lambda *_a, **_k: (True, ""),
+    )
+    dropped: list[str] = []
+    monkeypatch.setattr(
+        "network.lab_access.drop_lab_smb_sessions", dropped.append
+    )
+    monkeypatch.setattr("config_scanner.live_push._ensure_lab_smb", lambda _h: None)
+    n = {"n": 0}
+
+    def boom(_target: str):
+        n["n"] += 1
+        exc = OSError(1326, r"The user name or password is incorrect: '\\10.0.0.111\slot\'")
+        exc.winerror = 1326
+        raise exc
+
+    monkeypatch.setattr("config_scanner.live_push.goldclub_root_from_target", boom)
+    root, err = prepare_live_goldclub(r"\\10.0.0.111\slot")
+    assert root is None
+    assert dropped == ["10.0.0.111"]
+    assert n["n"] == 2
+    assert r"10.0.0.111\test" in err
+    assert "workgroup" in err.casefold()
+
+
 def test_commit_writes_without_stack(tmp_path: Path, monkeypatch) -> None:
     gold = _fake_goldclub(tmp_path)
     recipe = load_recipe_from_goldclub(gold, label="live")

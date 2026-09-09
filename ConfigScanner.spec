@@ -111,10 +111,11 @@ hiddenimports = [
     "ai_helper.gcxml_decrypt",
     "win32api",
     "pywintypes",
+    "win32wnet",
 ]
 
 if sys.platform == "win32":
-    for _win_mod in ("win32api", "pywintypes", "win32ctypes"):
+    for _win_mod in ("win32api", "pywintypes", "win32ctypes", "win32wnet"):
         try:
             _win_d, _win_b, _win_h = collect_all(_win_mod)
             datas += _win_d
