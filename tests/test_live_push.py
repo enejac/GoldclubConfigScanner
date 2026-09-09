@@ -377,6 +377,8 @@ def test_live_push_chrome_has_tooltips() -> None:
     assert "self._restart.setToolTip(" in src
     assert "self._backup.setToolTip(" in src
     assert "self._backup.setChecked(False)" in src
+    assert "self._restore_backup" in src
+    assert "_restore_backup_clicked" in src
     assert "self._full_pack.setToolTip(" in src
     assert "self._commit.setToolTip(" in src
     assert "LIVE_OPTION_HELP.get" in src

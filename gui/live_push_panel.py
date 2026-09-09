@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtGui import QBrush, QColor, QPalette
 
+from gui.busy_spinner import BusySpinner
 from config_scanner.bill_tokens_view import (
     apply_bill_token_accept,
     bill_tokens_all_match,
@@ -710,6 +711,9 @@ class LivePushPanel(QWidget):
         load.clicked.connect(self._load)
         self._load_btn = load
         cab.addWidget(load)
+        self._load_spinner = BusySpinner(load, diameter=16, color=QColor(255, 255, 255))
+        self._load_spinner.mount_on(load)
+        self._load_spinner.setToolTip("Loading cabinet…")
         outer.addLayout(cab)
 
         quick = QHBoxLayout()
@@ -1149,6 +1153,12 @@ class LivePushPanel(QWidget):
             "change into live_push_backups/<timestamp>/ under the Config Scanner folder "
             "before overwrite."
         )
+        self._restore_backup = QPushButton("Restore backup…")
+        self._restore_backup.setToolTip(
+            "Copy files from a live_push_backups/<timestamp>/ folder back onto the "
+            "cabinet path above. Use after a bad Apply, then reload / restart the game."
+        )
+        self._restore_backup.clicked.connect(self._restore_backup_clicked)
         flags = QHBoxLayout()
         flags.setContentsMargins(0, 0, 0, 0)
         flags.setSpacing(16)
@@ -1210,6 +1220,7 @@ class LivePushPanel(QWidget):
         backup_row = QHBoxLayout()
         backup_row.setContentsMargins(0, 4, 0, 0)
         backup_row.addWidget(self._backup)
+        backup_row.addWidget(self._restore_backup)
         backup_row.addStretch(1)
         outer.addLayout(backup_row)
 
@@ -1519,6 +1530,13 @@ class LivePushPanel(QWidget):
             return
         self._set_busy(True)
         self._status.setText("Connecting to cabinet…")
+        # Defer the worker so the spinner / wait cursor paint before SMB work
+        # contends for the GIL.
+        QTimer.singleShot(0, lambda path=raw: self._start_load_worker(path))
+
+    def _start_load_worker(self, raw: str) -> None:
+        if not self._busy:
+            return
         QThreadPool.globalInstance().start(_LoadRunnable(raw, self._load_emitter))
 
     def _on_load_finished(self, outcome: object) -> None:
@@ -2787,12 +2805,20 @@ class LivePushPanel(QWidget):
         QThreadPool.globalInstance().start(runnable)
 
     def _set_busy(self, busy: bool) -> None:
+        was_busy = self._busy
         self._busy = busy
         self._commit.setEnabled(not busy)
         self._load_btn.setEnabled(not busy)
         self._dallas_read.setEnabled(not busy and not self._dallas_busy)
         for btn in self._shortcut_btns:
             btn.setEnabled(not busy)
+        spinner = getattr(self, "_load_spinner", None)
+        if spinner is not None:
+            spinner.set_active(busy)
+        if busy and not was_busy:
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        elif not busy and was_busy:
+            QApplication.restoreOverrideCursor()
 
     def _on_progress(self, message: str) -> None:
         self._status.setText(message)
@@ -3058,10 +3084,32 @@ class LivePushPanel(QWidget):
             "and Apply again.",
         )
 
+    def _restore_backup_clicked(self) -> None:
+        from config_scanner.paths import tool_root
+
+        root = tool_root() / "live_push_backups"
+        start = self._last_backup_dir or (
+            str(root) if root.is_dir() else str(tool_root())
+        )
+        path = QFileDialog.getExistingDirectory(
+            self,
+            "Choose Live Push backup folder",
+            start,
+        )
+        if not path:
+            return
+        self._restore_backup_dir(Path(path))
+
     def _restore_last_backup(self) -> None:
         bak = self._last_backup_dir
         if not bak or not Path(bak).is_dir():
             QMessageBox.warning(self, "Restore", "No pre-push backup is available.")
+            return
+        self._restore_backup_dir(Path(bak))
+
+    def _restore_backup_dir(self, bak: Path) -> None:
+        if not bak.is_dir():
+            QMessageBox.warning(self, "Restore", f"Backup not found:\n{bak}")
             return
         raw = self._path.text().strip()
         try:
@@ -3078,10 +3126,11 @@ class LivePushPanel(QWidget):
         if reply != QMessageBox.StandardButton.Yes:
             return
         try:
-            restored = restore_live_push_backup(Path(bak), goldclub)
+            restored = restore_live_push_backup(bak, goldclub)
         except (OSError, FileNotFoundError) as exc:
             QMessageBox.warning(self, "Restore", str(exc))
             return
+        self._last_backup_dir = str(bak)
         self._slotlog_findings = []
         self._paint_live_highlights()
         QMessageBox.information(

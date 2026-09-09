@@ -551,12 +551,16 @@ def test_live_push_footer_keeps_apply_beside_options(
     restart_g = panel._restart.geometry()
     status_g = panel._status.geometry()
     backup_g = panel._backup.geometry()
+    restore_g = panel._restore_backup.geometry()
     assert apply_g.left() > restart_g.right()
     assert apply_g.top() <= restart_g.bottom() + 6
     assert apply_g.bottom() >= status_g.top()
     assert status_g.left() <= restart_g.left() + 8
     assert not panel._backup.isChecked()
     assert backup_g.top() >= apply_g.bottom() - 2
+    assert restore_g.top() >= apply_g.bottom() - 2
+    assert restore_g.left() >= backup_g.right() - 2
+    assert panel._restore_backup.text().startswith("Restore backup")
 
 
 def test_door_switch_defaults_match_111_and_auto_unlock_all(
