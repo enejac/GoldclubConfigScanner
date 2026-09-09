@@ -258,6 +258,7 @@ def test_live_option_help_covers_core_fields() -> None:
         "Denoms (cents)",
         "SAS enabled",
         "Bill protocol",
+        "Bill notes",
         "Dallas key",
         "Display layout",
         "Credit limit",
@@ -677,6 +678,29 @@ def test_sas_channel_and_switch_snapshot_sections() -> None:
     assert rows["Stacker auto-unlock"] == "on"
 
 
+def test_bill_notes_snapshot_and_hardware_section() -> None:
+    from config_scanner.live_push import (
+        live_field_matches,
+        live_push_changed_sections,
+        recipe_snapshot_rows,
+    )
+    from config_scanner.slot_setup import BillToken, SlotSetupRecipe
+
+    live = SlotSetupRecipe(
+        bill_tokens=[
+            BillToken(code="97", value=100, can_accept=True),
+            BillToken(code="102", value=10000, can_accept=True),
+        ]
+    )
+    form = SlotSetupRecipe.from_dict(live.to_dict())
+    form.bill_tokens[1].can_accept = False
+    rows = dict(recipe_snapshot_rows(form))
+    assert "102=10000:off" in rows["Bill notes"]
+    assert live_field_matches(live, form)["Bill notes"] is False
+    assert live_field_matches(live, live)["Bill notes"] is True
+    assert live_push_changed_sections(live, form) == frozenset({"hardware"})
+
+
 def test_live_push_ramclear_reasons_currency_and_denoms() -> None:
     from config_scanner.live_push import live_push_ramclear_reasons
     from config_scanner.slot_setup import SlotSetupRecipe
@@ -970,7 +994,65 @@ def test_restart_slot_hwsubsys_script_uses_goldclub_service_name() -> None:
     assert "exit 1" in src
     assert "Start-Sleep -Seconds 12" in src
     assert "Start-SlotGameWatch" in lp._SLOT_KILL_SCRIPT
-    assert "Get-Process -Name Bootstrap | Stop-Process -Force" in lp._SLOT_KILL_SCRIPT
+    assert "Start-SlotGameWatch.ps1" in lp._SLOT_KILL_SCRIPT
+    assert "Stop-SlotWatchers" in lp._SLOT_KILL_SCRIPT
+    assert "ParentProcessId" in lp._SLOT_KILL_SCRIPT
+    assert "STILL:Bootstrap" in lp._SLOT_KILL_SCRIPT
+    assert "Stop-Named @('Bootstrap')" in lp._SLOT_KILL_SCRIPT
+    assert "taskkill /F /T" in lp._SLOT_KILL_SCRIPT
+    assert "MethodName Terminate" in lp._SLOT_KILL_SCRIPT
+    assert "pid=" in lp._SLOT_KILL_SCRIPT
+    assert "return $false" not in lp._SLOT_KILL_SCRIPT
+    src_local = inspect.getsource(lp._run_local_powershell)
+    assert "-EncodedCommand" in src_local
+    assert '"-Command"' not in src_local
+
+
+def test_lp_log_writes_only_livepush_file(tmp_path: Path, monkeypatch, caplog) -> None:
+    import logging
+
+    from config_scanner import live_push as lp
+
+    log = tmp_path / "LivePush.log"
+    monkeypatch.setattr(lp, "live_push_log_path", lambda: log)
+    with caplog.at_level(logging.DEBUG):
+        lp._lp_log("hello unique live-push line")
+    text = log.read_text(encoding="utf-8")
+    assert "hello unique live-push line" in text
+    assert "T" in text.split(" ", 1)[0]
+    assert "hello unique live-push line" not in caplog.text
+
+
+def test_commit_slot_kill_failure_restarts_game(tmp_path: Path, monkeypatch) -> None:
+    gold = _fake_goldclub(tmp_path)
+    recipe = load_recipe_from_goldclub(gold, label="live")
+    recipe.play_limits.show_all_lines = not bool(recipe.play_limits.show_all_lines)
+    starts: list[str] = []
+
+    monkeypatch.setattr("config_scanner.live_push.goldclub_stack_kind", lambda _r: "slot")
+    monkeypatch.setattr(
+        "config_scanner.live_push.run_slot_stack_kill",
+        lambda *_a, **_k: (False, "exit 1"),
+    )
+    monkeypatch.setattr(
+        "config_scanner.live_push.run_slot_stack_start",
+        lambda *_a, **_k: (starts.append("start") or True, "bootstrap"),
+    )
+
+    result = commit_live_push(
+        recipe,
+        gold,
+        restart_stack=True,
+        scan_target=str(gold),
+        work_parent=tmp_path / "work",
+        backup=False,
+    )
+    assert result.errors
+    assert "were not written" in result.errors[0]
+    assert not result.written
+    assert starts == ["start"]
+    assert result.stack_started is True
+    assert "Game was started again" in result.errors[0]
 
 
 def test_patch_aurum_rewrites_messenger_uri(tmp_path: Path) -> None:

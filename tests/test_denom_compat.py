@@ -15,8 +15,11 @@ from config_scanner.denom_compat import (
     expected_magic_wheel_for_denom,
     find_staged_leaf_for_denom,
     inspect_link2win_math,
+    list_link2win_math_replace_targets,
     parse_link2win_pairs,
+    replace_cabinet_math_file,
     validate_denom_configuration,
+    validate_math_replacement_source,
 )
 from config_scanner.jurisdiction import find_jurisdiction
 from config_scanner.live_push import (
@@ -562,4 +565,94 @@ def test_link2win_hash_manifest_includes_cabinet_111_5c() -> None:
     assert manifest.get(live_sha) == 5
     config2_sha = "2b14d791139d23ac531e1d8e12d72733debff70b5175ef1829c014a2a59d9738"
     assert manifest.get(config2_sha) == 5
+
+
+def test_list_math_replace_targets_when_live_missing_denom(tmp_path: Path) -> None:
+    gold = _fake_goldclub(tmp_path)
+    src_leaf = find_staged_leaf_for_denom(
+        5,
+        currency="TTD",
+        market="TrinidadTobago",
+        screens="3",
+    )
+    assert src_leaf is not None
+    link_dir = gold / "slot/themes/Link2WinFeature"
+    link_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(
+        src_leaf / "slot/themes/Link2WinFeature/Link2WinBonusMath.json",
+        link_dir / "Link2WinBonusMath.json",
+    )
+    live = load_recipe_from_goldclub(gold, label="live")
+    live.denomination_list = [5]
+    proposed = SlotSetupRecipe.from_dict(live.to_dict())
+    proposed.denomination_list = [10]
+    proposed.play_limits.magic_wheel_bet = 10
+    proposed.play_limits.magic_wheel_average = 50
+    targets = list_link2win_math_replace_targets(live, proposed, gold)
+    assert len(targets) == 1
+    assert targets[0].label == "Link2WinBonusMath.json"
+    assert targets[0].denoms == (10,)
+
+
+def test_replace_cabinet_math_clears_validation(tmp_path: Path) -> None:
+    gold = _fake_goldclub(tmp_path)
+    src_5c = find_staged_leaf_for_denom(
+        5,
+        currency="TTD",
+        market="TrinidadTobago",
+        screens="3",
+    )
+    src_10c = find_staged_leaf_for_denom(
+        10,
+        currency="TTD",
+        market="TrinidadTobago",
+        screens="3",
+    )
+    assert src_5c is not None and src_10c is not None
+    link_dir = gold / "slot/themes/Link2WinFeature"
+    link_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(
+        src_5c / "slot/themes/Link2WinFeature/Link2WinBonusMath.json",
+        link_dir / "Link2WinBonusMath.json",
+    )
+    live = load_recipe_from_goldclub(gold, label="live")
+    live.denomination_list = [5]
+    proposed = SlotSetupRecipe.from_dict(live.to_dict())
+    proposed.denomination_list = [10]
+    proposed.play_limits.magic_wheel_bet = 10
+    proposed.play_limits.magic_wheel_average = 50
+    targets = list_link2win_math_replace_targets(live, proposed, gold)
+    assert targets
+    good_src = src_10c / "slot/themes/Link2WinFeature/Link2WinBonusMath.json"
+    assert validate_math_replacement_source(good_src, targets[0]) is None
+    replace_cabinet_math_file(gold, targets[0], good_src)
+    after_replace = validate_denom_configuration(live, proposed, gold)
+    assert after_replace.ok, after_replace.errors
+    assert not list_link2win_math_replace_targets(live, proposed, gold)
+
+
+def test_validate_math_replacement_rejects_wrong_denom(tmp_path: Path) -> None:
+    gold = _fake_goldclub(tmp_path)
+    src_5c = find_staged_leaf_for_denom(
+        5,
+        currency="TTD",
+        market="TrinidadTobago",
+        screens="3",
+    )
+    assert src_5c is not None
+    link_dir = gold / "slot/themes/Link2WinFeature"
+    link_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(
+        src_5c / "slot/themes/Link2WinFeature/Link2WinBonusMath.json",
+        link_dir / "Link2WinBonusMath.json",
+    )
+    live = load_recipe_from_goldclub(gold, label="live")
+    proposed = SlotSetupRecipe.from_dict(live.to_dict())
+    proposed.denomination_list = [10]
+    targets = list_link2win_math_replace_targets(live, proposed, gold)
+    assert targets
+    bad_src = src_5c / "slot/themes/Link2WinFeature/Link2WinBonusMath.json"
+    err = validate_math_replacement_source(bad_src, targets[0])
+    assert err is not None
+    assert "10c" in err or "does not include" in err
 

@@ -75,3 +75,26 @@ def test_build_portable_zip_single_nest(tmp_path: Path) -> None:
     assert not any("/CRYPT_TOOLS/" in n for n in names)
     assert not any(n.endswith("/BiOS2_PackageGenerator/BiOS2_PackageGenerator.exe") for n in names)
     assert not any(n.count("ConfigScanner-2026-09-04") > 1 for n in names)
+    assert not any(n.startswith("ConfigScanner-2026-09-04/embedded_updates/") for n in names)
+
+
+def test_build_portable_zip_skips_embedded_updates_even_when_assets_present(
+    tmp_path: Path,
+) -> None:
+    _write_nested_dupes(tmp_path)
+    assets = tmp_path / "config_scanner" / "assets" / "embedded_updates"
+    staged = assets / "staged" / "CS-Gamestar-SA-00" / "CountrySelectorTool" / "data"
+    staged.mkdir(parents=True)
+    (assets / "catalog.json").write_text('{"version":1,"updates":[]}', encoding="utf-8")
+    (assets / "b2u").mkdir()
+    (assets / "b2u" / "CS-Gamestar-PER-00.b2u").write_bytes(b"b2u")
+    (staged / "install.json").write_text("{}", encoding="utf-8")
+    exe = tmp_path / "ConfigScanner.exe"
+    exe.write_bytes(b"MZ-exe")
+    zpath = tmp_path / "ConfigScanner-full.zip"
+    build_portable_zip(
+        exe, zpath, folder_name="ConfigScanner-full", source_root=tmp_path
+    )
+    with zipfile.ZipFile(zpath) as zf:
+        names = zf.namelist()
+    assert not any("/embedded_updates/" in n for n in names)

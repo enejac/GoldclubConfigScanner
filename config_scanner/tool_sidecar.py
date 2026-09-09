@@ -80,14 +80,36 @@ def stage_sidecar_tools(dest_tools: Path, *, source_root: Path | None = None) ->
     return dest
 
 
+def embedded_updates_assets_root(source_root: Path | None = None) -> Path:
+    root = Path(source_root) if source_root is not None else app_install_dir()
+    return root / "config_scanner" / "assets" / "embedded_updates"
+
+
+def stage_embedded_updates(dest: Path, *, source_root: Path | None = None) -> Path | None:
+    """Copy catalog + b2u + staged CS trees beside the exe (USB / zip layout)."""
+    src = embedded_updates_assets_root(source_root)
+    try:
+        if not src.is_dir() or not (src / "catalog.json").is_file():
+            return None
+    except OSError:
+        return None
+    dest = Path(dest)
+    if dest.exists():
+        shutil.rmtree(dest)
+    shutil.copytree(src, dest, ignore=shutil.ignore_patterns("_sync_cache", "__pycache__"))
+    return dest
+
+
 PACK_README = (
     "Config Scanner portable pack\r\n"
     "\r\n"
     "  ConfigScanner.exe\r\n"
-    "  tools\\   Encryptor, BiOSCrypt, BiOS Encryptor, JPCrypt,\r\n"
-    "           BiOS2_PackageGenerator + log4net + SharpZipLib\r\n"
+    "  tools\\              Encryptor, BiOSCrypt, BiOS Encryptor, JPCrypt,\r\n"
+    "                      BiOS2_PackageGenerator + log4net + SharpZipLib\r\n"
     "\r\n"
-    "Keep tools next to the exe. First run creates config-scanner\\ beside it.\r\n"
+    "Keep tools next to the exe.\r\n"
+    "First run creates config-scanner\\ beside it.\r\n"
+    "Country Selector packs: use the lab share or copy embedded_updates beside the exe.\r\n"
 )
 
 
@@ -98,7 +120,7 @@ def build_portable_zip(
     folder_name: str,
     source_root: Path | None = None,
 ) -> Path:
-    """Zip ``folder_name/ConfigScanner.exe`` + ``folder_name/tools`` (one nest)."""
+    """Zip exe + ``tools`` only (no embedded Country Selector trees)."""
     import tempfile
     import zipfile
 

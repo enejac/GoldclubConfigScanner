@@ -13,6 +13,7 @@ import json
 import re
 import shutil
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from config_scanner.cs_catalog import CountryLeaf, discover_leaves
@@ -407,6 +408,138 @@ def live_link2win_math_mismatches(
         bets=[int(x) for x in (bets or []) if int(x) > 0],
         allow_decrypt=allow_decrypt,
     )
+
+
+@dataclass(frozen=True)
+class MathReplaceTarget:
+    """One live Link2Win math file that must be replaced before Apply."""
+
+    relative_path: str
+    dest_path: Path
+    label: str
+    denoms: tuple[int, ...]
+    bets: tuple[int, ...]
+
+
+def list_link2win_math_replace_targets(
+    live: SlotSetupRecipe,
+    proposed: SlotSetupRecipe,
+    goldclub: Path,
+) -> tuple[MathReplaceTarget, ...]:
+    """Link2Win files on the cabinet that do not cover the proposed denom/bets."""
+    from config_scanner.write_scope import normalize_rel_path
+
+    root = goldclub_root_from_target(goldclub)
+    if not cabinet_has_link2win(root):
+        return ()
+    target_denoms = [
+        int(x)
+        for x in (proposed.denomination_list or live.denomination_list or [])
+        if int(x) > 0
+    ]
+    if not target_denoms:
+        return ()
+    bets = tuple(_recipe_bets(live, proposed))
+    out: list[MathReplaceTarget] = []
+    for path in _link2win_files_in(root):
+        support = inspect_link2win_math(path, allow_decrypt=False)
+        file_errors = _math_support_errors(
+            [path],
+            denoms=target_denoms,
+            bets=list(bets),
+            allow_decrypt=False,
+        )
+        if not file_errors and support is not None:
+            continue
+        try:
+            rel = normalize_rel_path(path.relative_to(root).as_posix())
+        except ValueError:
+            rel = path.name
+        out.append(
+            MathReplaceTarget(
+                relative_path=rel,
+                dest_path=path,
+                label=path_label(path),
+                denoms=tuple(target_denoms),
+                bets=bets,
+            )
+        )
+    return tuple(out)
+
+
+def resolve_math_replacement_source(source: Path, target: MathReplaceTarget) -> Path | None:
+    """Map a user-picked file or folder to the math file for *target*."""
+    picked = Path(source)
+    if picked.is_dir():
+        for candidate in (
+            picked / target.label,
+            picked / "Link2WinFeature" / target.label,
+            picked / "slot/themes/Link2WinFeature" / target.label,
+            picked / "themes/Link2WinFeature" / target.label,
+        ):
+            if candidate.is_file():
+                return candidate
+        return None
+    if picked.is_file():
+        if picked.name.casefold() == target.label.casefold():
+            return picked
+        if picked.suffix.casefold() == ".json":
+            return picked
+    return None
+
+
+def validate_math_replacement_source(
+    source: Path,
+    target: MathReplaceTarget,
+) -> str | None:
+    """Return an error string when *source* cannot replace *target*, else None."""
+    resolved = resolve_math_replacement_source(source, target)
+    if resolved is None:
+        return (
+            f"Could not find {target.label} in the selected path. "
+            "Pick the file directly or a folder containing Link2WinFeature\\."
+        )
+    support = inspect_link2win_math(resolved, allow_decrypt=True)
+    if support is None:
+        need = ", ".join(f"{d}c" for d in target.denoms)
+        return (
+            f"{resolved.name} is not recognized as Link2Win math for {need}."
+        )
+    errors = _math_support_errors(
+        [resolved],
+        denoms=list(target.denoms),
+        bets=list(target.bets),
+        allow_decrypt=True,
+    )
+    if errors:
+        return errors[0]
+    return None
+
+
+def replace_cabinet_math_file(
+    goldclub: Path,
+    target: MathReplaceTarget,
+    source: Path,
+    *,
+    backup_dir: Path | None = None,
+) -> Path:
+    """Copy validated *source* onto the live cabinet path for *target*."""
+    resolved = resolve_math_replacement_source(source, target)
+    if resolved is None:
+        raise ValueError(
+            validate_math_replacement_source(source, target) or "Invalid source"
+        )
+    err = validate_math_replacement_source(resolved, target)
+    if err:
+        raise ValueError(err)
+    dest = target.dest_path
+    if backup_dir is not None and dest.is_file():
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        shutil.copy2(dest, backup_dir / f"{dest.name}.{stamp}.bak")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(resolved, dest)
+    return dest
 
 
 def live_link2win_math_unknown(

@@ -9,7 +9,7 @@ Roulette cabinets: Kill-All then Run-FullStack. No EGM reboot either way.
 
 from __future__ import annotations
 
-import logging
+import base64
 import os
 import re
 import shutil
@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from config_scanner.bill_tokens_view import format_bill_notes_snapshot
 from config_scanner.denom_compat import (
     apply_magic_wheel_for_denom,
     denom_combo_choices,
@@ -752,13 +753,68 @@ DEFAULT_BETS: tuple[str, ...] = ("Minimum", "Maximum", "Last")
 _SLOT_KILL_SCRIPT = textwrap.dedent(
     """
     $ErrorActionPreference = 'SilentlyContinue'
-    # Kill Bootstrap FIRST or it treats a dead game-start as
-    # 'Unexpected game stop' and reboots the cabinet.
-    Get-Process -Name Bootstrap | Stop-Process -Force
-    Get-Process -Name Start-SlotGameWatch,BiOS2,OneHand,game-start | Stop-Process -Force
+    # Start-SlotGameWatch.exe is a stub: it launches powershell.exe -File
+    # Start-SlotGameWatch.ps1. Killing only the exe leaves the watcher
+    # restarting OneHand (STILL:game-start,OneHand) and, if Bootstrap is
+    # still alive, 'Unexpected game stop' / 'Unable to open the BiOS' reboot.
+    # Stop-Process alone often fails under a UAC-filtered goldclub token;
+    # taskkill /F /T matches Kill-All.ps1 and actually ends Bootstrap.
+    function Stop-SlotWatchers {
+        $watchIds = @(
+            Get-Process -Name Start-SlotGameWatch -ErrorAction SilentlyContinue |
+                Select-Object -ExpandProperty Id
+        )
+        Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.Name -match '^(powershell|pwsh)\\.exe$' -and (
+                    ([string]$_.CommandLine -match 'Start-SlotGameWatch\\.ps1') -or
+                    ($watchIds.Count -gt 0 -and ($watchIds -contains $_.ParentProcessId))
+                )
+            } |
+            ForEach-Object {
+                & cmd.exe /c ("taskkill /F /T /PID {0} 1>nul 2>nul" -f $_.ProcessId) | Out-Null
+                Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+            }
+    }
+    function Stop-Named([string[]]$Names) {
+        foreach ($n in $Names) {
+            $im = if ($n -match '\\.exe$') { $n } else { "$n.exe" }
+            & cmd.exe /c ("taskkill /F /T /IM {0} 1>nul 2>nul" -f $im) | Out-Null
+            Get-Process -Name $n -ErrorAction SilentlyContinue | ForEach-Object {
+                try { Stop-Process -Id $_.Id -Force -ErrorAction Stop } catch {}
+                if (Get-Process -Id $_.Id -ErrorAction SilentlyContinue) {
+                    & cmd.exe /c ("taskkill /F /T /PID {0} 1>nul 2>nul" -f $_.Id) | Out-Null
+                }
+                if (Get-Process -Id $_.Id -ErrorAction SilentlyContinue) {
+                    try {
+                        $cim = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $_.Id) -ErrorAction SilentlyContinue
+                        if ($cim) { Invoke-CimMethod -InputObject $cim -MethodName Terminate | Out-Null }
+                    } catch {}
+                }
+            }
+        }
+    }
+    # Bootstrap FIRST, and wait until it is gone, before touching GameBinRun.
+    Stop-Named @('Bootstrap')
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    while ($sw.Elapsed.TotalSeconds -lt 15) {
+        if (-not (Get-Process -Name Bootstrap -ErrorAction SilentlyContinue)) { break }
+        Start-Sleep -Milliseconds 250
+        Stop-Named @('Bootstrap')
+    }
+    if (Get-Process -Name Bootstrap -ErrorAction SilentlyContinue) {
+        $pids = @(Get-Process -Name Bootstrap -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty Id)
+        Write-Output ('STILL:Bootstrap pid=' + ($pids -join ','))
+        exit 2
+    }
+    Stop-SlotWatchers
+    Stop-Named @('Start-SlotGameWatch','BiOS2','OneHand','game-start')
     $sw = [Diagnostics.Stopwatch]::StartNew()
     while ($sw.Elapsed.TotalSeconds -lt 20) {
-        $p = Get-Process -Name Bootstrap,Start-SlotGameWatch,BiOS2,OneHand,game-start -ErrorAction SilentlyContinue
+        Stop-SlotWatchers
+        Stop-Named @('Start-SlotGameWatch','BiOS2','OneHand','game-start')
+        $p = Get-Process -Name Start-SlotGameWatch,BiOS2,OneHand,game-start -ErrorAction SilentlyContinue
         if (-not $p) { break }
         Start-Sleep -Milliseconds 400
     }
@@ -767,11 +823,18 @@ _SLOT_KILL_SCRIPT = textwrap.dedent(
     $aurum = Get-Service -Name 'GoldClub.Aurum.Services' -ErrorAction SilentlyContinue
     if ($aurum) { Stop-Service -Name $aurum.Name -Force -ErrorAction SilentlyContinue }
     Start-Sleep -Seconds 2
+    Stop-SlotWatchers
     $names = @('Bootstrap','Start-SlotGameWatch','BiOS2','OneHand','game-start')
-    Get-Process -Name $names -ErrorAction SilentlyContinue | Stop-Process -Force
+    Stop-Named $names
     Start-Sleep -Seconds 1
     $left = @(Get-Process -Name $names -ErrorAction SilentlyContinue |
         Select-Object -ExpandProperty Name -Unique)
+    $watchers = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.Name -match '^(powershell|pwsh)\\.exe$' -and
+            [string]$_.CommandLine -match 'Start-SlotGameWatch\\.ps1'
+        })
+    if ($watchers.Count -gt 0) { $left += 'Start-SlotGameWatch.ps1' }
     if ($left.Count -gt 0) {
         Write-Output ('STILL:' + ($left -join ','))
         exit 2
@@ -841,6 +904,7 @@ def live_push_log_path() -> Path:
 
 
 def _lp_log(message: str) -> None:
+    """Append one timestamped line to LivePush.log (not the CG process log)."""
     line = f"{datetime.now().isoformat(timespec='seconds')} {message}"
     try:
         path = live_push_log_path()
@@ -849,7 +913,6 @@ def _lp_log(message: str) -> None:
             fh.write(line + "\n")
     except OSError:
         pass
-    logging.getLogger("config_scanner.live_push").info("%s", message)
 
 
 def bootstrap_exe_candidates(
@@ -941,6 +1004,7 @@ _LABEL_SECTIONS: dict[str, frozenset[str]] = {
     "Note acceptor controler": frozenset({"sas", "aurum"}),
     "Enable switches": frozenset({"hardware"}),
     "Bill protocol": frozenset({"bill"}),
+    "Bill notes": frozenset({"hardware"}),
     "Ticket printer": frozenset({"ticket"}),
     "Offline ticket": frozenset({"hardware", "oticket"}),
     "Ticket redeem": frozenset({"hardware"}),
@@ -1549,6 +1613,12 @@ LIVE_OPTION_HELP: dict[str, str] = {
         "Bill acceptor protocol in Quixant / hardware config "
         "(e.g. MEI, JCM)."
     ),
+    "Bill notes": (
+        "HardwareConfig TokenMapping rows: acceptor code → credit value. "
+        "Accept on/off is CanAccept — the note stays in the table so OneHand "
+        "can still look it up; off means that bill is rejected. Apply writes "
+        "slot/themes/HardwareConfig.xml."
+    ),
     "Ticket printer": (
         "Ticket printer protocol (FutureLogic TITO, JCM, etc.). "
         "Separate from Offline ticket mode."
@@ -1604,6 +1674,7 @@ LIVE_FIELD_CONFIG_RELS: dict[str, tuple[str, ...]] = {
     "Note acceptor controler": (_AURUM_SETUP_REL,),
     "Enable switches": (_HARDWARE_CONFIG_REL,),
     "Bill protocol": (_QUIXANT_REL,),
+    "Bill notes": (_HARDWARE_CONFIG_REL,),
     "Ticket printer": (_QUIXANT_REL, _HARDWARE_CONFIG_REL),
     "Offline ticket": (_HARDWARE_CONFIG_REL,),
     "Ticket redeem": (_HARDWARE_CONFIG_REL,),
@@ -2097,6 +2168,8 @@ def load_live_cabinet(target: str) -> LiveLoadOutcome:
 
 
 def _run_local_powershell(script: str, *, timeout: int) -> tuple[bool, str]:
+    """Run a script via -EncodedCommand so $vars are not eaten by -Command."""
+    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
     run_kw: dict = {
         "capture_output": True,
         "text": True,
@@ -2107,7 +2180,14 @@ def _run_local_powershell(script: str, *, timeout: int) -> tuple[bool, str]:
         run_kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
         result = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-EncodedCommand",
+                encoded,
+            ],
             **run_kw,
         )
     except subprocess.TimeoutExpired:
@@ -2117,7 +2197,10 @@ def _run_local_powershell(script: str, *, timeout: int) -> tuple[bool, str]:
     blob = ((result.stdout or "") + (result.stderr or "")).strip()
     if result.returncode == 0:
         return True, blob or "OK"
-    return False, blob or f"exit {result.returncode}"
+    detail = f"exit {result.returncode}"
+    if blob:
+        detail = f"{detail} {blob[:800]}"
+    return False, detail
 
 
 def resolve_cabinet_windows_hostname(scan_target: str) -> str | None:
@@ -2295,6 +2378,7 @@ def recipe_snapshot_rows(recipe: SlotSetupRecipe) -> tuple[tuple[str, str], ...]
             for name in STANDARD_DOOR_SWITCH_NAMES
         ),
         ("Bill protocol", recipe.bill_protocol or "—"),
+        ("Bill notes", format_bill_notes_snapshot(recipe.bill_tokens)),
         ("Ticket printer", recipe.ticket_protocol or "—"),
         ("Currency", recipe.jurisdiction.currency_name or recipe.hardware_currency_name or "—"),
         ("Currency symbol", recipe.jurisdiction.currency_symbol or "—"),
@@ -2594,12 +2678,26 @@ def commit_live_push(
         if not ok:
             if work_parent is None:
                 shutil.rmtree(parent, ignore_errors=True)
+            _emit(progress, "Slot stop failed — starting the game again…")
+            start_ok, start_detail = run_slot_stack_start(plan_src, dest=dest)
+            stack_detail = f"{stack_detail}\n{start_detail}".strip()
             msg = (
                 "OneHand/Bootstrap is still running — settings were not written. "
                 f"{stack_detail} (log: {log_path})"
             )
+            if start_ok:
+                msg += " Game was started again."
+            else:
+                msg += f" Game did not restart: {_short_fail(start_detail)}"
             _lp_log(f"commit abort: {msg}")
-            return LivePushResult((), (), (msg,), False, False, stack_detail)
+            return LivePushResult(
+                (),
+                (),
+                (msg,),
+                False,
+                start_ok,
+                stack_detail,
+            )
     elif plan is not None:
         _emit(progress, "Stopping the game (Kill-All)…")
         ok, stack_detail = run_stack_kill(plan)

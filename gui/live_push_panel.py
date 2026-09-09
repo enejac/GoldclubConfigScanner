@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, QRunnable, QThreadPool, QTimer, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, QRunnable, QSize, QThreadPool, QTimer, Qt, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -14,9 +14,9 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QFrame,
-    QGridLayout,
     QGroupBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QMenu,
@@ -25,10 +25,22 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSpinBox,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
+from PySide6.QtGui import QBrush, QColor, QPalette
 
+from config_scanner.bill_tokens_view import (
+    apply_bill_token_accept,
+    bill_tokens_all_match,
+    bill_tokens_by_code,
+    bill_tokens_compare_rows,
+    bill_tokens_warning_lines,
+    resolve_target_bill_tokens,
+    summarize_bill_tokens,
+)
 from config_scanner.live_push import (
     CASHOUT_MODES,
     CELEBRATION_LIMITS,
@@ -76,8 +88,12 @@ from config_scanner.live_push import (
 )
 from config_scanner.denom_compat import (
     expected_magic_wheel_for_denom,
+    find_staged_leaf_for_denom,
     link2win_restage_change_line,
+    list_link2win_math_replace_targets,
+    replace_cabinet_math_file,
     validate_live_push_warnings,
+    MathReplaceTarget,
 )
 from config_scanner.hw_drivers import list_hw_driver_profiles
 from config_scanner.slot_licence import (
@@ -109,6 +125,7 @@ from config_scanner.slotlog_review import (
 )
 from config_scanner.slot_setup import (
     BILL_PROTOCOLS,
+    BillToken,
     DOOR_SWITCH_ALERTS,
     DoorSwitchRow,
     DoorSwitchSettings,
@@ -295,29 +312,128 @@ def _group_form(title: str) -> tuple[QGroupBox, QFormLayout]:
     return box, form
 
 
-class _ColumnBoard(QWidget):
-    """Reflows the setting groups into 1-3 balanced columns.
+def _fit_bill_tokens_columns(table: QTableWidget) -> None:
+    """Share the viewport across bill-notes columns so they never overflow."""
+    header = table.horizontalHeader()
+    n = header.count()
+    if n <= 0:
+        return
+    available = max(table.viewport().width(), 1)
+    weights = (12, 24, 24, 20, 20) if n == 5 else tuple(1 for _ in range(n))
+    total = sum(weights)
+    widths = [max(1, int(round(available * w / total))) for w in weights]
+    widths[-1] += available - sum(widths)
+    overflow = sum(widths) - available
+    i = 0
+    while overflow > 0 and i < n:
+        take = min(overflow, widths[i] - 1)
+        widths[i] -= take
+        overflow -= take
+        i += 1
+    header.setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+    header.setStretchLastSection(False)
+    for idx, width in enumerate(widths):
+        header.resizeSection(idx, max(1, width))
 
-    One full-width column wastes most of a cabinet-sized screen and pushes half
-    the settings below the fold, so the groups are packed side by side and
-    balanced by row count instead.
+
+class _BillNotesColumnFit(QObject):
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802
+        if event.type() in (QEvent.Type.Resize, QEvent.Type.Show) and isinstance(
+            watched, QTableWidget
+        ):
+            _fit_bill_tokens_columns(watched)
+        return False
+
+
+def _style_bill_tokens_table(table: QTableWidget) -> None:
+    """Panel-colored table whose columns always fit (no horizontal bar)."""
+    pal = table.palette()
+    window = pal.color(QPalette.ColorRole.Window)
+    pal.setColor(QPalette.ColorRole.Base, window)
+    pal.setColor(QPalette.ColorRole.AlternateBase, window)
+    table.setPalette(pal)
+    table.setStyleSheet("QTableWidget { background-color: palette(window); }")
+    table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    table.setWordWrap(False)
+    header = table.horizontalHeader()
+    header.setStretchLastSection(False)
+    header.setMinimumSectionSize(28)
+    filt = _BillNotesColumnFit(table)
+    table.installEventFilter(filt)
+    _fit_bill_tokens_columns(table)
+
+
+class _ColumnBoard(QWidget):
+    """Reflows the setting groups into 1-3 independent columns.
+
+    Each column is its own vertical stack so a tall group cannot stretch a
+    short neighbor in the same grid row. The board's minimum height is the
+    tallest column so a QScrollArea cannot squash groups on top of each other.
     """
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._boxes: list[tuple[QWidget, int]] = []
         self._columns = 0
-        self._stretch_row = -1
-        self._grid = QGridLayout(self)
-        self._grid.setContentsMargins(0, 0, 0, 0)
-        self._grid.setHorizontalSpacing(_COLUMN_GAP)
-        self._grid.setVerticalSpacing(10)
+        self._relayouting = False
+        self._column_hosts: list[QWidget] = []
+        self._row = QHBoxLayout(self)
+        self._row.setContentsMargins(0, 0, 0, 0)
+        self._row.setSpacing(_COLUMN_GAP)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        for _ in range(MAX_COLUMNS):
+            host = QWidget(self)
+            col_lay = QVBoxLayout(host)
+            col_lay.setContentsMargins(0, 0, 0, 0)
+            col_lay.setSpacing(10)
+            col_lay.addStretch(1)
+            host.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum
+            )
+            self._row.addWidget(host, 1)
+            self._column_hosts.append(host)
+            host.hide()
 
     def add_box(self, widget: QWidget, weight: int) -> None:
         """Add a group; ``weight`` is its row count, used to balance columns."""
         widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         self._boxes.append((widget, max(1, weight)))
         self._relayout(force=True)
+
+    def group_placements(self) -> dict[str, tuple[int, int]]:
+        """Map group title to ``(row in column, column index)``."""
+        out: dict[str, tuple[int, int]] = {}
+        for col, host in enumerate(self._column_hosts):
+            if host.isHidden():
+                continue
+            lay = host.layout()
+            if lay is None:
+                continue
+            row = 0
+            for i in range(lay.count()):
+                widget = lay.itemAt(i).widget()
+                if isinstance(widget, QGroupBox):
+                    out[widget.title()] = (row, col)
+                    row += 1
+        return out
+
+    def sizeHint(self) -> QSize:  # noqa: N802 - Qt override
+        return QSize(
+            MIN_COLUMN_WIDTH * max(self._columns, 1)
+            + _COLUMN_GAP * max(self._columns - 1, 0),
+            self._content_height(),
+        )
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802 - Qt override
+        return QSize(MIN_COLUMN_WIDTH, self._content_height())
+
+    def _content_height(self) -> int:
+        height = 0
+        for host in self._column_hosts:
+            if host.isHidden():
+                continue
+            height = max(height, host.sizeHint().height())
+        return max(height, 1)
 
     def _wanted_columns(self) -> int:
         width = self.width()
@@ -335,29 +451,49 @@ class _ColumnBoard(QWidget):
         super().resizeEvent(event)
         self._relayout()
 
+    def _empty_host(self, host: QWidget) -> None:
+        lay = host.layout()
+        if lay is None:
+            return
+        while lay.count():
+            item = lay.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(self)
+
     def _relayout(self, *, force: bool = False) -> None:
+        if self._relayouting:
+            return
         columns = self._wanted_columns()
         if columns == self._columns and not force:
             return
-        self._columns = columns
+        self._relayouting = True
+        try:
+            self._columns = columns
+            for host in self._column_hosts:
+                self._empty_host(host)
 
-        while self._grid.count():
-            self._grid.takeAt(0)
-        if self._stretch_row >= 0:
-            self._grid.setRowStretch(self._stretch_row, 0)
+            heights = [0] * columns
+            packed: list[list[QWidget]] = [[] for _ in range(columns)]
+            for widget, weight in self._boxes:
+                col = heights.index(min(heights))
+                packed[col].append(widget)
+                heights[col] += weight
 
-        heights = [0] * columns
-        next_row = [0] * columns
-        for widget, weight in self._boxes:
-            col = heights.index(min(heights))
-            self._grid.addWidget(widget, next_row[col], col)
-            next_row[col] += 1
-            heights[col] += weight
-
-        self._stretch_row = max(next_row) if next_row else 0
-        self._grid.setRowStretch(self._stretch_row, 1)
-        for col in range(MAX_COLUMNS):
-            self._grid.setColumnStretch(col, 1 if col < columns else 0)
+            for i, host in enumerate(self._column_hosts):
+                lay = host.layout()
+                assert lay is not None
+                if i < columns:
+                    for widget in packed[i]:
+                        lay.addWidget(widget, 0)
+                    lay.addStretch(1)
+                    host.show()
+                else:
+                    host.hide()
+            self.setMinimumHeight(self._content_height())
+            self.updateGeometry()
+        finally:
+            self._relayouting = False
 
 
 class _PushEmitter(QObject):
@@ -519,6 +655,8 @@ class LivePushPanel(QWidget):
         self._refresh_timer.setSingleShot(True)
         self._refresh_timer.setInterval(75)
         self._refresh_timer.timeout.connect(self._refresh_changes_now)
+        self._bill_accept: dict[str, QTableWidgetItem] = {}
+        self._reset_bill_accept = True
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(16, 12, 16, 12)
@@ -775,12 +913,39 @@ class LivePushPanel(QWidget):
         for proto in TICKET_PROTOCOLS:
             self._ticket.addItem(TICKET_PROTOCOL_LABELS[proto], proto)
         hw.addRow("Bill acceptor", self._bill)
+        self._bill_tokens_table = QTableWidget(0, 5)
+        self._bill_tokens_table.setHorizontalHeaderLabels(
+            ["Code", "Live", "Target", "Accept", "Match"]
+        )
+        self._bill_tokens_table.verticalHeader().setVisible(False)
+        self._bill_tokens_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._bill_tokens_table.setSelectionMode(
+            QTableWidget.SelectionMode.SingleSelection
+        )
+        self._bill_tokens_table.setSelectionBehavior(
+            QTableWidget.SelectionBehavior.SelectRows
+        )
+        self._bill_tokens_table.setMaximumHeight(160)
+        _style_bill_tokens_table(self._bill_tokens_table)
+        self._bill_tokens_table.itemChanged.connect(self._on_bill_accept_item_changed)
+        self._bill_tokens_table.setToolTip(
+            "MEI/JCM bill codes from HardwareConfig.xml TokenMapping.\n"
+            "Accept = CanAccept: off rejects that note but keeps the mapping "
+            "(OneHand still needs the code). Apply writes HardwareConfig.xml."
+        )
+        hw.addRow("Bill notes", self._bill_tokens_table)
+        self._bill_tokens_hint = QLabel(
+            "Load a cabinet to preview bill note mappings (HardwareConfig TokenMapping)."
+        )
+        self._bill_tokens_hint.setWordWrap(True)
+        self._bill_tokens_hint.setStyleSheet("color: #999; font-size: 11px;")
+        hw.addRow("", self._bill_tokens_hint)
         hw.addRow("Ticket printer", self._ticket)
         self._ticket_printer_status = QLabel("Load a cabinet to detect printer status.")
         self._ticket_printer_status.setWordWrap(True)
         self._ticket_printer_status.setStyleSheet("color: #999; font-size: 11px;")
         hw.addRow("TITO / printer", self._ticket_printer_status)
-        board.add_box(hw_box, 2)
+        board.add_box(hw_box, 8)
 
         ticket_box, ticket = _group_form("Ticketing")
         self._offline = QComboBox()
@@ -892,6 +1057,21 @@ class LivePushPanel(QWidget):
         self._changes.setStyleSheet("color: #999;")
         outer.addWidget(self._changes)
 
+        self._math_fix = QFrame()
+        math_fix_outer = QVBoxLayout(self._math_fix)
+        math_fix_outer.setContentsMargins(0, 4, 0, 4)
+        math_fix_outer.setSpacing(4)
+        self._math_fix_hint = QLabel("")
+        self._math_fix_hint.setWordWrap(True)
+        self._math_fix_hint.setStyleSheet("color: #aaa;")
+        math_fix_outer.addWidget(self._math_fix_hint)
+        self._math_fix_buttons = QHBoxLayout()
+        self._math_fix_buttons.setContentsMargins(0, 0, 0, 0)
+        self._math_fix_buttons.setSpacing(8)
+        math_fix_outer.addLayout(self._math_fix_buttons)
+        self._math_fix.hide()
+        outer.addWidget(self._math_fix)
+
         self._currency.currentTextChanged.connect(self._currency_chosen)
         self._market.currentTextChanged.connect(self._target_market_chosen)
         self._denoms.currentIndexChanged.connect(self._denom_chosen)
@@ -954,6 +1134,7 @@ class LivePushPanel(QWidget):
             "After writing configs: stop OneHand if needed, then start Bootstrap "
             "so the new settings take effect. Turn off only if you will restart manually."
         )
+        self._restart.toggled.connect(self._sync_commit_button)
         self._full_pack = QCheckBox("Write full pack")
         self._full_pack.setChecked(False)
         self._full_pack.setToolTip(
@@ -983,16 +1164,13 @@ class LivePushPanel(QWidget):
         opts.addLayout(flags)
         opts.addWidget(self._status)
 
-        self._commit = QPushButton("Apply & restart game")
+        self._commit = QPushButton("Apply")
         self._commit.setObjectName("primary")
         self._commit.setMinimumHeight(40)
         self._commit.setMinimumWidth(200)
         self._commit.setEnabled(True)
-        self._commit.setToolTip(
-            "Write the orange (changed) fields to the cabinet. With Restart checked, "
-            "stops the game, writes, then starts Bootstrap. Red fields block Apply."
-        )
         self._commit.clicked.connect(self._commit_clicked)
+        self._sync_commit_button()
 
         self._export_cs = QPushButton("Export full CS .b2u…")
         self._export_cs.setMinimumHeight(40)
@@ -1067,6 +1245,7 @@ class LivePushPanel(QWidget):
                 for name in STANDARD_DOOR_SWITCH_NAMES
             ),
             ("Bill protocol", self._bill),
+            ("Bill notes", self._bill_tokens_table),
             ("Ticket printer", self._ticket),
             ("Offline ticket", self._offline),
             ("Ticket redeem", self._redeem),
@@ -1186,6 +1365,10 @@ class LivePushPanel(QWidget):
                 invalid_kind=kind,
                 file_note=file_note,
             )
+            if isinstance(widget, QTableWidget):
+                widget.setToolTip(tip)
+                self._sync_form_label_tooltip(widget, widget.toolTip())
+                continue
             if state == "invalid":
                 widget.setStyleSheet(invalid_sheet)
                 widget.setToolTip(tip)
@@ -1648,6 +1831,7 @@ class LivePushPanel(QWidget):
             for widget in widgets:
                 widget.blockSignals(False)
             self._applying = False
+        self._reset_bill_accept = True
         self._refresh_changes_now()
 
     def _on_switch_all_toggled(self, checked: bool) -> None:
@@ -1685,6 +1869,158 @@ class LivePushPanel(QWidget):
             else:
                 spin.setReadOnly(False)
                 spin.setToolTip("")
+
+    def _on_bill_accept_item_changed(self, item: QTableWidgetItem) -> None:
+        if self._applying or item is None or item.column() != 3:
+            return
+        self._refresh_changes()
+
+    def _bill_accept_checked(self) -> dict[str, bool]:
+        return {
+            code: item.checkState() == Qt.CheckState.Checked
+            for code, item in self._bill_accept.items()
+        }
+
+    def _refresh_bill_tokens_view(self) -> None:
+        """Live HardwareConfig vs target values, plus CanAccept checkboxes."""
+        if self._loaded is None:
+            self._bill_accept.clear()
+            self._bill_tokens_table.setRowCount(0)
+            self._bill_tokens_hint.setText(
+                "Load a cabinet to preview bill note mappings "
+                "(HardwareConfig TokenMapping)."
+            )
+            self._bill_tokens_hint.setStyleSheet("color: #999; font-size: 11px;")
+            return
+
+        live = list(self._loaded.bill_tokens)
+        live_map = bill_tokens_by_code(live)
+        reset_accept = self._reset_bill_accept
+        self._reset_bill_accept = False
+        preserved: dict[str, bool] = {}
+        if not reset_accept:
+            preserved = self._bill_accept_checked()
+
+        preset_tokens: list[BillToken] = []
+        preset_label = ""
+        jid = self._preset.currentData()
+        if jid:
+            preset = recipe_from_market_id(str(jid))
+            if preset and preset.bill_tokens:
+                preset_tokens = list(preset.bill_tokens)
+                preset_label = preset.label or str(jid)
+        currency = (
+            _combo_code(self._currency)
+            or self._loaded.jurisdiction.currency_name
+            or self._loaded.hardware_currency_name
+            or ""
+        )
+        target, target_label = resolve_target_bill_tokens(
+            preset_tokens=preset_tokens,
+            preset_label=preset_label,
+            currency_name=currency,
+        )
+        has_target = bool(target)
+
+        rows = bill_tokens_compare_rows(live, target)
+        ok_bg = QBrush(QColor(40, 90, 40, 80))
+        warn_bg = QBrush(QColor(120, 80, 20, 90))
+        miss_bg = QBrush(QColor(120, 40, 40, 80))
+        idle_bg = QBrush(QColor(80, 80, 80, 40))
+        row_codes = tuple(r.code for r in rows)
+        current_codes = tuple(
+            (self._bill_tokens_table.item(i, 0).text() if self._bill_tokens_table.item(i, 0) else "")
+            for i in range(self._bill_tokens_table.rowCount())
+        )
+        reuse = (
+            not reset_accept
+            and current_codes == row_codes
+            and len(self._bill_accept) == sum(1 for r in rows if r.code in live_map)
+        )
+
+        def _row_style(row) -> tuple[str, QBrush]:
+            if not has_target:
+                return "\u2014", idle_bg
+            if row.matches:
+                return "yes", ok_bg
+            if row.live_only or row.target_only:
+                return "missing", miss_bg
+            return "no", warn_bg
+
+        was_applying = self._applying
+        self._applying = True
+        try:
+            if not reuse:
+                self._bill_accept.clear()
+                self._bill_tokens_table.clearContents()
+                self._bill_tokens_table.setRowCount(len(rows))
+            for i, row in enumerate(rows):
+                live_txt = "\u2014" if row.live_value is None else str(row.live_value)
+                target_txt = "\u2014" if row.target_value is None else str(row.target_value)
+                match_txt, bg = _row_style(row)
+                for col, text in enumerate((row.code, live_txt, target_txt)):
+                    item = QTableWidgetItem(text)
+                    item.setBackground(bg)
+                    self._bill_tokens_table.setItem(i, col, item)
+                if not reuse:
+                    live_token = live_map.get(row.code)
+                    if live_token is not None:
+                        checked = preserved.get(row.code, live_token.can_accept)
+                        accept_item = QTableWidgetItem()
+                        accept_item.setFlags(
+                            Qt.ItemFlag.ItemIsEnabled
+                            | Qt.ItemFlag.ItemIsUserCheckable
+                            | Qt.ItemFlag.ItemIsSelectable
+                        )
+                        accept_item.setCheckState(
+                            Qt.CheckState.Checked
+                            if checked
+                            else Qt.CheckState.Unchecked
+                        )
+                        accept_item.setToolTip(
+                            f"CanAccept for code {row.code}. Off rejects this bill; "
+                            "the mapping stays so OneHand can still look up the code."
+                        )
+                        accept_item.setBackground(bg)
+                        self._bill_tokens_table.setItem(i, 3, accept_item)
+                        self._bill_accept[row.code] = accept_item
+                    else:
+                        empty = QTableWidgetItem("")
+                        empty.setBackground(bg)
+                        empty.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                        self._bill_tokens_table.setItem(i, 3, empty)
+                else:
+                    accept_item = self._bill_tokens_table.item(i, 3)
+                    if accept_item is not None:
+                        accept_item.setBackground(bg)
+                match_item = QTableWidgetItem(match_txt)
+                match_item.setBackground(bg)
+                self._bill_tokens_table.setItem(i, 4, match_item)
+        finally:
+            self._applying = was_applying
+        _fit_bill_tokens_columns(self._bill_tokens_table)
+
+        live_sum = summarize_bill_tokens(live)
+        if target_label:
+            hint = (
+                f"Live: {live_sum} | Target ({target_label}): "
+                f"{summarize_bill_tokens(target)}"
+            )
+        else:
+            hint = (
+                f"Live: {live_sum} | No bill.tokens for this currency yet "
+                "(only TTD has a built-in table)."
+            )
+        warnings = bill_tokens_warning_lines(live, target)
+        if warnings:
+            hint += "\n" + " | ".join(warnings[:4])
+        if target and bill_tokens_all_match(live, target) and not warnings:
+            self._bill_tokens_hint.setStyleSheet("color: #6a6; font-size: 11px;")
+        elif warnings or (target and not bill_tokens_all_match(live, target)):
+            self._bill_tokens_hint.setStyleSheet("color: #c96; font-size: 11px;")
+        else:
+            self._bill_tokens_hint.setStyleSheet("color: #999; font-size: 11px;")
+        self._bill_tokens_hint.setText(hint)
 
     def _parse_int_list(self, combo: QComboBox) -> list[int]:
         out: list[int] = []
@@ -1791,6 +2127,11 @@ class LivePushPanel(QWidget):
         if bill is None:
             bill = self._bill.currentText().strip()
         recipe.bill_protocol = str(bill).strip() if str(bill).strip() in BILL_PROTOCOLS else ""
+        if recipe.bill_tokens and self._bill_accept:
+            recipe.bill_tokens = apply_bill_token_accept(
+                recipe.bill_tokens,
+                self._bill_accept_checked(),
+            )
         ticket = self._ticket.currentData()
         if ticket is None:
             ticket = _combo_code(self._ticket)
@@ -2172,6 +2513,97 @@ class LivePushPanel(QWidget):
         root = goldclub_root_from_target(raw)
         return validate_live_push_recipe(live, after, root)
 
+    def _clear_math_fix_buttons(self) -> None:
+        while self._math_fix_buttons.count():
+            item = self._math_fix_buttons.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+    def _update_math_fix_row(self, targets: tuple[MathReplaceTarget, ...]) -> None:
+        self._clear_math_fix_buttons()
+        if not targets:
+            self._math_fix.hide()
+            return
+        need = ", ".join(f"{d}c" for d in targets[0].denoms)
+        self._math_fix_hint.setText(
+            f"Cabinet Link2Win math must include {need}. Browse a matching file "
+            "to replace the live copy on disk, then configuration is re-checked."
+        )
+        for target in targets:
+            btn = QPushButton(f"Browse {target.label}…")
+            btn.setToolTip(
+                f"Replace {target.relative_path} on the cabinet with math "
+                f"that includes {need}."
+            )
+            btn.clicked.connect(
+                lambda checked=False, t=target: self._browse_math_replacement(t)
+            )
+            self._math_fix_buttons.addWidget(btn)
+        self._math_fix_buttons.addStretch(1)
+        self._math_fix.show()
+
+    def _browse_math_replacement(self, target: MathReplaceTarget) -> None:
+        raw = self._path.text().strip()
+        if not raw:
+            QMessageBox.warning(self, "Math file", "Load a cabinet path first.")
+            return
+        root = goldclub_root_from_target(raw)
+        start = str(root / "slot/themes/Link2WinFeature")
+        try:
+            after = self._recipe_from_form()
+            screens = _combo_code(self._display_mode) or None
+            leaf = find_staged_leaf_for_denom(
+                min(target.denoms),
+                currency=_combo_code(self._currency),
+                market=_combo_code(self._market),
+                screens=screens,
+            )
+            if leaf is not None:
+                candidate = leaf / "slot/themes/Link2WinFeature" / target.label
+                if candidate.is_file():
+                    start = str(candidate.parent)
+        except (ValueError, OSError):
+            pass
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            f"Replace {target.label} on cabinet",
+            start,
+            "Link2Win math (*.json);;All files (*.*)",
+        )
+        if not path:
+            return
+        backup_dir: Path | None = None
+        if self._backup.isChecked():
+            from config_scanner.live_push import tool_root
+
+            backup_dir = (
+                tool_root()
+                / "live_push_backups"
+                / datetime.now().strftime("%Y%m%d-%H%M%S")
+                / "math"
+            )
+        try:
+            replace_cabinet_math_file(
+                root, target, Path(path), backup_dir=backup_dir
+            )
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Math file", str(exc))
+            return
+        try:
+            self._loaded = load_recipe_from_goldclub(root, label="live")
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(
+                self,
+                "Math file",
+                f"Replaced {target.label} but could not reload cabinet: {exc}",
+            )
+        self._refresh_changes_now()
+        self._paint_live_highlights()
+        self._status.setText(
+            f"Replaced {target.relative_path} on cabinet; configuration re-checked."
+        )
+
     def _refresh_changes(self) -> None:
         """Debounced — rapid combo edits coalesce into one paint pass."""
         if self._applying:
@@ -2182,6 +2614,7 @@ class LivePushPanel(QWidget):
         if self._applying:
             return
         if self._loaded is None:
+            self._update_math_fix_row(())
             self._changes.setText(
                 "Waiting for the live cabinet (local Goldclub, or \\\\10.0.0.111\\slot). "
                 "Green = matches; orange = pending edit; red = invalid."
@@ -2189,6 +2622,7 @@ class LivePushPanel(QWidget):
             self._changes.setStyleSheet("color: #999;")
             self._commit.setEnabled(not self._busy)
             self._paint_live_highlights()
+            self._refresh_bill_tokens_view()
             return
         try:
             after = self._recipe_from_form()
@@ -2198,6 +2632,12 @@ class LivePushPanel(QWidget):
         lines = recipe_change_lines(self._loaded, after)
         lines.extend(self._licence_change_lines())
         raw = self._path.text().strip()
+        math_targets: tuple[MathReplaceTarget, ...] = ()
+        if raw:
+            math_targets = list_link2win_math_replace_targets(
+                self._loaded, after, goldclub_root_from_target(raw)
+            )
+        self._update_math_fix_row(math_targets)
         if raw:
             restage = link2win_restage_change_line(
                 self._loaded, after, goldclub_root_from_target(raw)
@@ -2219,6 +2659,23 @@ class LivePushPanel(QWidget):
             self._changes.setStyleSheet("color: #999;")
             self._commit.setEnabled(not self._busy)
         self._paint_live_highlights()
+        self._refresh_bill_tokens_view()
+
+    def _sync_commit_button(self, *_args) -> None:
+        restart = self._restart.isChecked()
+        if restart:
+            self._commit.setText("Apply & restart game")
+            self._commit.setToolTip(
+                "Write the orange (changed) fields to the cabinet, stop the game, "
+                "then start Bootstrap so settings take effect. Red fields block Apply."
+            )
+        else:
+            self._commit.setText("Apply")
+            self._commit.setToolTip(
+                "Write the orange (changed) fields to the cabinet without restarting "
+                "the game. Turn on Restart game after write if you want Bootstrap started. "
+                "Red fields block Apply."
+            )
 
     def _commit_clicked(self) -> None:
         if self._busy:

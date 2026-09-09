@@ -9,7 +9,7 @@ import pytest
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import Qt  # noqa: E402
-from PySide6.QtWidgets import QApplication, QGroupBox  # noqa: E402
+from PySide6.QtWidgets import QApplication, QGroupBox, QTableWidget  # noqa: E402
 
 from gui.live_push_panel import (  # noqa: E402
     MAX_COLUMNS,
@@ -27,7 +27,7 @@ PANEL_GROUPS = (
     ("Game UI", 4),
     ("SAS / cashless", 10),
     ("Door switches", 10),
-    ("Bill & ticket hardware", 2),
+    ("Bill & ticket hardware", 8),
     ("Ticketing", 3),
     ("Limit setup", 8),
     ("Cabinet hardware", 3),
@@ -63,15 +63,7 @@ def _columns_used(board: _ColumnBoard) -> set[int]:
 
 
 def _placements(board: _ColumnBoard) -> dict[str, tuple[int, int]]:
-    grid = board.layout()
-    out: dict[str, tuple[int, int]] = {}
-    for i in range(grid.count()):
-        widget = grid.itemAt(i).widget()
-        if not isinstance(widget, QGroupBox):
-            continue
-        row, col, _rs, _cs = grid.getItemPosition(i)
-        out[widget.title()] = (row, col)
-    return out
+    return board.group_placements()
 
 
 def _column_weights(board: _ColumnBoard) -> dict[int, int]:
@@ -120,8 +112,94 @@ def test_no_group_is_lost_or_duplicated_across_resizes(qt_app: QApplication) -> 
         _resize(board, qt_app, width)
         placements = _placements(board)
         assert sorted(placements) == sorted(title for title, _w in PANEL_GROUPS)
-        # One widget per grid cell.
+        # One widget per column cell.
         assert len(set(placements.values())) == len(placements)
+
+
+def test_wide_window_fills_each_column_with_several_groups(
+    qt_app: QApplication,
+) -> None:
+    """Independent stacks + bill weight must not leave a nearly empty column."""
+    from collections import Counter
+
+    board = _board(qt_app)
+    _resize(board, qt_app, MAX_COLUMNS * MIN_COLUMN_WIDTH + 400)
+    counts = Counter(col for _row, col in _placements(board).values())
+    assert set(counts) == set(range(MAX_COLUMNS))
+    assert min(counts.values()) >= 3
+
+
+def test_groups_in_the_same_column_do_not_overlap(qt_app: QApplication) -> None:
+    from gui.live_push_panel import LivePushPanel
+
+    panel = LivePushPanel(autoload=False)
+    panel.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    panel.resize(1280, 520)
+    panel.show()
+    qt_app.processEvents()
+
+    by_parent: dict[int, list[QGroupBox]] = {}
+    for box in panel.findChildren(QGroupBox):
+        if box.title() not in {t for t, _w in PANEL_GROUPS}:
+            continue
+        by_parent.setdefault(id(box.parentWidget()), []).append(box)
+    assert by_parent
+    for boxes in by_parent.values():
+        for i, a in enumerate(boxes):
+            for b in boxes[i + 1 :]:
+                inter = a.geometry().intersected(b.geometry())
+                assert inter.isEmpty(), (
+                    f"{a.title()} overlaps {b.title()} at {inter!r}"
+                )
+
+
+def test_bill_notes_columns_fit_without_horizontal_bar(qt_app: QApplication) -> None:
+    from gui.live_push_panel import _style_bill_tokens_table
+
+    table = QTableWidget(3, 5)
+    table.setHorizontalHeaderLabels(["Code", "Live", "Target", "Accept", "Match"])
+    _style_bill_tokens_table(table)
+    table.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    table.show()
+    table.resize(320, 140)
+    qt_app.processEvents()
+
+    header = table.horizontalHeader()
+    used = sum(header.sectionSize(i) for i in range(header.count()))
+    assert used <= table.viewport().width()
+    assert table.horizontalScrollBar().maximum() == 0
+
+
+def test_bill_accept_cell_uses_same_tint_as_code_cell(
+    qt_app: QApplication, tmp_path
+) -> None:
+    from config_scanner.live_push import load_live_cabinet
+    from gui.live_push_panel import LivePushPanel
+    from tests.test_slot_setup import _fake_goldclub
+
+    gold = _fake_goldclub(tmp_path)
+    outcome = load_live_cabinet(str(gold))
+    assert outcome.recipe is not None
+
+    panel = LivePushPanel(autoload=False)
+    panel.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    panel.show()
+    qt_app.processEvents()
+    panel._on_load_finished(outcome)
+    qt_app.processEvents()
+
+    table = panel._bill_tokens_table
+    assert table.rowCount() >= 1
+    code_item = table.item(0, 0)
+    accept_item = table.item(0, 3)
+    assert code_item is not None
+    assert accept_item is not None
+    assert table.cellWidget(0, 3) is None
+    assert accept_item.checkState() in (
+        Qt.CheckState.Checked,
+        Qt.CheckState.Unchecked,
+    )
+    assert accept_item.background().color() == code_item.background().color()
 
 
 def test_column_count_is_sticky_at_the_boundary(qt_app: QApplication) -> None:

@@ -1,4 +1,4 @@
-"""Simple home: Create client update · Apply update · Tune live cabinet."""
+"""Simple home: Tune live cabinet · Create client update · Apply update."""
 
 from __future__ import annotations
 
@@ -53,7 +53,7 @@ class _MathPreflightRunnable(QRunnable):
 
 
 class RoleHome(QWidget):
-    """First screen: Create / Apply / Tune live / Advanced."""
+    """First screen: Tune live / Create / Apply / Advanced."""
 
     create_requested = Signal()
     restore_requested = Signal()
@@ -71,16 +71,26 @@ class RoleHome(QWidget):
         root.addWidget(title)
 
         blurb = QLabel(
+            "• Tune — change SAS, bills, tickets, limits, and denoms on a live cabinet, "
+            "then export a full Country Selector if needed.\n"
             "• Create — pick a market, review the official Country Selector, export a "
             "client update or a full CS .b2u from a tuned live cabinet.\n"
-            "• Apply — open that update on the EGM (country / leaf / machine number).\n"
-            "• Tune — change SAS, bills, tickets, limits, and denoms on a live cabinet, "
-            "then export a full Country Selector if needed."
+            "• Apply — open that update on the EGM (country / leaf / machine number)."
         )
         blurb.setWordWrap(True)
         root.addWidget(blurb)
 
-        create_btn = QPushButton("1. Create client update")
+        push_btn = QPushButton("1. Tune live cabinet")
+        push_btn.setObjectName("primary")
+        push_btn.setMinimumHeight(48)
+        push_btn.setToolTip(
+            "Load the cabinet, edit SAS / currency / denoms, Apply. "
+            "Stops the game, writes files, starts the stack again."
+        )
+        push_btn.clicked.connect(self.push_requested.emit)
+        root.addWidget(push_btn)
+
+        create_btn = QPushButton("2. Create client update")
         create_btn.setObjectName("primary")
         create_btn.setMinimumHeight(48)
         create_btn.setToolTip(
@@ -90,7 +100,7 @@ class RoleHome(QWidget):
         create_btn.clicked.connect(self.create_requested.emit)
         root.addWidget(create_btn)
 
-        restore_btn = QPushButton("2. Apply update on cabinet")
+        restore_btn = QPushButton("3. Apply update on cabinet")
         restore_btn.setObjectName("primary")
         restore_btn.setMinimumHeight(48)
         restore_btn.setToolTip(
@@ -99,16 +109,6 @@ class RoleHome(QWidget):
         )
         restore_btn.clicked.connect(self.restore_requested.emit)
         root.addWidget(restore_btn)
-
-        push_btn = QPushButton("3. Tune live cabinet")
-        push_btn.setObjectName("primary")
-        push_btn.setMinimumHeight(48)
-        push_btn.setToolTip(
-            "Load the cabinet, edit SAS / currency / denoms, Apply. "
-            "Stops the game, writes files, starts the stack again."
-        )
-        push_btn.clicked.connect(self.push_requested.emit)
-        root.addWidget(push_btn)
 
         adv = QPushButton("Advanced tools…")
         adv.setFlat(True)

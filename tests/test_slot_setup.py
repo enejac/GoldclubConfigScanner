@@ -802,6 +802,31 @@ def test_patch_hardware_config_writes_ttd_mei_bill_codes(tmp_path: Path) -> None
     assert [t.code for t in tokens] == [t.code for t in TTD_MEI_BILL_TOKENS]
 
 
+def test_patch_hardware_config_writes_can_accept_false(tmp_path: Path) -> None:
+    src = tmp_path / "HardwareConfig.xml"
+    src.write_text(
+        """<?xml version="1.0" encoding="utf-8"?>
+<HardwareSettings>
+  <BillSettings><Bills>
+    <TokenMapping Code="97" CanAccept="true" CanReturn="true">100</TokenMapping>
+  </Bills></BillSettings>
+</HardwareSettings>""",
+        encoding="utf-8",
+    )
+    dest_dir = tmp_path / "slot" / "themes"
+    dest_dir.mkdir(parents=True)
+    dest = dest_dir / "HardwareConfig.xml"
+    patch_hardware_config(
+        src,
+        dest,
+        tokens=[BillToken(code="97", value=100, can_accept=False)],
+    )
+    tokens = read_bill_tokens(tmp_path)
+    assert len(tokens) == 1
+    assert tokens[0].can_accept is False
+    assert 'CanAccept="false"' in dest.read_text(encoding="utf-8")
+
+
 def test_math_theme_names_skips_roulette_and_feature_folders(tmp_path: Path) -> None:
     from config_scanner.slot_setup import _math_theme_names
 

@@ -63,6 +63,10 @@ def test_simple_home_wiring() -> None:
     assert "JurisdictionWizard" in home
     assert "Apply update on cabinet" in home
     assert "Tune live cabinet" in home
+    assert home.index("1. Tune live cabinet") < home.index("2. Create client update")
+    assert home.index("2. Create client update") < home.index(
+        "3. Apply update on cabinet"
+    )
     assert "Advanced tools" in home
     assert "LivePushPanel" in home
     assert "_show_push" in home
@@ -76,12 +80,15 @@ def test_simple_home_wiring() -> None:
     assert "show_already_running_warning" in window
     assert "Screenshot" in window
     assert "save_widget_screenshot" in window
-    assert "Apply & restart game" in (
+    assert "def _sync_commit_button" in (
         Path(__file__).resolve().parents[1] / "gui" / "live_push_panel.py"
     ).read_text(encoding="utf-8")
     live_push = (
         Path(__file__).resolve().parents[1] / "gui" / "live_push_panel.py"
     ).read_text(encoding="utf-8")
+    assert "Apply & restart game" in live_push
+    assert 'setText("Apply")' in live_push or 'setText("Apply & restart game")' in live_push
+    assert "_sync_commit_button" in live_push
     assert "Export full CS" in live_push
     assert "Check SlotLog" in live_push
     assert "review_slot_logs" in live_push
@@ -146,6 +153,10 @@ def test_jurisdiction_wizard_constructs() -> None:
     assert panel._path.text() == default_live_cabinet_target()
     assert panel._commit.text() == "Apply & restart game"
     assert panel._commit.isEnabled()
+    panel._restart.setChecked(False)
+    assert panel._commit.text() == "Apply"
+    panel._restart.setChecked(True)
+    assert panel._commit.text() == "Apply & restart game"
     assert panel._currency.isEditable()
     assert panel._currency.count() >= 8
     titles = {box.title() for box in panel.findChildren(QGroupBox)}

@@ -3691,6 +3691,46 @@ def test_run_slot_stack_kill_local_skips_winrm(monkeypatch) -> None:
     assert ok is True
     assert calls
     assert "OneHand" in calls[0]
+    assert "Stop-SlotWatchers" in calls[0]
+    assert "Start-SlotGameWatch.ps1" in calls[0]
+
+
+def test_run_slot_stack_kill_remote_uses_same_watcher_script(monkeypatch) -> None:
+    from config_scanner.live_push import run_slot_stack_kill
+
+    captured: dict[str, str] = {}
+
+    class _Result:
+        returncode = 0
+        stdout = "OK"
+        stderr = ""
+
+    def fake_winrm(*, ip, script, timeout):
+        captured["ip"] = ip
+        captured["script"] = script
+        captured["timeout"] = str(timeout)
+        return _Result()
+
+    monkeypatch.setattr(
+        "config_scanner.stack_restart.scan_target_is_local_machine",
+        lambda _t: False,
+    )
+    monkeypatch.setattr(
+        "config_scanner.live_push._run_local_powershell",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("local kill must not run")),
+    )
+    monkeypatch.setattr("config_scanner.live_push._ensure_lab_smb", lambda _ip: None)
+    monkeypatch.setattr("automation.remote_exec.winrm_run_inline", fake_winrm)
+    monkeypatch.setattr(
+        "network.lab_access.require_lab_fleet_ip", lambda host: host
+    )
+    ok, detail = run_slot_stack_kill(r"\\10.0.0.111\slot")
+    assert ok is True
+    assert captured["ip"] == "10.0.0.111"
+    assert "Stop-SlotWatchers" in captured["script"]
+    assert "Start-SlotGameWatch.ps1" in captured["script"]
+    assert "ParentProcessId" in captured["script"]
+    assert detail == "OK"
 
 
 def test_run_stack_kill_slot_uses_onehand_stop(monkeypatch) -> None:
