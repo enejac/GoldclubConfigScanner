@@ -1,0 +1,171 @@
+"""OneHand version + Debug/Release detection for Live Push header."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from types import SimpleNamespace
+
+from config_scanner.build_version import (
+    OneHandBuildInfo,
+    _configuration_from_strings,
+    _read_pe_debug_flag,
+    _sniff_build_configuration,
+    detect_onehand_build,
+    format_onehand_build_label,
+)
+
+
+def test_onehand_build_info_label() -> None:
+    info = OneHandBuildInfo(version="2.0.1+RC2", configuration="Release")
+    assert info.label == "OneHand 2.0.1+RC2 · Release"
+    assert format_onehand_build_label(info) == info.label
+    assert format_onehand_build_label(None) == ""
+
+
+def test_configuration_from_strings() -> None:
+    assert _configuration_from_strings("SpecialBuild: Debug") == "Debug"
+    assert _configuration_from_strings("Release build") == "Release"
+    assert _configuration_from_strings("Debugger helpers") is None
+
+
+def test_sniff_prefers_assembly_configuration(tmp_path: Path) -> None:
+    exe = tmp_path / "OneHand.exe"
+    # Both words appear; AssemblyConfiguration wins.
+    payload = "junk Debugger junk AssemblyConfiguration\x00Release more Debug"
+    exe.write_bytes(b"\x00" * 64 + payload.encode("utf-16le"))
+    assert _sniff_build_configuration(exe) == "Release"
+
+
+def test_sniff_release_when_both_plain_words(tmp_path: Path) -> None:
+    exe = tmp_path / "OneHand.exe"
+    payload = "Debug path and Release config"
+    exe.write_bytes(b"\x00" * 32 + payload.encode("utf-16le"))
+    assert _sniff_build_configuration(exe) == "Release"
+
+
+def test_read_pe_debug_flag_true() -> None:
+    win32 = SimpleNamespace(
+        GetFileVersionInfo=lambda _path, _key: {
+            "FileFlags": 0x1,
+            "FileFlagsMask": 0x3F,
+        }
+    )
+    assert _read_pe_debug_flag(win32, r"C:\fake\OneHand.exe") is True
+
+
+def test_read_pe_debug_flag_false() -> None:
+    win32 = SimpleNamespace(
+        GetFileVersionInfo=lambda _path, _key: {
+            "FileFlags": 0x0,
+            "FileFlagsMask": 0x3F,
+        }
+    )
+    assert _read_pe_debug_flag(win32, r"C:\fake\OneHand.exe") is False
+
+
+def test_detect_onehand_build_uses_sniff_and_version(tmp_path: Path, monkeypatch) -> None:
+    gold = tmp_path / "Goldclub"
+    gold.mkdir()
+    exe = gold / "OneHand.exe"
+    exe.write_bytes(
+        b"\x00" * 100
+        + "2.0.1+RC2".encode("utf-16le")
+        + "AssemblyConfiguration".encode("utf-16le")
+        + "\x00\x00".encode("utf-16le")
+        + "Debug".encode("utf-16le")
+    )
+
+    # Force PE path off so sniff + version sniff drive the result.
+    monkeypatch.setattr(
+        "config_scanner.build_version._extract_version_from_onehand_exe",
+        lambda _path: SimpleNamespace(
+            product_version="2.0.1+RC2",
+            display_version="v2.0.1-rc2",
+            file_version=None,
+            product_name="OneHand",
+            is_debug=None,
+        ),
+    )
+    info = detect_onehand_build(gold)
+    assert info is not None
+    assert info.version == "2.0.1+RC2"
+    assert info.configuration == "Debug"
+    assert "OneHand" in info.label
+
+
+def test_detect_onehand_build_release_from_pe_flag(tmp_path: Path, monkeypatch) -> None:
+    gold = tmp_path / "Goldclub"
+    (gold / "slot").mkdir(parents=True)
+    exe = gold / "slot" / "OneHand.exe"
+    exe.write_bytes(b"MZ")
+
+    monkeypatch.setattr(
+        "config_scanner.build_version._extract_version_from_onehand_exe",
+        lambda _path: SimpleNamespace(
+            product_version="2.1.0",
+            display_version="v2.1.0",
+            file_version="2.1.0.0",
+            product_name="OneHand",
+            is_debug=False,
+        ),
+    )
+    info = detect_onehand_build(gold)
+    assert info is not None
+    assert info.configuration == "Release"
+    assert info.version == "2.1.0"
+
+
+def test_load_live_cabinet_attaches_onehand_build(tmp_path: Path, monkeypatch) -> None:
+    from config_scanner.live_push import load_live_cabinet
+
+    gold = tmp_path / "Goldclub"
+    themes = gold / "slot" / "themes"
+    themes.mkdir(parents=True)
+    (gold / "OneHand.exe").write_bytes(b"MZ")
+
+    fake_recipe = SimpleNamespace(
+        display_mode=1,
+        jurisdiction=SimpleNamespace(tag="PR"),
+    )
+    monkeypatch.setattr(
+        "config_scanner.live_push.prepare_live_goldclub",
+        lambda _t: (gold, ""),
+    )
+    monkeypatch.setattr(
+        "config_scanner.live_push.load_recipe_from_goldclub",
+        lambda *_a, **_k: fake_recipe,
+    )
+    monkeypatch.setattr(
+        "config_scanner.live_push.inspect_live_licences",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
+        "config_scanner.live_push.goldclub_stack_kind",
+        lambda *_a, **_k: "slot",
+    )
+    monkeypatch.setattr(
+        "config_scanner.live_push.prefetch_link2win_math",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
+        "config_scanner.live_push.read_display_mode",
+        lambda *_a, **_k: 1,
+    )
+    monkeypatch.setattr(
+        "config_scanner.live_push.live_display_corruption_errors",
+        lambda *_a, **_k: {},
+    )
+    monkeypatch.setattr(
+        "config_scanner.live_push.detect_onehand_build",
+        lambda *_a, **_k: OneHandBuildInfo(
+            version="2.0.1+RC2",
+            configuration="Release",
+            exe_path=str(gold / "OneHand.exe"),
+        ),
+    )
+
+    outcome = load_live_cabinet(str(gold))
+    assert outcome.error == ""
+    assert outcome.onehand_build is not None
+    assert outcome.onehand_build.label == "OneHand 2.0.1+RC2 · Release"
+    assert outcome.recipe is fake_recipe

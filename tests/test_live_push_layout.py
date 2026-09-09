@@ -173,6 +173,7 @@ def test_bill_notes_columns_fit_without_horizontal_bar(qt_app: QApplication) -> 
 def test_bill_accept_cell_uses_same_tint_as_code_cell(
     qt_app: QApplication, tmp_path
 ) -> None:
+    from config_scanner.build_version import OneHandBuildInfo
     from config_scanner.live_push import load_live_cabinet
     from gui.live_push_panel import LivePushPanel
     from tests.test_slot_setup import _fake_goldclub
@@ -180,6 +181,12 @@ def test_bill_accept_cell_uses_same_tint_as_code_cell(
     gold = _fake_goldclub(tmp_path)
     outcome = load_live_cabinet(str(gold))
     assert outcome.recipe is not None
+    # Fixture may lack a real PE; attach a build so the header label is exercised.
+    outcome.onehand_build = OneHandBuildInfo(
+        version="2.0.1+RC2",
+        configuration="Release",
+        exe_path=str(gold / "OneHand.exe"),
+    )
 
     panel = LivePushPanel(autoload=False)
     panel.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
@@ -187,6 +194,9 @@ def test_bill_accept_cell_uses_same_tint_as_code_cell(
     qt_app.processEvents()
     panel._on_load_finished(outcome)
     qt_app.processEvents()
+
+    assert panel._onehand_build_label.isVisible()
+    assert panel._onehand_build_label.text() == "OneHand 2.0.1+RC2 · Release"
 
     table = panel._bill_tokens_table
     assert table.rowCount() >= 1

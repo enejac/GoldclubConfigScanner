@@ -443,6 +443,160 @@ class _ExeVersionInfo:
     file_version: str | None
     product_name: str | None
     display_version: str | None
+    is_debug: bool | None = None
+
+
+# VS_FIXEDFILEINFO.FileFlags bit for a debug build (winver.h).
+_VS_FF_DEBUG = 0x00000001
+
+
+@dataclass(frozen=True)
+class OneHandBuildInfo:
+    """Live OneHand.exe ProductVersion plus Debug/Release when known."""
+
+    version: str
+    configuration: str
+    product_name: str = ""
+    exe_path: str = ""
+
+    @property
+    def label(self) -> str:
+        ver = (self.version or "").strip() or "?"
+        cfg = (self.configuration or "").strip() or "Unknown"
+        return f"OneHand {ver} · {cfg}"
+
+
+def _read_pe_debug_flag(win32api: object, exe_str: str) -> bool | None:
+    """True when VS_FF_DEBUG is set; False when version info says not debug; else None."""
+    try:
+        info = win32api.GetFileVersionInfo(exe_str, "\\")
+        flags = int(info.get("FileFlags") or 0)
+        mask = int(info.get("FileFlagsMask") or 0)
+        if mask & _VS_FF_DEBUG:
+            return bool(flags & _VS_FF_DEBUG)
+        if flags & _VS_FF_DEBUG:
+            return True
+        return False
+    except Exception:
+        return None
+
+
+def _read_pe_string_field(
+    win32api: object,
+    exe_str: str,
+    field: str,
+    lang_cp: tuple[int, int] | None,
+) -> str:
+    paths: list[str] = []
+    if lang_cp is not None:
+        lang, codepage = lang_cp
+        paths.append(f"\\StringFileInfo\\{lang:04x}{codepage:04x}\\{field}")
+    paths.extend(
+        (
+            f"\\StringFileInfo\\040904b0\\{field}",
+            f"\\StringFileInfo\\000004b0\\{field}",
+        )
+    )
+    for path in paths:
+        try:
+            value = win32api.GetFileVersionInfo(exe_str, path) or ""
+        except Exception:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
+
+
+def _configuration_from_strings(*parts: str) -> str | None:
+    blob = " ".join(p for p in parts if p).casefold()
+    if not blob:
+        return None
+    if re.search(r"\bdebug\b", blob):
+        return "Debug"
+    if re.search(r"\brelease\b", blob):
+        return "Release"
+    return None
+
+
+def _sniff_build_configuration(exe_path: Path) -> str | None:
+    """Best-effort Debug/Release from UTF-16 strings when PE flags are absent."""
+    try:
+        with exe_path.open("rb") as handle:
+            blob = handle.read(8 * 1024 * 1024)
+    except OSError:
+        return None
+    if not blob:
+        return None
+    text = blob.decode("utf-16le", errors="ignore")
+    # Prefer .NET AssemblyConfiguration when present (avoids random "Debugger" hits).
+    asm = re.search(
+        r"AssemblyConfiguration.{0,48}?\b(Debug|Release)\b",
+        text,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if asm:
+        return "Debug" if asm.group(1).casefold() == "debug" else "Release"
+    # Prefer Release when both words appear — Debug builds usually set VS_FF_DEBUG.
+    has_release = bool(re.search(r"(?<![A-Za-z])Release(?![A-Za-z])", text))
+    has_debug = bool(re.search(r"(?<![A-Za-z])Debug(?![A-Za-z])", text))
+    if has_release and not has_debug:
+        return "Release"
+    if has_debug and not has_release:
+        return "Debug"
+    if has_release:
+        return "Release"
+    return None
+
+
+def format_onehand_build_label(info: OneHandBuildInfo | None) -> str:
+    if info is None:
+        return ""
+    return info.label
+
+
+def detect_onehand_build(goldclub: Path | str) -> OneHandBuildInfo | None:
+    """Read OneHand.exe version and Debug/Release for a Goldclub root."""
+    root = Path(goldclub)
+    exe_path = _find_onehand_exe(root)
+    if exe_path is None:
+        return None
+    info = _extract_version_from_onehand_exe(exe_path)
+    version = (
+        (info.product_version or info.display_version or info.file_version or "")
+        .strip()
+    )
+    if not version:
+        # SlotLog fallback for cabinets whose PE resources are stripped.
+        try:
+            log_dir = root / "var" / "log"
+            if not log_dir.is_dir():
+                log_dir = root.parent / "var" / "log"
+            if log_dir.is_dir():
+                core = _extract_version_from_slotlog(log_dir)
+                if core:
+                    version = core.lstrip("v")
+        except OSError:
+            pass
+    configuration = "Unknown"
+    if info.is_debug is True:
+        configuration = "Debug"
+    elif info.is_debug is False:
+        configuration = "Release"
+    else:
+        sniffed = _configuration_from_strings(info.product_name or "") or (
+            _sniff_build_configuration(exe_path)
+        )
+        if sniffed:
+            configuration = sniffed
+    if not version and configuration == "Unknown":
+        return None
+    return OneHandBuildInfo(
+        version=version or "?",
+        configuration=configuration,
+        product_name=(info.product_name or "").strip(),
+        exe_path=str(exe_path),
+    )
 
 
 def _find_onehand_exe(scan_root: Path) -> Path | None:
@@ -545,6 +699,8 @@ def _extract_version_from_exe(exe_path: Path, *, slot_style: bool = False) -> _E
     exe_str = str(exe_path)
     product_version = ""
     product_name_meta = ""
+    extra_strings = ""
+    is_debug: bool | None = None
     win32api = None
     try:
         import win32api as _win32api  # type: ignore
@@ -557,6 +713,7 @@ def _extract_version_from_exe(exe_path: Path, *, slot_style: bool = False) -> _E
         file_version: str | None = None
         if win32api is not None:
             file_version = _read_pe_file_version(win32api, exe_str)
+            is_debug = _read_pe_debug_flag(win32api, exe_str)
             try:
                 lang_cp = win32api.GetFileVersionInfo(exe_str, r"\VarFileInfo\Translation")[0]
                 lang, codepage = lang_cp
@@ -573,24 +730,13 @@ def _extract_version_from_exe(exe_path: Path, *, slot_style: bool = False) -> _E
                             break
                     except Exception:
                         continue
-            try:
-                if lang_cp is not None:
-                    lang, codepage = lang_cp
-                    pn_path = f"\\StringFileInfo\\{lang:04x}{codepage:04x}\\ProductName"
-                    product_name_meta = win32api.GetFileVersionInfo(exe_str, pn_path) or ""
-                else:
-                    raise OSError("no translation")
-            except Exception:
-                for fallback in (
-                    r"\StringFileInfo\040904b0\ProductName",
-                    r"\StringFileInfo\000004b0\ProductName",
-                ):
-                    try:
-                        product_name_meta = win32api.GetFileVersionInfo(exe_str, fallback) or ""
-                        if product_name_meta:
-                            break
-                    except Exception:
-                        continue
+            product_name_meta = _read_pe_string_field(
+                win32api, exe_str, "ProductName", lang_cp
+            )
+            extra_strings = " ".join(
+                _read_pe_string_field(win32api, exe_str, field, lang_cp)
+                for field in ("SpecialBuild", "PrivateBuild", "Comments", "FileDescription")
+            )
 
         pv = str(product_version).strip()
         product_name = str(product_name_meta).strip() or None
@@ -611,14 +757,23 @@ def _extract_version_from_exe(exe_path: Path, *, slot_style: bool = False) -> _E
         else:
             display = pv or file_version
 
+        # When PE FileFlags omit VS_FF_DEBUG, SpecialBuild / Comments may still say Debug.
+        if is_debug is None:
+            hinted = _configuration_from_strings(product_name or "", extra_strings)
+            if hinted == "Debug":
+                is_debug = True
+            elif hinted == "Release":
+                is_debug = False
+
         return _ExeVersionInfo(
             product_version=pv or None,
             file_version=file_version,
             product_name=product_name,
             display_version=display,
+            is_debug=is_debug,
         )
     except Exception:
-        return _ExeVersionInfo(None, None, None, None)
+        return _ExeVersionInfo(None, None, None, None, None)
 
 
 def _extract_version_from_onehand_exe(exe_path: Path) -> _ExeVersionInfo:

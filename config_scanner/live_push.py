@@ -22,6 +22,7 @@ from datetime import datetime
 from pathlib import Path
 
 from config_scanner.bill_tokens_view import format_bill_notes_snapshot
+from config_scanner.build_version import OneHandBuildInfo, detect_onehand_build
 from config_scanner.denom_compat import (
     apply_magic_wheel_for_denom,
     denom_combo_choices,
@@ -2294,6 +2295,7 @@ class LiveLoadOutcome:
     status: str
     licence: LiveLicenceStatus | None = None
     display_corruption: dict[str, str] = field(default_factory=dict)
+    onehand_build: OneHandBuildInfo | None = None
 
 
 def load_live_cabinet(target: str) -> LiveLoadOutcome:
@@ -2304,6 +2306,11 @@ def load_live_cabinet(target: str) -> LiveLoadOutcome:
             return LiveLoadOutcome(None, None, err, "")
         recipe = load_recipe_from_goldclub(root, label="live")
         licence = inspect_live_licences(root)
+        onehand: OneHandBuildInfo | None = None
+        try:
+            onehand = detect_onehand_build(root)
+        except Exception as exc:  # noqa: BLE001
+            _lp_log(f"OneHand build detect failed: {exc}")
         kind = goldclub_stack_kind(root)
         if kind == "slot":
             try:
@@ -2328,7 +2335,13 @@ def load_live_cabinet(target: str) -> LiveLoadOutcome:
         except Exception as exc:  # noqa: BLE001
             _lp_log(f"display corruption scan failed: {exc}")
         return LiveLoadOutcome(
-            root, recipe, "", status, licence, display_corruption=corrupt
+            root,
+            recipe,
+            "",
+            status,
+            licence,
+            display_corruption=corrupt,
+            onehand_build=onehand,
         )
     except Exception as exc:  # noqa: BLE001
         return LiveLoadOutcome(

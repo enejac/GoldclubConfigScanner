@@ -677,6 +677,16 @@ class LivePushPanel(QWidget):
             "Edit live cabinet settings over SMB, then Apply to write and restart the game."
         )
         head.addWidget(title)
+        self._onehand_build_label = QLabel("")
+        self._onehand_build_label.setObjectName("onehandBuildLabel")
+        self._onehand_build_label.setStyleSheet(
+            "font-size: 13px; font-weight: 600; color: #9ecbff; padding-left: 12px;"
+        )
+        self._onehand_build_label.setToolTip(
+            "OneHand.exe ProductVersion and Debug/Release detected from the loaded cabinet."
+        )
+        self._onehand_build_label.hide()
+        head.addWidget(self._onehand_build_label)
         head.addStretch(1)
         outer.addLayout(head)
 
@@ -1548,6 +1558,7 @@ class LivePushPanel(QWidget):
         self._set_busy(False)
         if not isinstance(outcome, LiveLoadOutcome):
             self._status.setText("Load failed.")
+            self._set_onehand_build_label(None)
             return
         if outcome.error or outcome.recipe is None:
             msg = outcome.error or "Cannot load cabinet."
@@ -1557,11 +1568,13 @@ class LivePushPanel(QWidget):
             self._goldclub = None
             self._display_corruption = {}
             self._update_licence_ui(None)
+            self._set_onehand_build_label(None)
             self._paint_live_highlights()
             return
         self._loaded = outcome.recipe
         self._goldclub = outcome.root
         self._display_corruption = dict(outcome.display_corruption or {})
+        self._set_onehand_build_label(outcome.onehand_build)
         if outcome.root is not None:
             self._onehand_markets = markets_accepted_by_onehand(outcome.root)
             self._fill_market_combo(keep=outcome.recipe.jurisdiction.tag)
@@ -1570,6 +1583,34 @@ class LivePushPanel(QWidget):
         self._update_licence_ui(outcome.licence, goldclub=outcome.root)
         self._status.setText(outcome.status)
         self._refresh_changes()
+
+    def _set_onehand_build_label(self, info) -> None:
+        label = getattr(self, "_onehand_build_label", None)
+        if label is None:
+            return
+        if info is None:
+            label.setText("")
+            label.hide()
+            return
+        text = getattr(info, "label", "") or ""
+        if not text:
+            label.setText("")
+            label.hide()
+            return
+        cfg = (getattr(info, "configuration", "") or "").strip().casefold()
+        if cfg == "debug":
+            color = "#ffb86c"
+        elif cfg == "release":
+            color = "#9ecbff"
+        else:
+            color = "#c8c8c8"
+        label.setStyleSheet(
+            f"font-size: 13px; font-weight: 600; color: {color}; padding-left: 12px;"
+        )
+        tip = f"Detected from {getattr(info, 'exe_path', '') or 'OneHand.exe'}"
+        label.setToolTip(tip)
+        label.setText(text)
+        label.show()
 
     def _update_ticket_hint(self, root) -> None:
         if root is None:
