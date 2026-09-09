@@ -1,4 +1,11 @@
-"""Lab fleet allowlist and Credential Manager access (no embedded passwords)."""
+"""Lab fleet allowlist and Credential Manager access.
+
+The lab password is the documented throwaway ``test`` account. ``cmdkey``
+alone is not enough: Windows keeps a per-server SMB session, so a first
+attempt with this PC's login (or ``GOLD-CLUB\\test`` on workgroup ``.111``)
+sticks as WinError 1326 until we cancel that session and connect with the
+host-specific user (``10.0.0.111\\test``, not the domain account).
+"""
 
 from __future__ import annotations
 
@@ -28,8 +35,31 @@ LAB_USERNAME_HINT = r"GOLD-CLUB\test"
 # Workgroup cabinets have no GOLD-CLUB domain account. WinRM/SMB must use
 # the local ``test`` user (IP\test or machine\test), not GOLD-CLUB\test.
 LAB_WORKGROUP_USERS: dict[str, tuple[str, ...]] = {
-    "10.0.0.111": (r"10.0.0.111\test", r"GRT330106\test"),
+    # Workgroup GRT330106 / GST22377 — never GOLD-CLUB\test (that account
+    # does not exist here; it yields WinError 1326).
+    "10.0.0.111": (
+        r"10.0.0.111\test",
+        r"GST22377\test",
+        r"GRT330106\test",
+    ),
 }
+
+# Win32 SMB logon failures that mean "retry with the lab user", not "offline".
+_SMB_LOGON_WINERRORS = frozenset(
+    {
+        86,  # ERROR_INVALID_PASSWORD
+        1326,  # ERROR_LOGON_FAILURE
+        1327,  # ERROR_ACCOUNT_RESTRICTION
+        1219,  # ERROR_SESSION_CREDENTIAL_CONFLICT
+    }
+)
+_SMB_ALREADY_CONNECTED = frozenset(
+    {
+        85,  # ERROR_ALREADY_ASSIGNED
+        1202,  # ERROR_DEVICE_ALREADY_REMEMBERED
+    }
+)
+_SMB_SHARES_TO_DROP = ("IPC$", "slot", "c$", "C$", "USB", "USB_Remote")
 
 # Lab-only fallback credential. The fleet uses a single throwaway login
 # (GOLD-CLUB\test / test — see .cursor/rules/lab-cabinet-access.mdc). Windows
@@ -139,6 +169,61 @@ def lab_username_for_host(ip: str | None) -> str:
     return LAB_USERNAME_HINT
 
 
+def lab_smb_usernames_for_host(ip: str | None) -> tuple[str, ...]:
+    """Usernames to try for SMB, preferred first."""
+    host = (ip or "").strip()
+    aliases = LAB_WORKGROUP_USERS.get(host)
+    if aliases:
+        return aliases
+    return (LAB_USERNAME_HINT,)
+
+
+def win_error_code(exc: BaseException) -> int | None:
+    """Best-effort Win32 error from ``OSError`` / ``pywintypes.error``."""
+    winerror = getattr(exc, "winerror", None)
+    if isinstance(winerror, int) and winerror:
+        return int(winerror)
+    args = getattr(exc, "args", ())
+    if args and isinstance(args[0], int):
+        return int(args[0])
+    errno = getattr(exc, "errno", None)
+    if isinstance(errno, int) and errno:
+        return int(errno)
+    return None
+
+
+def is_smb_logon_failure(exc: BaseException) -> bool:
+    code = win_error_code(exc)
+    if code in _SMB_LOGON_WINERRORS:
+        return True
+    text = str(exc).casefold()
+    return (
+        "1326" in text
+        or "password is incorrect" in text
+        or "logon failure" in text
+        or "session credential conflict" in text
+        or "multiple connections to a server" in text
+    )
+
+
+def format_lab_smb_logon_failure(host: str, exc: BaseException) -> str:
+    """User-facing text when UNC open fails after the lab login was applied."""
+    ip = (host or "").strip() or "cabinet"
+    user = lab_username_for_host(ip)
+    workgroup = ip in LAB_WORKGROUP_USERS
+    extra = ""
+    if workgroup:
+        extra = (
+            f" This cabinet is workgroup — use {user} / test, "
+            "not GOLD-CLUB\\test."
+        )
+    return (
+        f"Cannot reach \\\\{ip}\\slot ({exc}).{extra} "
+        "The app stores the lab login automatically; a leftover SMB session "
+        f"from this PC's user can still block it. Run: net use \\\\{ip}\\ipc$ /delete"
+    )
+
+
 def lab_winrm_authentication(ip: str | None) -> str:
     """``Invoke-Command -Authentication`` value for a fleet cabinet.
 
@@ -243,46 +328,136 @@ def format_lab_lan_unreachable(ip: str, *, winrm_open: bool, smb_open: bool, pin
     return "\n".join(lines)
 
 
-def ensure_lab_smb_credential(ip: str) -> bool:
-    """Idempotent ``cmdkey`` mapping for a lab cabinet admin share (``C$``).
-
-    Silent first-time auth for fleet IPs so UNC reads (SAS Verify Machine column,
-    health probes, software swap) work without a Windows password dialog.
-
-    Returns ``True`` when ``cmdkey`` was invoked successfully, ``False`` when
-    skipped (non-Windows, non-fleet IP, missing tools) or the process failed.
-    Never raises.
-    """
+def _cmdkey_run(args: list[str]) -> bool:
     import logging
     import subprocess
-
-    host = (ip or "").strip()
-    if not host or sys.platform != "win32":
-        return False
-    try:
-        host = require_lab_fleet_ip(host)
-        user, password = get_lab_credential(host)
-    except (FleetAllowlistError, LabCredentialError, ValueError):
-        return False
 
     run_kw: dict = {
         "capture_output": True,
         "text": True,
         "errors": "replace",
         "timeout": 15,
+        "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0),
     }
-    run_kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
-        completed = subprocess.run(
-            ["cmdkey", f"/add:{host}", f"/user:{user}", f"/pass:{password}"],
-            **run_kw,
-        )
+        completed = subprocess.run(["cmdkey", *args], **run_kw)
         return int(getattr(completed, "returncode", 1) or 0) == 0
     except (OSError, subprocess.TimeoutExpired) as exc:
-        logging.getLogger(__name__).debug(
-            "cmdkey lab credential for %s failed: %s", host, exc
-        )
+        logging.getLogger(__name__).debug("cmdkey %s failed: %s", args[:1], exc)
         return False
+
+
+def _store_lab_cmdkey(host: str, user: str, password: str) -> bool:
+    _cmdkey_run([f"/delete:{host}"])
+    return _cmdkey_run([f"/add:{host}", f"/user:{user}", f"/pass:{password}"])
+
+
+def _wnet_add(remote: str, username: str, password: str) -> None:
+    import win32wnet  # type: ignore
+
+    nr = win32wnet.NETRESOURCE()
+    nr.dwType = 1  # RESOURCETYPE_DISK
+    nr.lpRemoteName = remote
+    win32wnet.WNetAddConnection2(nr, password, username)
+
+
+def _wnet_cancel(remote: str) -> None:
+    try:
+        import win32wnet  # type: ignore
+    except ImportError:
+        return
+    try:
+        win32wnet.WNetCancelConnection2(remote, 0, True)
+    except Exception:  # noqa: BLE001
+        return
+
+
+def drop_lab_smb_sessions(host: str) -> None:
+    """Drop leftover SMB sessions so the next connect can use the lab user."""
+    ip = (host or "").strip()
+    if not ip:
+        return
+    for share in _SMB_SHARES_TO_DROP:
+        _wnet_cancel(rf"\\{ip}\{share}")
+    import logging
+    import subprocess
+
+    run_kw: dict = {
+        "capture_output": True,
+        "text": True,
+        "errors": "replace",
+        "timeout": 15,
+        "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    }
+    try:
+        subprocess.run(
+            ["net", "use", rf"\\{ip}\ipc$", "/delete", "/y"],
+            **run_kw,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        logging.getLogger(__name__).debug("net use /delete %s failed: %s", ip, exc)
+
+
+def _connect_lab_ipc(host: str, username: str, password: str) -> None:
+    remote = rf"\\{host}\IPC$"
+    try:
+        _wnet_add(remote, username, password)
+    except ImportError:
+        return
+    except Exception as exc:  # noqa: BLE001
+        code = win_error_code(exc)
+        if code in _SMB_ALREADY_CONNECTED:
+            return
+        raise
+
+
+def ensure_lab_smb_credential(ip: str) -> bool:
+    """Store the lab login and open an SMB session to the cabinet.
+
+    ``cmdkey`` alone does not override an existing session from this PC's
+    user. After a 1326/1219 we drop IPC$/shares and reconnect with the
+    host-specific account (``10.0.0.111\\test`` on the workgroup slot).
+
+    Returns ``True`` when cmdkey or the session connect succeeded. Never raises.
+    """
+    import logging
+
+    host = (ip or "").strip()
+    if not host or sys.platform != "win32":
+        return False
+    try:
+        host = require_lab_fleet_ip(host)
+        password = get_lab_credential(host)[1]
+    except (FleetAllowlistError, LabCredentialError, ValueError):
+        return False
+
+    users = lab_smb_usernames_for_host(host)
+    stored = False
+    last_exc: BaseException | None = None
+    for attempt, user in enumerate(users):
+        stored = _store_lab_cmdkey(host, user, password) or stored
+        try:
+            _connect_lab_ipc(host, user, password)
+            return True
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if not is_smb_logon_failure(exc) and attempt == 0:
+                logging.getLogger(__name__).debug(
+                    "SMB connect %s as %s failed: %s", host, user, exc
+                )
+                continue
+            drop_lab_smb_sessions(host)
+            try:
+                _connect_lab_ipc(host, user, password)
+                return True
+            except Exception as retry_exc:  # noqa: BLE001
+                last_exc = retry_exc
+                continue
+    if last_exc is not None:
+        logging.getLogger(__name__).debug(
+            "lab SMB session for %s failed: %s", host, last_exc
+        )
+    return stored
 
 
 def safe_join_under(root: Path, relative_path: str) -> Path:

@@ -2240,6 +2240,12 @@ def prepare_live_goldclub(target: str) -> tuple[Path | None, str]:
         _lp_log(f"host unreachable {raw}: {why}")
         return None, why
     host = unc_host_from_target(raw)
+    return _probe_live_goldclub(raw, host, retry_auth=True)
+
+
+def _probe_live_goldclub(
+    raw: str, host: str | None, *, retry_auth: bool
+) -> tuple[Path | None, str]:
     if host:
         _ensure_lab_smb(host)
     try:
@@ -2256,10 +2262,7 @@ def prepare_live_goldclub(target: str) -> tuple[Path | None, str]:
                 probed = goldclub_root_from_target(cand)
                 if looks_like_goldclub_root(probed):
                     return probed, ""
-        try:
-            exists = root.is_dir()
-        except (OSError, TimeoutError) as exc:
-            return None, f"Cannot reach {raw} ({exc})."
+        exists = root.is_dir()
         if exists:
             return None, (
                 f"Folder exists but is not a Goldclub root (need slot\\themes):\n{root}"
@@ -2268,6 +2271,17 @@ def prepare_live_goldclub(target: str) -> tuple[Path | None, str]:
             f"Cannot reach {raw}. Store the lab login (cmdkey) and check the cabinet is on."
         )
     except (OSError, TimeoutError, ValueError) as exc:
+        from network.lab_access import (
+            drop_lab_smb_sessions,
+            format_lab_smb_logon_failure,
+            is_smb_logon_failure,
+        )
+
+        if host and is_smb_logon_failure(exc) and retry_auth:
+            drop_lab_smb_sessions(host)
+            return _probe_live_goldclub(raw, host, retry_auth=False)
+        if host and is_smb_logon_failure(exc):
+            return None, format_lab_smb_logon_failure(host, exc)
         return None, f"Cannot reach {raw} ({exc})."
 
 
