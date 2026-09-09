@@ -1,10 +1,13 @@
-"""Lab fleet allowlist and Credential Manager access.
+"""Lab fleet allowlist and silent SMB login (test/test).
 
 The lab password is the documented throwaway ``test`` account. ``cmdkey``
 alone is not enough: Windows keeps a per-server SMB session, so a first
 attempt with this PC's login (or ``GOLD-CLUB\\test`` on workgroup ``.111``)
 sticks as WinError 1326 until we cancel that session and connect with the
 host-specific user (``10.0.0.111\\test``, not the domain account).
+
+SMB auto-login (no Credential Manager popup, no WinRM) applies to every
+host on the lab LAN ``10.0.0.0/24``. WinRM/PsExec stay fleet-allowlisted.
 """
 
 from __future__ import annotations
@@ -61,15 +64,16 @@ _SMB_ALREADY_CONNECTED = frozenset(
 )
 _SMB_SHARES_TO_DROP = ("IPC$", "slot", "c$", "C$", "USB", "USB_Remote")
 
-# Lab-only fallback credential. The fleet uses a single throwaway login
-# (GOLD-CLUB\test / test — see .cursor/rules/lab-cabinet-access.mdc). Windows
+# CONNECT_COMMANDLINE: WNetAddConnection2 must not show CredUI. Combined
+# with explicit user/password this is a silent SMB logon (no popup).
+_WNET_CONNECT_COMMANDLINE = 0x00000800
+
+# Lab-only fallback credential. Cabinets use a single throwaway login
+# (test / test — GOLD-CLUB\test on domain, IP\test on workgroup). Windows
 # will NOT return a ``cmdkey``-stored domain password via ``CredRead`` (fails
-# with error 87), yet WinRM/PsExec need the password to build a PSCredential.
-# SMB works transparently but remote PowerShell does not, which is why the
-# "could not verify" banner appears even with full access. Supply the documented
-# lab password here so remote probes work out of the box; override with the
-# GOLDCLUB_LAB_PASSWORD environment variable. The fleet allowlist prevents this
-# credential from ever reaching a non-lab host.
+# with error 87). SMB is opened with WNetAddConnection2 so Load does not
+# need a prior Credential Manager popup. WinRM still uses this password
+# for fleet hosts only. Override with GOLDCLUB_LAB_PASSWORD.
 _LAB_PASSWORD_ENV = "GOLDCLUB_LAB_PASSWORD"
 _LAB_DEFAULT_PASSWORD = "test"
 
@@ -87,6 +91,23 @@ class FleetAllowlistError(ValueError):
 def is_lab_fleet_ip(ip: str) -> bool:
     host = (ip or "").strip()
     return host in LAB_FLEET_IPS
+
+
+def is_lab_lan_ip(ip: str) -> bool:
+    """True for any IPv4 on the lab subnet (10.0.0.0/24), not only the known fleet.
+
+    SMB auto-login uses this so a cabinet like ``10.0.0.76`` gets test/test
+    without a Credential Manager popup. WinRM stays on ``require_lab_fleet_ip``.
+    """
+    host = (ip or "").strip()
+    if host in LAB_FLEET_IPS:
+        return True
+    if not host or not _IPV4_RE.fullmatch(host):
+        return False
+    octets = [int(p) for p in host.split(".")]
+    if any(o > 255 for o in octets):
+        return False
+    return octets[0] == 10 and octets[1] == 0 and octets[2] == 0
 
 
 def require_lab_fleet_ip(ip: str) -> str:
@@ -170,12 +191,30 @@ def lab_username_for_host(ip: str | None) -> str:
 
 
 def lab_smb_usernames_for_host(ip: str | None) -> tuple[str, ...]:
-    """Usernames to try for SMB, preferred first."""
+    """Usernames to try for SMB, preferred first. Password is always ``test``."""
     host = (ip or "").strip()
     aliases = LAB_WORKGROUP_USERS.get(host)
     if aliases:
         return aliases
-    return (LAB_USERNAME_HINT,)
+    users: list[str] = []
+    local_test = rf"{host}\test" if host else "test"
+    if host and is_lab_fleet_ip(host):
+        # Known domain cabinets (.90, .171, …): GOLD-CLUB first.
+        users.extend((LAB_USERNAME_HINT, local_test, "test"))
+    elif host and is_lab_lan_ip(host):
+        # Unknown lab IP (.76, …): local test first (workgroup, like .111).
+        users.extend((local_test, LAB_USERNAME_HINT, "test"))
+    else:
+        users.extend((LAB_USERNAME_HINT, "test"))
+    seen: set[str] = set()
+    out: list[str] = []
+    for user in users:
+        key = user.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(user)
+    return tuple(out)
 
 
 def win_error_code(exc: BaseException) -> int | None:
@@ -217,10 +256,13 @@ def format_lab_smb_logon_failure(host: str, exc: BaseException) -> str:
             f" This cabinet is workgroup — use {user} / test, "
             "not GOLD-CLUB\\test."
         )
+    else:
+        tried = " or ".join(lab_smb_usernames_for_host(ip))
+        extra = f" Tried silent SMB login as {tried} / test (no credential popup)."
     return (
         f"Cannot reach \\\\{ip}\\slot ({exc}).{extra} "
-        "The app stores the lab login automatically; a leftover SMB session "
-        f"from this PC's user can still block it. Run: net use \\\\{ip}\\ipc$ /delete"
+        "A leftover SMB session from this PC's Windows user can still block it. "
+        f"Run: net use \\\\{ip}\\ipc$ /delete"
     )
 
 
@@ -358,7 +400,10 @@ def _wnet_add(remote: str, username: str, password: str) -> None:
     nr = win32wnet.NETRESOURCE()
     nr.dwType = 1  # RESOURCETYPE_DISK
     nr.lpRemoteName = remote
-    win32wnet.WNetAddConnection2(nr, password, username)
+    # CONNECT_COMMANDLINE: fail instead of opening the Windows credential dialog.
+    win32wnet.WNetAddConnection2(
+        nr, password, username, _WNET_CONNECT_COMMANDLINE
+    )
 
 
 def _wnet_cancel(remote: str) -> None:
@@ -411,33 +456,50 @@ def _connect_lab_ipc(host: str, username: str, password: str) -> None:
         raise
 
 
+def _connect_lab_disk_shares(host: str, username: str, password: str) -> None:
+    """Bind ``slot`` / ``c$`` with the same silent login (best-effort)."""
+    for share in ("slot", "c$", "C$"):
+        try:
+            _wnet_add(rf"\\{host}\{share}", username, password)
+        except ImportError:
+            return
+        except Exception as exc:  # noqa: BLE001
+            code = win_error_code(exc)
+            if code in _SMB_ALREADY_CONNECTED:
+                continue
+            if is_smb_logon_failure(exc):
+                raise
+
+
 def ensure_lab_smb_credential(ip: str) -> bool:
-    """Store the lab login and open an SMB session to the cabinet.
+    """Open a silent SMB session with test/test (no CredUI, no WinRM).
 
     ``cmdkey`` alone does not override an existing session from this PC's
     user. After a 1326/1219 we drop IPC$/shares and reconnect with the
-    host-specific account (``10.0.0.111\\test`` on the workgroup slot).
+    host-specific account (``10.0.0.111\\test`` on the workgroup slot,
+    ``10.0.0.76\\test`` then ``GOLD-CLUB\\test`` on any other lab LAN IP).
 
-    Returns ``True`` when cmdkey or the session connect succeeded. Never raises.
+    Returns ``True`` only when an SMB session was opened. Never raises.
     """
     import logging
 
     host = (ip or "").strip()
     if not host or sys.platform != "win32":
         return False
+    if not is_lab_lan_ip(host):
+        return False
     try:
-        host = require_lab_fleet_ip(host)
         password = get_lab_credential(host)[1]
-    except (FleetAllowlistError, LabCredentialError, ValueError):
+    except (LabCredentialError, ValueError):
         return False
 
     users = lab_smb_usernames_for_host(host)
-    stored = False
     last_exc: BaseException | None = None
     for attempt, user in enumerate(users):
-        stored = _store_lab_cmdkey(host, user, password) or stored
+        _store_lab_cmdkey(host, user, password)
         try:
             _connect_lab_ipc(host, user, password)
+            _connect_lab_disk_shares(host, user, password)
             return True
         except Exception as exc:  # noqa: BLE001
             last_exc = exc
@@ -449,6 +511,7 @@ def ensure_lab_smb_credential(ip: str) -> bool:
             drop_lab_smb_sessions(host)
             try:
                 _connect_lab_ipc(host, user, password)
+                _connect_lab_disk_shares(host, user, password)
                 return True
             except Exception as retry_exc:  # noqa: BLE001
                 last_exc = retry_exc
@@ -457,7 +520,7 @@ def ensure_lab_smb_credential(ip: str) -> bool:
         logging.getLogger(__name__).debug(
             "lab SMB session for %s failed: %s", host, last_exc
         )
-    return stored
+    return False
 
 
 def safe_join_under(root: Path, relative_path: str) -> Path:

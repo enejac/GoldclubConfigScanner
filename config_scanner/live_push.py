@@ -2214,13 +2214,14 @@ def goldclub_stack_kind(root: Path | str) -> str:
 
 
 def _ensure_lab_smb(host: str) -> None:
+    """Silent SMB test/test for any lab-LAN cabinet. Does not use WinRM."""
     host = (host or "").strip()
     if not host:
         return
     try:
-        from network.lab_access import ensure_lab_smb_credential, is_lab_fleet_ip
+        from network.lab_access import ensure_lab_smb_credential, is_lab_lan_ip
 
-        if is_lab_fleet_ip(host):
+        if is_lab_lan_ip(host):
             ensure_lab_smb_credential(host)
     except Exception:  # noqa: BLE001
         return

@@ -460,6 +460,21 @@ def test_prepare_live_goldclub_retries_1326_then_explains(monkeypatch) -> None:
     assert "workgroup" in err.casefold()
 
 
+def test_ensure_lab_smb_runs_for_unknown_lab_lan(monkeypatch) -> None:
+    from config_scanner import live_push
+
+    seen: list[str] = []
+    monkeypatch.setattr(
+        "network.lab_access.ensure_lab_smb_credential",
+        lambda ip: seen.append(ip) or True,
+    )
+    live_push._ensure_lab_smb("10.0.0.76")
+    assert seen == ["10.0.0.76"]
+    seen.clear()
+    live_push._ensure_lab_smb("8.8.8.8")
+    assert seen == []
+
+
 def test_commit_writes_without_stack(tmp_path: Path, monkeypatch) -> None:
     gold = _fake_goldclub(tmp_path)
     recipe = load_recipe_from_goldclub(gold, label="live")
