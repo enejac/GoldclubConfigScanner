@@ -91,6 +91,7 @@ from config_scanner.denom_compat import (
     find_staged_leaf_for_denom,
     link2win_restage_change_line,
     list_link2win_math_replace_targets,
+    playable_denoms_from_recipe,
     replace_cabinet_math_file,
     validate_live_push_warnings,
     MathReplaceTarget,
@@ -1355,7 +1356,7 @@ class LivePushPanel(QWidget):
             file_note = live_field_file_hover(
                 label,
                 self._goldclub,
-                list(after.denomination_list) if after is not None else None,
+                playable_denoms_from_recipe(after) if after is not None else None,
                 validation_error=inv,
             )
             tip = live_field_tooltip(

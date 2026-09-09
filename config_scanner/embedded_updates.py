@@ -55,11 +55,9 @@ def embedded_updates_root() -> Path:
     if getattr(sys, "frozen", False):
         beside = Path(sys.executable).resolve().parent / "embedded_updates"
         if (beside / "catalog.json").is_file():
-            log.debug("embedded_updates_root beside exe: %s", beside)
             return beside
     root = bundled_assets_root() / "embedded_updates"
     if (root / "catalog.json").is_file():
-        log.debug("embedded_updates_root bundled: %s", root)
         return root
     if getattr(sys, "frozen", False):
         beside = Path(sys.executable).resolve().parent / "embedded_updates"

@@ -208,6 +208,103 @@ def test_parse_link2win_pairs_from_plain_json(tmp_path: Path) -> None:
     assert parse_link2win_pairs(path) == frozenset({(30, 5), (30, 10)})
 
 
+def test_parse_link2win_currency_unit_denoms_as_cents(tmp_path: Path) -> None:
+    """Live GameStar files use denom 0.01 for 1c, not integer 1."""
+    path = tmp_path / "Link2WinBonusMath.json"
+    path.write_text(
+        json.dumps(
+            {
+                "betAndDenomConfigurations": [
+                    {"bet": 30, "denom": 0.01, "lines": 20},
+                    {"bet": 60, "denom": 0.01},
+                    {"bet": 30, "denom": 0.05},
+                    {"bet": 30, "denom": 1.0},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    pairs = parse_link2win_pairs(path)
+    assert pairs == frozenset({(30, 1), (60, 1), (30, 5), (30, 100)})
+    support = inspect_link2win_math(path, allow_decrypt=False)
+    assert support is not None
+    assert support.denoms == frozenset({1, 5, 100})
+
+
+def test_live_1c_math_with_multiplier_bets_is_not_false_red(tmp_path: Path) -> None:
+    """mgconfig multipliers are not Link2Win bet totals — do not cartesian-fail."""
+    gold = _fake_goldclub(tmp_path)
+    path = gold / "slot" / "themes" / "Link2WinFeature" / "Link2WinBonusMath.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "betAndDenomConfigurations": [
+                    {"bet": 30, "denom": 0.01},
+                    {"bet": 60, "denom": 0.01},
+                    {"bet": 90, "denom": 0.01},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    live = load_recipe_from_goldclub(gold, label="live")
+    live.denomination_list = [1]
+    live.credit_rate_values = [1]
+    live.jurisdiction.currency_name = "USD"
+    live.jurisdiction.tag = "PuertoRico"
+    live.play_limits = PlayLimitsSettings(
+        magic_wheel_bet=1,
+        magic_wheel_average=5,
+        bet_multipliers=[1, 2, 3, 4, 5, 8, 10, 15, 25],
+    )
+    proposed = SlotSetupRecipe.from_dict(live.to_dict())
+    result = validate_denom_configuration(live, proposed, gold)
+    assert result.ok, result.errors
+    assert not any("Bet:" in err for err in result.errors)
+
+
+def test_config2_shared_bet_25_does_not_fail_other_multipliers(
+    tmp_path: Path,
+) -> None:
+    """Config2 uses bet totals 25/50/… — only shared 25 may be pair-checked."""
+    gold = _fake_goldclub(tmp_path)
+    feature = gold / "slot" / "themes" / "Link2WinFeature"
+    feature.mkdir(parents=True, exist_ok=True)
+    (feature / "Link2WinBonusMath.json").write_text(
+        json.dumps(
+            {"betAndDenomConfigurations": [{"bet": 30, "denom": 0.01}]}
+        ),
+        encoding="utf-8",
+    )
+    (feature / "Link2WinBonusMath_Config2.json").write_text(
+        json.dumps(
+            {
+                "betAndDenomConfigurations": [
+                    {"bet": 25, "denom": 0.01},
+                    {"bet": 50, "denom": 0.01},
+                    {"bet": 100, "denom": 0.01},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    live = load_recipe_from_goldclub(gold, label="live")
+    live.denomination_list = [1]
+    live.credit_rate_values = [1]
+    live.jurisdiction.currency_name = "USD"
+    live.jurisdiction.tag = "PuertoRico"
+    live.play_limits = PlayLimitsSettings(
+        magic_wheel_bet=1,
+        magic_wheel_average=5,
+        bet_multipliers=[1, 2, 3, 4, 5, 8, 10, 15, 25],
+    )
+    proposed = SlotSetupRecipe.from_dict(live.to_dict())
+    result = validate_denom_configuration(live, proposed, gold)
+    assert result.ok, result.errors
+    assert not any("Bet: 1" in err or "Bet: 2" in err for err in result.errors)
+
+
 def test_inspect_embedded_5c_math_is_not_10c() -> None:
     leaf = find_staged_leaf_for_denom(
         5,

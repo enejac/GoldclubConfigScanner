@@ -123,6 +123,44 @@ _BET_KEYS = frozenset({"bet", "betvalue", "betmultiplier"})
 _DENOM_KEYS = frozenset({"denom", "denomination", "denomvalue"})
 
 
+def _coerce_link2win_denom(value: object) -> int | None:
+    """Normalize a Link2Win denom field to cents.
+
+    Live GameStar files store currency units (``0.01`` = 1c, ``1.0`` = 100c).
+    Plain test fixtures store integer cents (``5``, ``10``). ``int(0.01)`` is
+    ``0``, which is why 1c cabinets were falsely marked red.
+    """
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        if isinstance(value, float):
+            return int(round(value * 100))
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+            if "." in text:
+                return int(round(float(text) * 100))
+            return int(text)
+        if isinstance(value, int):
+            return int(value)
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_link2win_bet(value: object) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        try:
+            return int(round(float(value)))
+        except (TypeError, ValueError):
+            return None
+
+
 def _file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     digest.update(path.read_bytes())
@@ -136,16 +174,10 @@ def _walk_link2win_pairs(obj: object, out: set[tuple[int, int]]) -> None:
         for key, value in obj.items():
             low = str(key).casefold()
             if low in _BET_KEYS:
-                try:
-                    bet = int(value)
-                except (TypeError, ValueError):
-                    pass
+                bet = _coerce_link2win_bet(value)
             elif low in _DENOM_KEYS:
-                try:
-                    denom = int(value)
-                except (TypeError, ValueError):
-                    pass
-        if bet is not None and denom is not None:
+                denom = _coerce_link2win_denom(value)
+        if bet is not None and denom is not None and denom > 0:
             out.add((bet, denom))
         for value in obj.values():
             _walk_link2win_pairs(value, out)
@@ -300,6 +332,42 @@ def _link2win_files_in(root: Path) -> list[Path]:
     return out
 
 
+def playable_denoms_from_recipe(
+    recipe: SlotSetupRecipe,
+    listed: list[int] | None = None,
+) -> list[int]:
+    """Denoms OneHand actually looks up in Link2Win.
+
+    ``ShowDenominationSelector=false`` leaves the CS catalog in mgconfig
+    (1c through 5000c on lab .76) but the game only uses the first entry.
+    Scoring every catalog value against math/allowed-sets paints a working
+    1c cabinet red.
+    """
+    denoms = [
+        int(x)
+        for x in (listed if listed is not None else recipe.denomination_list or [])
+        if int(x) > 0
+    ]
+    if not denoms:
+        return []
+    if recipe.play_limits.show_denom_selector is True:
+        return denoms
+    return [denoms[0]]
+
+
+def _math_covered_denoms(
+    files: list[Path],
+    *,
+    allow_decrypt: bool = True,
+) -> frozenset[int]:
+    covered: set[int] = set()
+    for path in files:
+        support = inspect_link2win_math(path, allow_decrypt=allow_decrypt)
+        if support is not None:
+            covered.update(support.denoms)
+    return frozenset(covered)
+
+
 def _math_support_errors(
     files: list[Path],
     *,
@@ -307,31 +375,38 @@ def _math_support_errors(
     bets: list[int],
     allow_decrypt: bool = True,
 ) -> list[str]:
-    """Proven mismatches only. Unidentified encrypted files are not errors."""
-    errors: list[str] = []
+    """Proven missing playable denoms. Unidentified encrypted files are not errors.
+
+    mgconfig bet multipliers are not Link2Win JSON ``Bet`` totals, so they are
+    not cartesian-checked. Coverage is the union across math files — Config2
+    does not have to repeat every row in Link2WinBonusMath.json.
+    """
+    _ = bets
+    target = [int(d) for d in denoms if int(d) > 0]
+    if not target:
+        return []
+    identified = False
+    covered: set[int] = set()
+    labels: list[str] = []
     for path in files:
         support = inspect_link2win_math(path, allow_decrypt=allow_decrypt)
         if support is None:
             continue
-        label = path_label(path)
-        if support.pairs is not None and bets:
-            for denom in denoms:
-                for bet in bets:
-                    if (bet, denom) not in support.pairs:
-                        errors.append(
-                            f"The current configuration of Bet: {bet} and Denom: {denom} "
-                            f"can not been found at Themes\\Link2WinFeature\\{label} file"
-                        )
-            continue
-        missing_denoms = [d for d in denoms if d not in support.denoms]
-        if missing_denoms:
-            have = ", ".join(f"{d}c" for d in sorted(support.denoms)) or "none"
-            need = ", ".join(f"{d}c" for d in missing_denoms)
-            errors.append(
-                f"{label} does not include denom {need} "
-                f"(math file supports {have})."
-            )
-    return errors
+        identified = True
+        covered.update(support.denoms)
+        labels.append(path_label(path))
+    if not identified:
+        return []
+    missing = [d for d in target if d not in covered]
+    if not missing:
+        return []
+    have = ", ".join(f"{d}c" for d in sorted(covered)) or "none"
+    need = ", ".join(f"{d}c" for d in missing)
+    shown = " / ".join(labels) if labels else "Link2WinBonusMath.json"
+    return [
+        f"{shown} do not include denom {need} "
+        f"(math files support {have})."
+    ]
 
 
 def _link2win_unidentified(
@@ -365,10 +440,11 @@ def link2win_restage_change_line(
     root = goldclub_root_from_target(goldclub)
     if not cabinet_has_link2win(root):
         return None
-    target = [int(x) for x in (proposed.denomination_list or live.denomination_list or [])]
+    listed = [int(x) for x in (proposed.denomination_list or live.denomination_list or [])]
+    target = playable_denoms_from_recipe(proposed, listed=listed)
     if not target:
         return None
-    if not live_link2win_math_mismatches(root, target, _recipe_bets(live, proposed)):
+    if not live_link2win_math_mismatches(root, target):
         return None
     screens = proposed.display_mode or live.display_mode or detect_live_display_mode(root)
     leaf = find_staged_leaf_for_denom(
@@ -432,21 +508,27 @@ def list_link2win_math_replace_targets(
     root = goldclub_root_from_target(goldclub)
     if not cabinet_has_link2win(root):
         return ()
-    target_denoms = [
+    listed = [
         int(x)
         for x in (proposed.denomination_list or live.denomination_list or [])
         if int(x) > 0
     ]
+    target_denoms = playable_denoms_from_recipe(proposed, listed=listed)
     if not target_denoms:
+        return ()
+    files = _link2win_files_in(root)
+    if not _math_support_errors(
+        files, denoms=target_denoms, bets=[], allow_decrypt=False
+    ):
         return ()
     bets = tuple(_recipe_bets(live, proposed))
     out: list[MathReplaceTarget] = []
-    for path in _link2win_files_in(root):
+    for path in files:
         support = inspect_link2win_math(path, allow_decrypt=False)
         file_errors = _math_support_errors(
             [path],
             denoms=target_denoms,
-            bets=list(bets),
+            bets=[],
             allow_decrypt=False,
         )
         if not file_errors and support is not None:
@@ -574,13 +656,13 @@ def live_cabinet_math_gap(
     target = [int(x) for x in denoms if int(x) > 0]
     if not target:
         return ""
-    need = ", ".join(f"{d}c" for d in target)
     mismatches = live_link2win_math_mismatches(
         root, target, bets, allow_decrypt=allow_decrypt
     )
     if mismatches:
-        return f"Live Link2WinBonusMath.json on the cabinet does not include {need}."
+        return mismatches[0]
     if live_link2win_math_unknown(root, allow_decrypt=allow_decrypt):
+        need = ", ".join(f"{d}c" for d in target)
         return (
             f"Live Link2WinBonusMath.json on the cabinet cannot be verified for {need}."
         )
@@ -781,27 +863,28 @@ def validate_denom_configuration(
         or ""
     )
     market = proposed.jurisdiction.tag or live.jurisdiction.tag or ""
-    target = [int(x) for x in (proposed.denomination_list or [])]
-    if not target:
-        live_denoms, _ = read_mgconfig_denoms(root)
-        target = list(live_denoms)
+    listed = [int(x) for x in (proposed.denomination_list or [])]
+    if not listed:
+        live_listed, _ = read_mgconfig_denoms(root)
+        listed = list(live_listed)
+    playable = playable_denoms_from_recipe(proposed, listed=listed)
     errors: list[str] = []
     warnings: list[str] = []
     allowed = allowed_denoms_for(currency, market)
     if allowed:
-        for denom in target:
+        for denom in playable:
             if denom not in allowed:
                 allowed_text = ", ".join(f"{d}c" for d in sorted(allowed))
                 errors.append(
                     f"Denom {denom}c is not allowed for {currency or market or 'this market'} "
                     f"(allowed: {allowed_text})."
                 )
-    if len(target) > 1:
+    if len(playable) > 1:
         warnings.append(
             "Multi-denom list: Live Push will write mgconfig denoms as listed. "
             "Link2Win/math companions may still need a Country Pack if the game rejects the set."
         )
-    if not target:
+    if not listed:
         return DenomValidation(tuple(errors), tuple(warnings), None, tuple(), False)
 
     live_denoms = list(live.denomination_list or [])
@@ -812,44 +895,45 @@ def validate_denom_configuration(
         proposed_denoms = list(live_denoms)
     denom_changed = not denomination_lists_equal(proposed_denoms, live_denoms)
     leaf_dir: Path | None = None
-    min_denom = min(target)
+    min_denom = min(playable) if playable else min(listed)
 
     if cabinet_has_link2win(root):
-        screens = proposed.display_mode or detect_live_display_mode(root)
-        leaf_dir = find_staged_leaf_for_denom(
-            min_denom,
-            currency=currency,
-            market=market,
-            screens=screens,
-        )
-        bets = _recipe_bets(live, proposed)
         live_files = _link2win_files_in(root)
         live_math_errors = _math_support_errors(
             live_files,
-            denoms=target,
-            bets=bets,
+            denoms=playable,
+            bets=[],
             allow_decrypt=False,
         )
         live_unknown = _link2win_unidentified(live_files, allow_decrypt=False)
-        live_gap = live_cabinet_math_gap(root, target, allow_decrypt=False)
+        live_gap = live_cabinet_math_gap(root, playable, allow_decrypt=False)
+        live_ok = not live_gap and not live_math_errors
         if live_gap:
             errors.append(live_gap)
         elif live_math_errors:
             errors.extend(live_math_errors)
-        if leaf_dir is not None:
-            leaf_files = _link2win_files_in(leaf_dir)
-            leaf_errors = _math_support_errors(
-                leaf_files or live_files,
-                denoms=target,
-                bets=bets,
+        if not live_ok:
+            screens = proposed.display_mode or detect_live_display_mode(root)
+            leaf_dir = find_staged_leaf_for_denom(
+                min_denom,
+                currency=currency,
+                market=market,
+                screens=screens,
             )
-            errors.extend(leaf_errors)
-        elif denom_changed and (live_math_errors or live_unknown or live_gap):
-            errors.append(
-                f"No embedded country pack math for {min_denom}c. "
-                "Live Push will not change denom until Link2WinBonusMath.json "
-                "includes that Bet/Denom row."
-            )
+            if leaf_dir is not None:
+                leaf_files = _link2win_files_in(leaf_dir)
+                leaf_errors = _math_support_errors(
+                    leaf_files or live_files,
+                    denoms=playable,
+                    bets=[],
+                )
+                errors.extend(leaf_errors)
+            elif denom_changed and (live_math_errors or live_unknown or live_gap):
+                errors.append(
+                    f"No embedded country pack math for {min_denom}c. "
+                    "Live Push will not change denom until Link2WinBonusMath.json "
+                    "includes that denom."
+                )
 
     if denom_changed:
         expected_bet, expected_avg = expected_magic_wheel_for_denom(min_denom)
@@ -892,7 +976,7 @@ def validate_denom_configuration(
         errors=tuple(errors),
         warnings=tuple(warnings),
         leaf_dir=leaf_dir,
-        target_denoms=tuple(target),
+        target_denoms=tuple(playable),
         denom_changed=denom_changed,
     )
 
@@ -973,12 +1057,13 @@ def cabinet_link2win_preflight(goldclub: Path | str) -> MathPreflightReport:
         return MathPreflightReport(
             False, True, decryptor_label, (f"Could not read mgconfig: {exc}",), (), ()
         )
-    target = [int(x) for x in denoms]
-    if not target:
+    listed = [int(x) for x in denoms]
+    if not listed:
         return MathPreflightReport(True, True, decryptor_label, (), (), ())
-    recipe = SlotSetupRecipe(denomination_list=list(target))
+    recipe = SlotSetupRecipe(denomination_list=list(listed))
     try:
         live = load_recipe_from_goldclub(root, label="preflight")
+        recipe.play_limits.show_denom_selector = live.play_limits.show_denom_selector
         recipe.play_limits.bet_multipliers = list(
             live.play_limits.bet_multipliers or []
         )
@@ -988,9 +1073,8 @@ def cabinet_link2win_preflight(goldclub: Path | str) -> MathPreflightReport:
             )
     except (OSError, ValueError):
         live = recipe
-    errors = live_link2win_math_mismatches(
-        root, target, _recipe_bets(live, recipe)
-    )
+    playable = playable_denoms_from_recipe(live, listed=listed)
+    errors = live_link2win_math_mismatches(root, playable)
     math_denoms: set[int] = set()
     for path in _link2win_files_in(root):
         support = inspect_link2win_math(path)
@@ -998,14 +1082,14 @@ def cabinet_link2win_preflight(goldclub: Path | str) -> MathPreflightReport:
             math_denoms.update(support.denoms)
     if not errors:
         return MathPreflightReport(
-            True, True, decryptor_label, (), tuple(target), tuple(sorted(math_denoms))
+            True, True, decryptor_label, (), tuple(playable), tuple(sorted(math_denoms))
         )
     return MathPreflightReport(
         True,
         False,
         decryptor_label,
         tuple(errors),
-        tuple(target),
+        tuple(playable),
         tuple(sorted(math_denoms)),
     )
 

@@ -3145,15 +3145,16 @@ def build_config_pack(
         denomination_lists_equal,
         live_link2win_math_mismatches,
         live_link2win_math_unknown,
+        playable_denoms_from_recipe,
     )
 
     live_denoms, _ = read_mgconfig_denoms(live)
-    target_denoms = list(recipe.denomination_list or live_denoms)
-    recipe_bets = [int(x) for x in (recipe.play_limits.bet_multipliers or []) if int(x) > 0]
+    listed = list(recipe.denomination_list or live_denoms)
+    target_denoms = playable_denoms_from_recipe(recipe, listed=listed)
     live_math_stale = bool(
         target_denoms
         and cabinet_has_link2win(live)
-        and live_link2win_math_mismatches(live, target_denoms, recipe_bets)
+        and live_link2win_math_mismatches(live, target_denoms)
     )
     live_math_unknown = bool(
         target_denoms
@@ -3161,8 +3162,8 @@ def build_config_pack(
         and live_link2win_math_unknown(live)
     )
     denom_changed = bool(
-        target_denoms
-        and not denomination_lists_equal(target_denoms, live_denoms)
+        listed
+        and not denomination_lists_equal(listed, live_denoms)
     )
     if (
         target_denoms

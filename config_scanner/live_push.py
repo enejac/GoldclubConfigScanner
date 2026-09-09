@@ -1876,26 +1876,183 @@ def live_field_validation_errors(errors: list[str]) -> dict[str, str]:
     for err in errors:
         low = err.casefold()
         labels: list[str] = []
-        if any(
-            token in low
-            for token in (
-                "denom",
-                "link2win",
-                "bonusmath",
-                "link cabinet",
-                "country pack",
-                "single denomination",
-            )
-        ):
-            labels.extend(["Denoms (cents)", "Currency", "Market"])
         if "magic wheel" in low:
             labels.extend(
                 ["Magic wheel bet", "Magic wheel average", "Denoms (cents)"]
             )
-        if "bet multiplier" in low:
+        elif "bet multiplier" in low:
             labels.append("Bet multipliers")
+        elif "target market" in low:
+            labels.extend(["Market", "Currency"])
+        elif any(
+            token in low
+            for token in (
+                "link2win",
+                "bonusmath",
+                "country pack",
+                "single denomination",
+                "does not include",
+                "not allowed for",
+                "denom ",
+            )
+        ):
+            labels.append("Denoms (cents)")
         for label in labels:
             out.setdefault(label, err)
+    return out
+
+
+def collect_live_invalid_field_labels(
+    live: SlotSetupRecipe,
+    form: SlotSetupRecipe,
+    *,
+    validation_errors: list[str],
+    display_corruption: dict[str, str] | None = None,
+    log_field_errors: dict[str, str] | None = None,
+) -> frozenset[str]:
+    """Snapshot labels painted red (validation, corrupt display, or SlotLog)."""
+    from config_scanner.slotlog_review import field_highlight_error
+
+    matches = live_field_matches(live, form)
+    invalid = live_field_validation_errors(validation_errors)
+    corrupt = display_corruption or {}
+    log_errs = log_field_errors or {}
+    blocked: set[str] = set()
+    for label, _old in recipe_snapshot_rows(live):
+        reason = field_highlight_error(
+            matches_live=bool(matches.get(label)),
+            validation_error=invalid.get(label, "") or corrupt.get(label, ""),
+            log_error=log_errs.get(label, ""),
+        )
+        if reason:
+            blocked.add(label)
+    return frozenset(blocked)
+
+
+def _revert_live_push_label(
+    out: SlotSetupRecipe, live: SlotSetupRecipe, label: str
+) -> None:
+    """Copy one snapshot label from *live* onto *out* (orange-only apply skip)."""
+    if label == "SAS enabled":
+        out.sas.enabled = live.sas.enabled
+    elif label == "SAS address":
+        out.sas.address = live.sas.address
+    elif label == "AFT":
+        out.sas.aft_enabled = live.sas.aft_enabled
+    elif label == "Funds transfer":
+        out.sas.funds_transfer_type = live.sas.funds_transfer_type
+    elif label == "Lock when no SAS":
+        out.sas.lock_game_when_no_comms = live.sas.lock_game_when_no_comms
+    elif label == "Enable switches":
+        out.door_switches.enabled = live.door_switches.enabled
+    elif label == "Stacker auto-unlock":
+        out.door_switches.stacker_installed_auto_unlock = (
+            live.door_switches.stacker_installed_auto_unlock
+        )
+    elif label == "Bill protocol":
+        out.bill_protocol = live.bill_protocol
+    elif label == "Bill notes":
+        out.bill_tokens = list(live.bill_tokens or [])
+    elif label == "Ticket printer":
+        out.ticket_protocol = live.ticket_protocol
+    elif label == "Currency":
+        out.jurisdiction.currency_name = live.jurisdiction.currency_name
+        out.hardware_currency_name = live.hardware_currency_name
+    elif label == "Currency symbol":
+        out.jurisdiction.currency_symbol = live.jurisdiction.currency_symbol
+    elif label == "Culture":
+        out.jurisdiction.culture_name = live.jurisdiction.culture_name
+    elif label == "Language":
+        out.mg_identity.language = live.mg_identity.language
+    elif label == "Market":
+        out.jurisdiction.tag = live.jurisdiction.tag
+    elif label == "Denoms (cents)":
+        out.denomination_list = list(live.denomination_list or [])
+        out.credit_rate_values = list(
+            live.credit_rate_values or live.denomination_list or []
+        )
+    elif label == "Bet multipliers":
+        live_mults = list(live.play_limits.bet_multipliers or [])
+        if not live_mults and live.math:
+            live_mults = list(live.math[0].bet_multipliers or [])
+        out.play_limits.bet_multipliers = list(live_mults)
+        if out.math and live.math:
+            out.math[0].bet_multipliers = list(live.math[0].bet_multipliers or [])
+    elif label == "Default bet":
+        out.play_limits.default_bet = live.play_limits.default_bet
+    elif label == "Show denom selector":
+        out.play_limits.show_denom_selector = live.play_limits.show_denom_selector
+    elif label == "Magic wheel limit":
+        out.jurisdiction.magic_wheel_money_limit = (
+            live.jurisdiction.magic_wheel_money_limit
+        )
+    elif label == "Magic wheel bet":
+        out.play_limits.magic_wheel_bet = live.play_limits.magic_wheel_bet
+    elif label == "Magic wheel enabled":
+        out.play_limits.magic_wheel_enabled = live.play_limits.magic_wheel_enabled
+    elif label == "Magic wheel max spins":
+        out.play_limits.magic_wheel_max_spins = live.play_limits.magic_wheel_max_spins
+    elif label == "Magic wheel average":
+        out.play_limits.magic_wheel_average = live.play_limits.magic_wheel_average
+    elif label == "Jackpot counters":
+        out.play_limits.jackpot_counters = live.play_limits.jackpot_counters
+    elif label == "Jackpot receipt":
+        out.play_limits.jackpot_receipt_layout = live.play_limits.jackpot_receipt_layout
+    elif label == "Jackpot celebration":
+        out.play_limits.celebration_limit = live.play_limits.celebration_limit
+    elif label == "Cashout button":
+        out.play_limits.cashout_button_mode = live.play_limits.cashout_button_mode
+    elif label == "Show all lines":
+        out.play_limits.show_all_lines = live.play_limits.show_all_lines
+    elif label == "Offline ticket":
+        out.offline_enabled = live.offline_enabled
+        out.include_oticket = live.include_oticket
+    elif label == "Ticket redeem":
+        out.play_limits.ticket_redeem_enabled = live.play_limits.ticket_redeem_enabled
+    elif label == "Ticket currency ISO":
+        out.play_limits.ticket_use_currency_iso = live.play_limits.ticket_use_currency_iso
+    elif label == "Dallas key":
+        out.dallas = live.dallas
+    elif label == "Inactivity to selector":
+        out.mg_identity.inactivity_seconds_to_game_selector = (
+            live.mg_identity.inactivity_seconds_to_game_selector
+        )
+    elif label == "Display layout":
+        out.display_mode = live.display_mode
+    elif label == "Button deck":
+        out.hw_driver_profile = live.hw_driver_profile
+        out.keyboard = dict(live.keyboard or {})
+    else:
+        for field, channel_label, _cls in SAS_CHANNEL_FIELDS:
+            if channel_label == label:
+                setattr(out.sas, field, getattr(live.sas, field, True))
+                return
+        for name in STANDARD_DOOR_SWITCH_NAMES:
+            if door_switch_auto_unlock_label(name) == label:
+                out.door_switches.set_auto_unlock(name, live.door_switches.auto_unlock_for(name))
+                return
+        for spec in LIMIT_SETUP_FIELDS:
+            if spec.label == label:
+                out.limit_setup.set_value(
+                    spec.key, live.limit_setup.value_for(spec.key)
+                )
+                return
+
+
+def recipe_for_orange_only_apply(
+    live: SlotSetupRecipe,
+    form: SlotSetupRecipe,
+    skip_labels: frozenset[str],
+) -> SlotSetupRecipe:
+    """Return *form* with red snapshot labels reverted to the live cabinet."""
+    if not skip_labels:
+        return SlotSetupRecipe.from_dict(form.to_dict())
+    out = SlotSetupRecipe.from_dict(form.to_dict())
+    matches = live_field_matches(live, form)
+    for label in skip_labels:
+        if matches.get(label, True):
+            continue
+        _revert_live_push_label(out, live, label)
     return out
 
 
