@@ -1491,6 +1491,88 @@ _TT_ALIAS_KEEP_MARKETS: frozenset[str] = frozenset(
     {"PuertoRico", "TrinidadTobago", "Trinidad&Tobago"}
 )
 _ONEHAND_EXE_RELS: tuple[str, ...] = ("slot/OneHand.exe", "OneHand.exe")
+_DEBUG_VERSION_TOKEN = re.compile(r"(?:^|[^a-z0-9])debug(?:[^a-z0-9]|$)", re.IGNORECASE)
+
+
+def is_debug_onehand_version(text: str | None) -> bool:
+    """True when a PE ProductVersion / FileVersion / name is the Debug SKU."""
+    folded = (text or "").strip().casefold()
+    if not folded:
+        return False
+    if folded == "debug" or folded.startswith("debug"):
+        return True
+    return bool(_DEBUG_VERSION_TOKEN.search(folded))
+
+
+def _utf16_string_after(blob: bytes, key: str) -> str:
+    """Value that follows a UTF-16LE VERSIONINFO key (ProductVersion, …)."""
+    needle = (key + "\0").encode("utf-16le")
+    idx = blob.find(needle)
+    if idx < 0:
+        needle = key.encode("utf-16le")
+        idx = blob.find(needle)
+        if idx < 0:
+            return ""
+        rest = blob[idx + len(needle) : idx + len(needle) + 96]
+    else:
+        rest = blob[idx + len(needle) : idx + len(needle) + 96]
+    try:
+        text = rest.decode("utf-16le", errors="ignore")
+    except Exception:
+        return ""
+    return text.replace("\x00", "").strip().split("\n", 1)[0].strip()
+
+
+def is_onehand_debug_build(goldclub: Path) -> bool:
+    """True when live ``OneHand.exe`` is the Debug SKU (no production licence)."""
+    path = onehand_exe_path(goldclub)
+    if path is None:
+        return False
+    try:
+        if "debug" in path.name.casefold():
+            return True
+    except OSError:
+        return False
+    try:
+        from config_scanner.build_version import _extract_version_from_onehand_exe
+
+        info = _extract_version_from_onehand_exe(path)
+    except Exception:
+        info = None
+    if info is not None:
+        for label in (
+            info.product_version,
+            info.file_version,
+            info.product_name,
+            info.display_version,
+        ):
+            if is_debug_onehand_version(label):
+                return True
+    try:
+        blob = path.read_bytes()[: 4 * 1024 * 1024]
+    except OSError:
+        return False
+    for key in ("ProductVersion", "FileVersion", "ProductName", "FileDescription"):
+        if is_debug_onehand_version(_utf16_string_after(blob, key)):
+            return True
+    return False
+
+
+def licence_push_default_checked(
+    *,
+    needs_push: bool,
+    can_mirror: bool,
+    has_source: bool,
+    debug_onehand: bool,
+) -> bool:
+    """Default for Live Push “Push missing licence files”.
+
+    Debug OneHand SKUs stay off so we do not copy production XML onto a
+    lab debug binary. The operator can still tick the box by hand.
+    """
+    if not needs_push or debug_onehand:
+        return False
+    return bool(can_mirror or has_source)
 
 
 def pick_onehand_allowed_market(
