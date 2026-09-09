@@ -1109,3 +1109,64 @@ def test_door_switches_roundtrip_hardware_config(tmp_path: Path) -> None:
     assert 'SwitchName="cabinet_door"' in text
     assert 'AlertType="SEMAPHORE"' in text
     assert 'OfflineTriggerAutoUnlock="true"' in text
+
+
+def test_is_debug_onehand_version_token() -> None:
+    from config_scanner.slot_setup import is_debug_onehand_version
+
+    assert is_debug_onehand_version("Debug")
+    assert is_debug_onehand_version("DEBUG")
+    assert is_debug_onehand_version("2.0.1 Debug")
+    assert not is_debug_onehand_version("2.0.1")
+    assert not is_debug_onehand_version("")
+    assert not is_debug_onehand_version(None)
+
+
+def test_is_onehand_debug_build_from_pe_product_version(tmp_path: Path) -> None:
+    from config_scanner.slot_setup import is_onehand_debug_build
+
+    gold = _fake_goldclub(tmp_path)
+    exe = gold / "slot" / "OneHand.exe"
+    exe.parent.mkdir(parents=True, exist_ok=True)
+    exe.write_bytes(b"MZ" + "ProductVersion\0Debug\0".encode("utf-16le"))
+    assert is_onehand_debug_build(gold) is True
+
+    exe.write_bytes(b"MZ" + "ProductVersion\0" "2.0.1\0".encode("utf-16le"))
+    assert is_onehand_debug_build(gold) is False
+
+
+def test_is_onehand_debug_build_from_filename(tmp_path: Path) -> None:
+    from config_scanner.slot_setup import is_onehand_debug_build
+
+    gold = _fake_goldclub(tmp_path)
+    (gold / "slot" / "OneHand.exe").write_bytes(b"MZ")
+    assert is_onehand_debug_build(gold) is False
+
+
+def test_licence_push_default_checked_skips_debug() -> None:
+    from config_scanner.slot_setup import licence_push_default_checked
+
+    assert (
+        licence_push_default_checked(
+            needs_push=True, can_mirror=True, has_source=True, debug_onehand=True
+        )
+        is False
+    )
+    assert (
+        licence_push_default_checked(
+            needs_push=True, can_mirror=False, has_source=True, debug_onehand=False
+        )
+        is True
+    )
+    assert (
+        licence_push_default_checked(
+            needs_push=True, can_mirror=True, has_source=False, debug_onehand=False
+        )
+        is True
+    )
+    assert (
+        licence_push_default_checked(
+            needs_push=False, can_mirror=True, has_source=True, debug_onehand=False
+        )
+        is False
+    )

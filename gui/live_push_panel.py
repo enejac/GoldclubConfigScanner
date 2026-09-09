@@ -142,6 +142,8 @@ from config_scanner.slot_setup import (
     leftover_jurisdiction_single_denomination,
     load_recipe_from_goldclub,
     markets_accepted_by_onehand,
+    is_onehand_debug_build,
+    licence_push_default_checked,
     pick_onehand_allowed_market,
     read_aurum_currency_code,
     read_mgconfig_target_market,
@@ -1028,12 +1030,13 @@ class LivePushPanel(QWidget):
         self._paint_licence_status()
         self._licence_push = QCheckBox("Push missing licence files")
         self._licence_push.setEnabled(False)
-        self._licence_push.setToolTip(
+        self._licence_push_tip = (
             "After Load, tick this to copy licence XML / licence.dll onto the "
             "cabinet only where they are missing. Never overwrites a live "
             "licence. OneHand reads XML next to itself in slot\\ — a pack that "
             "landed only in Licenses\\ shows No licence!."
         )
+        self._licence_push.setToolTip(self._licence_push_tip)
         src_row = QWidget()
         src_layout = QHBoxLayout(src_row)
         src_layout.setContentsMargins(0, 0, 0, 0)
@@ -1641,6 +1644,7 @@ class LivePushPanel(QWidget):
             self._licence_source.clear()
             self._licence_source.setEnabled(False)
             self._licence_browse.setEnabled(False)
+            self._licence_push.setToolTip(self._licence_push_tip)
             self._paint_licence_status()
             return
         self._licence_label.setText(status.detail)
@@ -1648,11 +1652,32 @@ class LivePushPanel(QWidget):
         self._licence_source.setEnabled(True)
         self._licence_browse.setEnabled(True)
         self._autofill_licence_source(goldclub)
-        if status.needs_push:
-            has_src = bool(self._licence_source.text().strip())
-            self._licence_push.setChecked(status.can_mirror or has_src)
+        debug_onehand = False
+        if goldclub is not None:
+            try:
+                debug_onehand = is_onehand_debug_build(goldclub)
+            except OSError:
+                debug_onehand = False
+        self._licence_push.setChecked(
+            licence_push_default_checked(
+                needs_push=status.needs_push,
+                can_mirror=status.can_mirror,
+                has_source=bool(self._licence_source.text().strip()),
+                debug_onehand=debug_onehand,
+            )
+        )
+        if debug_onehand:
+            self._licence_push.setToolTip(
+                "OneHand version is Debug — licence push is off so lab debug "
+                "builds do not get production licence XML. Tick to force a copy."
+            )
+            if status.needs_push:
+                self._licence_label.setText(
+                    status.detail.rstrip(".")
+                    + ". OneHand is Debug — licence push left off."
+                )
         else:
-            self._licence_push.setChecked(False)
+            self._licence_push.setToolTip(self._licence_push_tip)
         self._paint_licence_status()
 
     def _autofill_licence_source(self, goldclub: Path | None) -> None:

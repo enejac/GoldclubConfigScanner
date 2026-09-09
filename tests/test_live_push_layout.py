@@ -536,6 +536,41 @@ def test_licence_autofill_passes_cabinet_unc_host(
     assert panel._want_licence_push() is False
 
 
+def test_licence_push_defaults_off_when_onehand_is_debug(
+    qt_app: QApplication, tmp_path, monkeypatch
+) -> None:
+    from config_scanner.slot_licence import LiveLicenceStatus
+    from gui.live_push_panel import LivePushPanel
+
+    monkeypatch.setattr(
+        "gui.live_push_panel.discover_preferred_licence_pack",
+        lambda **_kw: None,
+    )
+    monkeypatch.setattr("gui.live_push_panel.is_onehand_debug_build", lambda _g: True)
+    panel = LivePushPanel(autoload=False)
+    panel.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    panel.show()
+    qt_app.processEvents()
+    status = LiveLicenceStatus(
+        playable_xml=(),
+        licenses_dir_xml=(),
+        dll_rel="",
+        playable=False,
+        needs_push=True,
+        can_mirror=True,
+        detail="No licence next to OneHand.",
+    )
+    gold = tmp_path / "Goldclub"
+    gold.mkdir()
+    panel._licence_source.setText(r"\\10.0.0.111\USB\Licences_SlotQA_01")
+    panel._update_licence_ui(status, goldclub=gold)
+    qt_app.processEvents()
+    assert panel._licence_push.isEnabled()
+    assert panel._licence_push.isChecked() is False
+    assert "debug" in panel._licence_label.text().casefold()
+    assert panel._want_licence_push() is False
+
+
 def test_live_push_footer_keeps_apply_beside_options(
     qt_app: QApplication,
 ) -> None:
