@@ -33,6 +33,7 @@ _FOREIGN_LICENSEE_IDS = frozenset({"12327444"})
 _KNOWN_LIVE_LICENCE_STEMS = frozenset({"37A55022DCBEF351AE27471D181B1EF5"})
 _KNOWN_LIVE_LICENSEE_IDS = frozenset({"12262688"})
 _SERIAL_DIGITS_RE = re.compile(r"(\d{4,})")
+_LICENCE_HASH_NAME_RE = re.compile(r"^[0-9A-Fa-f]{16,}\.xml$")
 _LICENCE_XML_SERIAL_RE = re.compile(
     rb"<SerialNumber>\s*([^<]+)\s*</SerialNumber>",
     re.IGNORECASE,
@@ -167,6 +168,18 @@ def licensee_id_from_licence_bytes(raw: bytes) -> str | None:
     return canonical_licensee_id(text)
 
 
+def is_licence_filename(name: str) -> bool:
+    """True for licence XML / dll names (not desktop.ini leftovers)."""
+    lowered = (name or "").casefold()
+    if lowered in {"licence.dll", "license.dll"}:
+        return True
+    if not lowered.endswith(".xml"):
+        return False
+    if lowered.startswith("licence") or lowered.startswith("license"):
+        return True
+    return bool(_LICENCE_HASH_NAME_RE.match(name or ""))
+
+
 def live_licence_files(dest_root: Path) -> list[Path]:
     """Licence files present on the live EGM (any spelling / slot|config tree)."""
     found: list[Path] = []
@@ -177,6 +190,8 @@ def live_licence_files(dest_root: Path) -> list[Path]:
             if not path.is_file():
                 return
         except OSError:
+            return
+        if not is_licence_filename(path.name):
             return
         key = str(path).casefold()
         if key in seen:

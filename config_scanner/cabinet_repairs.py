@@ -280,11 +280,13 @@ def _is_licence_xml(name: str) -> bool:
 
 
 def _licence_search_dirs(root: Path) -> list[Path]:
-    dirs = [root, root / "slot"]
+    # slot\\ first so a working OneHand copy wins over a stale Goldclub-root leftover.
+    dirs = [root / "slot"]
     for name in _LICENCE_DIR_NAMES:
         dirs.append(root / name)
     dirs.append(root / "config" / "licences")
     dirs.append(root / "config" / "licenses")
+    dirs.append(root)
     return dirs
 
 

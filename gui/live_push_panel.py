@@ -633,6 +633,7 @@ class LivePushPanel(QWidget):
         self._applying = False
         self._silent_load = False
         self._started = False
+        self._closing = False
         self._catalog = live_push_catalog()
         self._emitter = _PushEmitter()
         self._emitter.progress.connect(self._on_progress)
@@ -3010,8 +3011,16 @@ class LivePushPanel(QWidget):
         )
         self._status.setText(result.note)
 
+    def mark_closing(self) -> None:
+        self._closing = True
+
+    def _ui_active(self) -> bool:
+        return (not self._closing) and self.isVisible()
+
     def _on_finished(self, result: object) -> None:
         self._set_busy(False)
+        if not self._ui_active():
+            return
         if not isinstance(result, LivePushResult):
             self._status.setText("Apply failed.")
             return

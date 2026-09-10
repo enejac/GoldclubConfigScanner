@@ -199,6 +199,10 @@ class ConfigScannerWindow(QMainWindow):
         self._simple.show_push()
 
     def closeEvent(self, event) -> None:  # noqa: ANN001, N802
+        if self._simple is not None:
+            self._simple.mark_closing()
+        if self._scanner is not None and hasattr(self._scanner, "mark_closing"):
+            self._scanner.mark_closing()
         SettingsManager.save_config_scanner_window_geometry(self)
         super().closeEvent(event)
 

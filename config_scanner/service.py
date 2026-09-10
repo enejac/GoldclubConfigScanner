@@ -340,9 +340,22 @@ class ConfigScannerService:
         dest_dir = snap_root / new_name
 
         if source_dir.resolve() != dest_dir.resolve():
+            replaced: Path | None = None
             if dest_dir.exists():
-                shutil.rmtree(dest_dir)
-            _move_snapshot_dir(source_dir, dest_dir)
+                replaced = dest_dir.with_name(dest_dir.name + ".replacing")
+                if replaced.exists():
+                    shutil.rmtree(replaced)
+                dest_dir.rename(replaced)
+            try:
+                _move_snapshot_dir(source_dir, dest_dir)
+            except OSError:
+                if dest_dir.exists():
+                    shutil.rmtree(dest_dir, ignore_errors=True)
+                if replaced is not None and replaced.exists():
+                    replaced.rename(dest_dir)
+                raise
+            if replaced is not None and replaced.exists():
+                shutil.rmtree(replaced, ignore_errors=True)
 
         for entry in snap_root.iterdir():
             if not entry.is_dir() or entry.name == new_name:
@@ -869,9 +882,12 @@ class ConfigScannerService:
         snap_root = snapshots_path(self.root)
         snapshot_dir = snap_root / snapshot_name
         if not snapshot_dir.is_dir():
-            return []
+            return [
+                f"Snapshot not found: {snapshot_name}. Restore preflight cannot run."
+            ]
         try:
             from config_scanner.build_version import (
+                is_unc_path,
                 read_machine_serial_from_target,
                 scan_target_path,
             )
@@ -940,6 +956,16 @@ class ConfigScannerService:
             if (
                 serial_sensitive
                 and snap_serial
+                and not live_serial
+                and is_unc_path(scan_target)
+            ):
+                refuses.append(
+                    "Cannot read live EGM serial from the cabinet share. "
+                    "Refusing restore so this snapshot is not written to the wrong disk."
+                )
+            if (
+                serial_sensitive
+                and snap_serial
                 and live_serial
                 and not egm_serials_match(live_serial, snap_serial)
             ):
@@ -980,8 +1006,8 @@ class ConfigScannerService:
                         refuses.append(swap_msg)
 
             return refuses
-        except (OSError, ValueError, TypeError):
-            return []
+        except (OSError, ValueError, TypeError) as exc:
+            return [f"Restore preflight failed: {exc}"]
 
     def resolve_restore_scan_target(
         self,
@@ -1141,14 +1167,16 @@ class ConfigScannerService:
                 "software, no_paytable, full_software, or binaries_only."
             ) from exc
 
-        if scope in {WriteScope.FULL_SOFTWARE, WriteScope.BINARIES_ONLY}:
+        refuses = self.snapshot_apply_refuses(
+            snapshot_name, resolved_target, write_scope=scope.value
+        )
+        if refuses:
             from config_scanner.software_compat import SoftwarePushError
 
-            refuses = self.snapshot_apply_refuses(
-                snapshot_name, resolved_target, write_scope=scope.value
-            )
-            if refuses:
-                raise SoftwarePushError("\n".join(refuses))
+            joined = "\n".join(refuses)
+            if scope in {WriteScope.FULL_SOFTWARE, WriteScope.BINARIES_ONLY}:
+                raise SoftwarePushError(joined)
+            raise OSError(joined)
 
         candidates = [entry.relative_path for entry in manifest.files]
         changed_norm: set[str] | None = None
@@ -1171,6 +1199,7 @@ class ConfigScannerService:
         )
         from config_scanner.write_verify import (
             capture_pre_write_state,
+            rollback_pre_write_state,
             verify_snapshot_restore,
         )
 
@@ -1239,10 +1268,9 @@ class ConfigScannerService:
                     )
 
         paytable_skip_notes: list[str] = []
-        if scope is not WriteScope.FULL_SOFTWARE:
-            allowed, paytable_skip_notes = filter_incompatible_paytable_restore_paths(
-                allowed, dest_root
-            )
+        allowed, paytable_skip_notes = filter_incompatible_paytable_restore_paths(
+            allowed, dest_root
+        )
         full_like = scope in (
             WriteScope.FULL,
             WriteScope.FULL_SOFTWARE,
@@ -1289,11 +1317,24 @@ class ConfigScannerService:
             resolved_target,
             relative_path_allow=set(allowed),
         )
+
+        def _rollback_written(reason: str) -> None:
+            rb = rollback_pre_write_state(
+                dest_root, restore.written_paths, pre_write
+            )
+            extra = f" Rollback notes: {'; '.join(rb[:3])}" if rb else ""
+            raise OSError(f"{reason}{extra}")
+
         if restore.errors:
             sample = "; ".join(restore.errors[:3])
             extra = f" (+{len(restore.errors) - 3} more)" if len(restore.errors) > 3 else ""
-            raise OSError(
+            _rollback_written(
                 f"Wrote {restore.written_count} files but {len(restore.errors)} failed: {sample}{extra}"
+            )
+        if restore.missing_count > 0:
+            _rollback_written(
+                f"Wrote {restore.written_count} files but {restore.missing_count} "
+                "scoped path(s) were missing from the snapshot archive."
             )
         if restore.written_count <= 0:
             missing = restore.missing_count
@@ -1312,7 +1353,7 @@ class ConfigScannerService:
         if not verify.ok:
             sample = "; ".join(verify.errors[:3])
             extra = f" (+{len(verify.errors) - 3} more)" if len(verify.errors) > 3 else ""
-            raise OSError(
+            _rollback_written(
                 "Post-write verification failed after restore: "
                 f"{sample}{extra}"
             )
@@ -1445,9 +1486,19 @@ class ConfigScannerService:
         )
         json_written = 0
         json_errors: tuple[str, ...] = ()
+        json_verify_ok = True
         if live_exe_is_ruleta_10_2(live_ruleta_major_minor(dest_root)):
             json_allow = [path for path in candidates if is_10_2_only_paytable_json(path)]
             if json_allow:
+                from config_scanner.write_verify import (
+                    capture_pre_write_state,
+                    rollback_pre_write_state,
+                    verify_snapshot_restore,
+                )
+
+                pre_json = capture_pre_write_state(
+                    dest_root, manifest, allowed_paths=set(json_allow)
+                )
                 restore = restore_manifest_files(
                     snapshot_dir,
                     manifest,
@@ -1459,6 +1510,25 @@ class ConfigScannerService:
                 extra_notes.append(
                     f"copied {json_written} 10.2 paytable JSON file(s) for the live exe"
                 )
+                if restore.errors or restore.missing_count:
+                    rollback_pre_write_state(
+                        dest_root, restore.written_paths, pre_json
+                    )
+                    json_verify_ok = False
+                elif restore.written_paths:
+                    verify = verify_snapshot_restore(
+                        snapshot_dir,
+                        manifest,
+                        dest_root,
+                        written_paths=restore.written_paths,
+                        pre_write=pre_json,
+                    )
+                    json_verify_ok = verify.ok
+                    if not verify.ok:
+                        json_errors = json_errors + verify.errors
+                        rollback_pre_write_state(
+                            dest_root, restore.written_paths, pre_json
+                        )
         from config_scanner.software_compat import snapshot_ruleta_major_minor
         from roulette_trial import restore_trial_bind_for_snapshot
 
@@ -1495,7 +1565,7 @@ class ConfigScannerService:
             write_scope=WriteScope.BINARIES_ONLY.value,
             skipped_count=0,
             scoped_file_count=0,
-            verify_ok=not json_errors,
+            verify_ok=json_verify_ok and not json_errors,
             notes=notes,
         )
 

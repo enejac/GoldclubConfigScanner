@@ -724,6 +724,45 @@ def finance_stamp_unix(dest_root: Path) -> int | None:
     return stamp
 
 
+def _clock_for_dest(dest_root: Path) -> datetime | None:
+    """Cabinet clock for a remote share; local clock for a local tree.
+
+    Returns None when the dest is UNC and the cabinet clock cannot be read,
+    so callers do not compare a remote stamp against the workstation date.
+    """
+    text = str(dest_root)
+    try:
+        from config_scanner.build_version import is_unc_path
+        from config_scanner.dest_preflight import cabinet_ip_from_game_drive
+    except ImportError:
+        return datetime.now().astimezone()
+    if not is_unc_path(text):
+        return datetime.now().astimezone()
+    ip = cabinet_ip_from_game_drive(text)
+    if not ip:
+        return None
+    try:
+        from automation.remote_exec import winrm_run_inline
+        from network.lab_access import ensure_lab_smb_credential, require_lab_fleet_ip
+
+        host = require_lab_fleet_ip(ip)
+        ensure_lab_smb_credential(host)
+        result = winrm_run_inline(
+            ip=host,
+            script="(Get-Date).ToString('o')",
+            timeout=15,
+        )
+        blob = (result.stdout or "").strip().splitlines()
+        if result.returncode not in (0, None) or not blob:
+            return None
+        parsed = datetime.fromisoformat(blob[-1].strip())
+        if parsed.tzinfo is None:
+            return parsed.astimezone()
+        return parsed
+    except Exception:
+        return None
+
+
 def finance_stamp_mismatches_clock(
     dest_root: Path,
     now: datetime | None = None,
@@ -732,7 +771,9 @@ def finance_stamp_mismatches_clock(
     stamp = finance_stamp_unix(dest_root)
     if stamp is None:
         return False
-    here = now if now is not None else datetime.now().astimezone()
+    here = now if now is not None else _clock_for_dest(dest_root)
+    if here is None:
+        return False
     if here.tzinfo is None:
         here = here.astimezone()
     day = datetime.fromtimestamp(stamp).astimezone(here.tzinfo).date()
