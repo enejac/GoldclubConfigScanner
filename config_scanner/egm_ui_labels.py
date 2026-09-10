@@ -80,9 +80,10 @@ def game_kind_from_target(scan_target: str) -> GameKind | None:
         return None
     slot = has_slot_game_exe(root)
     roulette = has_roulette_game_exe(root)
-    if slot and not roulette:
+    # Leftover Ruleta.exe on a Slot Goldclub tree must not hide OneHand.
+    if slot:
         return "slot"
-    if roulette and not slot:
+    if roulette:
         return "roulette"
     return None
 

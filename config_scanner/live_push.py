@@ -2408,11 +2408,12 @@ def goldclub_stack_kind(root: Path | str) -> str:
         has_bootstrap = (path / "Bootstrap.exe").is_file()
     except (OSError, TimeoutError, ValueError):
         return "unknown"
-    if has_onehand and not has_ruleta:
+    # OneHand wins over leftover Ruleta.exe on converted Slot cabinets.
+    if has_onehand:
         return "slot"
     if has_ruleta:
         return "roulette"
-    if has_bootstrap and not has_ruleta:
+    if has_bootstrap:
         return "slot"
     return "unknown"
 

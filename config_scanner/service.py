@@ -778,70 +778,76 @@ class ConfigScannerService:
                     f"{len(licence_files)} licence file(s) will be restored because "
                     "none exist on this EGM and the snapshot serial matches."
                 )
-        from config_scanner.software_compat import software_version_mismatch_warning
+        from config_scanner.software_compat import (
+            restore_uses_slot_software,
+            software_version_mismatch_warning,
+        )
 
+        slot_restore = restore_uses_slot_software(
+            build_info, resolved, snapshot_dir=snapshot_dir
+        )
         mismatch = software_version_mismatch_warning(build_info, resolved)
         if mismatch:
             warnings.append(mismatch)
-        try:
-            from config_scanner.software_compat import (
-                live_ruleta_major_minor_for_target,
-                resolve_software_pack_for_snapshot,
-            )
-            from config_scanner.transition_preflight import (
-                analyze_transition,
-                warning_messages,
-            )
-
-            pack = resolve_software_pack_for_snapshot(
-                build_info,
-                resolved,
-                snapshot_dir=snapshot_dir,
-                tool_root=self.root,
-            )
-            dest_ruleta = scan_target_path(resolved) / "ruleta"
-            live_mm = live_ruleta_major_minor_for_target(resolved)
-            findings = analyze_transition(
-                snapshot_info=build_info,
-                dest_major_minor=live_mm,
-                content_root=content_root,
-                pack=pack,
-                dest_ruleta=dest_ruleta if dest_ruleta.is_dir() else None,
-                write_scope=write_scope,
-            )
-            warnings.extend(warning_messages(findings))
-        except (OSError, ValueError, TypeError):
-            pass
-        if write_scope in {"full_software", "binaries_only"}:
+        if not slot_restore:
             try:
-                from config_scanner.software_compat import cabinet_host_for_scan_target
-                from config_scanner.stack_restart import plan_stack_restart
-                from network.ruleta_stack_probe import dest_ruleta_file_locked
+                from config_scanner.software_compat import (
+                    live_ruleta_major_minor_for_target,
+                    resolve_software_pack_for_snapshot,
+                )
+                from config_scanner.transition_preflight import (
+                    analyze_transition,
+                    warning_messages,
+                )
 
-                host = cabinet_host_for_scan_target(resolved)
+                pack = resolve_software_pack_for_snapshot(
+                    build_info,
+                    resolved,
+                    snapshot_dir=snapshot_dir,
+                    tool_root=self.root,
+                )
                 dest_ruleta = scan_target_path(resolved) / "ruleta"
-                if (
-                    plan_stack_restart(resolved) is not None
-                    and dest_ruleta.is_dir()
-                    and dest_ruleta_file_locked(dest_ruleta)
-                ):
-                    warnings.append(
-                        "Ruleta middleware DLL is in use now — Kill-All runs "
-                        "immediately after you confirm, before any files are written."
-                    )
+                live_mm = live_ruleta_major_minor_for_target(resolved)
+                findings = analyze_transition(
+                    snapshot_info=build_info,
+                    dest_major_minor=live_mm,
+                    content_root=content_root,
+                    pack=pack,
+                    dest_ruleta=dest_ruleta if dest_ruleta.is_dir() else None,
+                    write_scope=write_scope,
+                )
+                warnings.extend(warning_messages(findings))
             except (OSError, ValueError, TypeError):
                 pass
-        try:
-            from config_scanner.ruleta_compat import plan_ruleta_compat
+            if write_scope in {"full_software", "binaries_only"}:
+                try:
+                    from config_scanner.software_compat import cabinet_host_for_scan_target
+                    from config_scanner.stack_restart import plan_stack_restart
+                    from network.ruleta_stack_probe import dest_ruleta_file_locked
 
-            dest_for_plan = scan_target_path(resolved)
-            plan = plan_ruleta_compat(dest_for_plan)
-            if plan.hold_start:
-                warnings.append(plan.reason)
-                if plan.bypass:
-                    warnings.append(plan.bypass)
-        except (OSError, ValueError, TypeError):
-            pass
+                    dest_ruleta = scan_target_path(resolved) / "ruleta"
+                    if (
+                        plan_stack_restart(resolved) is not None
+                        and dest_ruleta.is_dir()
+                        and dest_ruleta_file_locked(dest_ruleta)
+                    ):
+                        warnings.append(
+                            "Ruleta middleware DLL is in use now — Kill-All runs "
+                            "immediately after you confirm, before any files are written."
+                        )
+                except (OSError, ValueError, TypeError):
+                    pass
+            try:
+                from config_scanner.ruleta_compat import plan_ruleta_compat
+
+                dest_for_plan = scan_target_path(resolved)
+                plan = plan_ruleta_compat(dest_for_plan)
+                if plan.hold_start:
+                    warnings.append(plan.reason)
+                    if plan.bypass:
+                        warnings.append(plan.bypass)
+            except (OSError, ValueError, TypeError):
+                pass
         return warnings
 
     def snapshot_apply_refuses(
@@ -876,28 +882,49 @@ class ConfigScannerService:
             from config_scanner.machine_identity import egm_serials_match
             from config_scanner.software_compat import (
                 live_ruleta_major_minor_for_target,
+                restore_uses_slot_software,
                 resolve_software_pack_for_snapshot,
+                slot_software_pack_has_onehand,
+                snapshot_embedded_software_dir,
             )
             from config_scanner.transition_preflight import analyze_transition
 
             build_info = load_build_info(snapshot_dir)
-            pack = resolve_software_pack_for_snapshot(
-                build_info,
-                scan_target,
-                snapshot_dir=snapshot_dir,
-                tool_root=self.root,
-            )
             dest_root = scan_target_path(scan_target)
             dest_ruleta = dest_root / "ruleta"
-            findings = analyze_transition(
-                snapshot_info=build_info,
-                dest_major_minor=live_ruleta_major_minor_for_target(scan_target),
-                content_root=snapshot_content_root(snapshot_dir),
-                pack=pack,
-                dest_ruleta=dest_ruleta if dest_ruleta.is_dir() else None,
-                write_scope=write_scope,
+            slot_restore = restore_uses_slot_software(
+                build_info, scan_target, snapshot_dir=snapshot_dir
             )
-            refuses = list(refuse_messages(findings))
+            refuses: list[str] = []
+            scope = WriteScope(write_scope)
+            software_scope = scope in {
+                WriteScope.FULL_SOFTWARE,
+                WriteScope.BINARIES_ONLY,
+            }
+            if slot_restore:
+                if software_scope and not slot_software_pack_has_onehand(
+                    snapshot_embedded_software_dir(snapshot_dir)
+                ):
+                    refuses.append(
+                        "No slot software in this snapshot. Create a full "
+                        "snapshot (config + software)."
+                    )
+            else:
+                pack = resolve_software_pack_for_snapshot(
+                    build_info,
+                    scan_target,
+                    snapshot_dir=snapshot_dir,
+                    tool_root=self.root,
+                )
+                findings = analyze_transition(
+                    snapshot_info=build_info,
+                    dest_major_minor=live_ruleta_major_minor_for_target(scan_target),
+                    content_root=snapshot_content_root(snapshot_dir),
+                    pack=pack,
+                    dest_ruleta=dest_ruleta if dest_ruleta.is_dir() else None,
+                    write_scope=write_scope,
+                )
+                refuses.extend(refuse_messages(findings))
 
             ok, writable_msg = goldclub_dest_writable(dest_root)
             if not ok and writable_msg:
@@ -905,7 +932,6 @@ class ConfigScannerService:
 
             snap_serial = (build_info.machine_serial or "").strip() or None
             live_serial = read_machine_serial_from_target(scan_target)
-            scope = WriteScope(write_scope)
             serial_sensitive = scope in {
                 WriteScope.FULL,
                 WriteScope.FULL_SOFTWARE,
@@ -931,7 +957,7 @@ class ConfigScannerService:
                     body += f" {hint}"
                 refuses.append(body)
 
-            if scope in {WriteScope.FULL_SOFTWARE, WriteScope.BINARIES_ONLY}:
+            if software_scope and not slot_restore:
                 from config_scanner.software_compat import cabinet_host_for_scan_target
                 from network.ruleta_stack_probe import preflight_remote_software_swap
 
@@ -1065,10 +1091,11 @@ class ConfigScannerService:
         which archived paths are restored. Serialport layout/locations are
         never written. Licence XML is never overwritten when a live licence
         exists. A different dongle is never written. ``full_software``
-        pushes the matching Ruleta pack from ``software_versions`` first
-        (hard fail if that copy fails), then restores config so paytables
-        land on the matching exe. ``binaries_only`` pushes that pack and
-        keeps this cabinet's setup / switches / SAS / licence.
+        pushes Slot ``software/`` (OneHand) or the matching Ruleta pack
+        first (hard fail if that copy fails), then restores config.
+        ``binaries_only`` pushes those binaries and keeps this cabinet's
+        setup / switches / SAS / licence. Leftover ``ruleta\\`` on a Slot
+        tree is ignored.
 
         When ``only_changed_relative_paths`` is set (compare diffs), further
         narrows to that set (still scope-filtered).
@@ -1095,11 +1122,16 @@ class ConfigScannerService:
         snapshot_profile = (build_info.profile_id or "").strip()
         dest_profile = match_profile_for_target(resolved_target, profiles)
         if snapshot_profile and dest_profile and snapshot_profile != dest_profile.id:
-            left = build_info.profile_label or snapshot_profile
-            right = dest_profile.label or dest_profile.id
-            raise ValueError(
-                f"Cannot write snapshot: profile mismatch ({left!r} snapshot vs {right!r} target)."
-            )
+            from config_scanner.software_compat import restore_uses_slot_software
+
+            if not restore_uses_slot_software(
+                build_info, resolved_target, snapshot_dir=snapshot_dir
+            ):
+                left = build_info.profile_label or snapshot_profile
+                right = dest_profile.label or dest_profile.id
+                raise ValueError(
+                    f"Cannot write snapshot: profile mismatch ({left!r} snapshot vs {right!r} target)."
+                )
 
         try:
             scope = WriteScope(write_scope)
@@ -1148,7 +1180,12 @@ class ConfigScannerService:
         )
 
         dest_root = scan_target_path(resolved_target)
-        previous_live_mm = live_ruleta_major_minor(dest_root)
+        from config_scanner.software_compat import restore_uses_slot_software
+
+        slot_restore = restore_uses_slot_software(
+            build_info, resolved_target, snapshot_dir=snapshot_dir
+        )
+        previous_live_mm = None if slot_restore else live_ruleta_major_minor(dest_root)
         cleared_trial_during_push = False
 
         extra_notes: list[str] = []
@@ -1165,11 +1202,11 @@ class ConfigScannerService:
                 is_revert=is_revert,
             )
         if scope is WriteScope.FULL_SOFTWARE:
-            from config_scanner.software_compat import push_matching_ruleta_software
+            from config_scanner.software_compat import push_matching_game_software
 
-            cleared_trial_during_push = not is_revert
+            cleared_trial_during_push = not is_revert and not slot_restore
             extra_notes.append(
-                push_matching_ruleta_software(
+                push_matching_game_software(
                     build_info,
                     resolved_target,
                     snapshot_dir=snapshot_dir,
@@ -1178,14 +1215,16 @@ class ConfigScannerService:
                 )
             )
             snap_mm_early = None
-            try:
-                from config_scanner.software_compat import snapshot_ruleta_major_minor
+            if not slot_restore:
+                try:
+                    from config_scanner.software_compat import snapshot_ruleta_major_minor
 
-                snap_mm_early = snapshot_ruleta_major_minor(build_info)
-            except OSError:
-                pass
+                    snap_mm_early = snapshot_ruleta_major_minor(build_info)
+                except OSError:
+                    pass
             if (
-                cleared_trial_during_push
+                not slot_restore
+                and cleared_trial_during_push
                 and previous_live_mm
                 and snap_mm_early
                 and previous_live_mm.strip() != snap_mm_early.strip()
@@ -1278,38 +1317,40 @@ class ConfigScannerService:
                 f"{sample}{extra}"
             )
 
-        from config_scanner.ruleta_compat import apply_ruleta_compat_after_restore
-        from config_scanner.software_compat import snapshot_ruleta_major_minor
-        from roulette_trial import restore_trial_bind_for_snapshot
-
-        snap_mm = snapshot_ruleta_major_minor(build_info)
-        trial_notes, trial_restored = restore_trial_bind_for_snapshot(
-            dest_root,
-            snapshot_dir,
-            allow_gci_backup=not is_revert and not cleared_trial_during_push,
-            snapshot_major_minor=snap_mm,
-            previous_live_major_minor=previous_live_mm,
-        )
-        compat_notes = apply_ruleta_compat_after_restore(
-            dest_root,
-            snapshot_major_minor=snap_mm,
-            previous_live_major_minor=previous_live_mm,
-            skip_trial_reset=is_revert or trial_restored,
-        )
-
+        trial_notes: list[str] = []
+        compat_notes: list[str] = []
         transfer_note: list[str] = []
-        if (
-            cleared_trial_during_push
-            and previous_live_mm
-            and snap_mm
-            and previous_live_mm.strip() != snap_mm.strip()
-            and not trial_restored
-        ):
-            transfer_note.append(
-                "Trial bind cleared for Ruleta "
-                f"{previous_live_mm} -> {snap_mm}. After stack start expect ERROR 99 "
-                "once — enter the trial password for the displayed System ID (LLAVE)."
+        if not slot_restore:
+            from config_scanner.ruleta_compat import apply_ruleta_compat_after_restore
+            from config_scanner.software_compat import snapshot_ruleta_major_minor
+            from roulette_trial import restore_trial_bind_for_snapshot
+
+            snap_mm = snapshot_ruleta_major_minor(build_info)
+            trial_notes, trial_restored = restore_trial_bind_for_snapshot(
+                dest_root,
+                snapshot_dir,
+                allow_gci_backup=not is_revert and not cleared_trial_during_push,
+                snapshot_major_minor=snap_mm,
+                previous_live_major_minor=previous_live_mm,
             )
+            compat_notes = apply_ruleta_compat_after_restore(
+                dest_root,
+                snapshot_major_minor=snap_mm,
+                previous_live_major_minor=previous_live_mm,
+                skip_trial_reset=is_revert or trial_restored,
+            )
+            if (
+                cleared_trial_during_push
+                and previous_live_mm
+                and snap_mm
+                and previous_live_mm.strip() != snap_mm.strip()
+                and not trial_restored
+            ):
+                transfer_note.append(
+                    "Trial bind cleared for Ruleta "
+                    f"{previous_live_mm} -> {snap_mm}. After stack start expect ERROR 99 "
+                    "once — enter the trial password for the displayed System ID (LLAVE)."
+                )
 
         notes = tuple(
             paytable_skip_notes + extra_notes + compat_notes + trial_notes + transfer_note
@@ -1345,15 +1386,53 @@ class ConfigScannerService:
         candidates: list[str],
         is_revert: bool = False,
     ) -> ApplySnapshotResult:
-        """Push Ruleta binaries; keep this cabinet's setup/SAS/wheel/licence."""
+        """Push Slot or Ruleta binaries; keep this cabinet's setup/SAS/licence."""
         from config_scanner.paytable_compat import (
             is_10_2_only_paytable_json,
             live_exe_is_ruleta_10_2,
             live_ruleta_major_minor,
         )
-        from config_scanner.ruleta_compat import apply_ruleta_compat_after_restore
-        from config_scanner.software_compat import import_ruleta_binaries_keep_profile
+        from config_scanner.software_compat import (
+            import_ruleta_binaries_keep_profile,
+            push_matching_slot_software,
+            restore_uses_slot_software,
+        )
         from config_scanner.write_scope import WriteScope
+
+        slot_restore = restore_uses_slot_software(
+            build_info, resolved_target, snapshot_dir=snapshot_dir
+        )
+        if slot_restore:
+            extra_notes = [
+                push_matching_slot_software(
+                    build_info,
+                    resolved_target,
+                    snapshot_dir=snapshot_dir,
+                    keep_profile=True,
+                )
+            ]
+            profile_label = ""
+            snap_label = getattr(build_info, "profile_label", None)
+            dest_label = getattr(dest_profile, "label", None)
+            if snap_label:
+                profile_label = str(snap_label)
+            elif dest_label:
+                profile_label = str(dest_label)
+            return ApplySnapshotResult(
+                snapshot_name=snapshot_name,
+                target=resolved_target,
+                profile_label=profile_label,
+                written_count=1,
+                missing_count=0,
+                errors=(),
+                write_scope=WriteScope.BINARIES_ONLY.value,
+                skipped_count=0,
+                scoped_file_count=0,
+                verify_ok=True,
+                notes=tuple(extra_notes),
+            )
+
+        from config_scanner.ruleta_compat import apply_ruleta_compat_after_restore
 
         previous_live_mm = live_ruleta_major_minor(dest_root)
         cleared_trial_during_push = not is_revert

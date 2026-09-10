@@ -707,7 +707,10 @@ def prepare_restore_bytes_preserving_identity(
             return incoming_raw
         live_plain = plain_bytes_for_config_scan(dest)
         if live_plain is None:
-            live_plain = decrypt_gcxml_setup_to_plain_xml(dest).encode("utf-8")
+            decrypted = decrypt_gcxml_setup_to_plain_xml(dest)
+            if not decrypted:
+                return incoming_raw
+            live_plain = decrypted.encode("utf-8")
         incoming_plain = incoming_raw
         if not incoming_plain.lstrip().startswith(b"<"):
             return incoming_raw

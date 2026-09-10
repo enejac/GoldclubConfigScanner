@@ -145,7 +145,10 @@ def _setup_plain_bytes(path: Path) -> bytes | None:
         plain = plain_bytes_for_config_scan(path)
         if plain:
             return plain
-        return decrypt_gcxml_setup_to_plain_xml(path).encode("utf-8")
+        decrypted = decrypt_gcxml_setup_to_plain_xml(path)
+        if not decrypted:
+            return None
+        return decrypted.encode("utf-8")
     except (OSError, ValueError, TypeError, RuntimeError):
         return None
 

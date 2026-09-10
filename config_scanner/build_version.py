@@ -135,7 +135,7 @@ def read_machine_serial_from_target(target: str | None) -> str | None:
 
     roots: list[Path] = []
     try:
-        root = Path(norm)
+        root = scan_target_path(norm)
         roots.append(root)
         if root.name.casefold() in {"slot", "ruleta", "goldclub"}:
             roots.append(root.parent)
@@ -431,7 +431,11 @@ def normalize_scan_target(target: str) -> str:
 def scan_target_path(target: str) -> Path:
     normalized = normalize_scan_target(target)
     if is_unc_path(normalized):
+        if os.name != "nt":
+            return Path(normalized.replace("\\", "/"))
         return Path(normalized)
+    if os.name != "nt":
+        return Path(str(normalized).replace("\\", "/").rstrip("/"))
     if not normalized.endswith("\\"):
         normalized += "\\"
     return Path(normalized)
@@ -1222,7 +1226,12 @@ def is_slot_cabinet_scan_target(target: str) -> bool:
     Roulette lab cabinets often share ``C:\\goldclub`` as ``\\\\ip\\slot``.
     That UNC name ends with ``\\slot`` but the tree is Ruleta, not OneHand.
     """
-    norm = normalize_scan_target(target).casefold().rstrip("\\")
+    norm = (
+        normalize_scan_target(target)
+        .casefold()
+        .replace("/", "\\")
+        .rstrip("\\")
+    )
     if not (norm.endswith(r"\goldclub\slot") or norm.endswith(r"\slot")):
         return False
     root = scan_target_path(target)
@@ -1252,8 +1261,14 @@ def match_profile_for_target(
     if not root.exists():
         return None
 
-    if is_slot_cabinet_scan_target(target):
+    slot_tree = False
+    try:
+        slot_tree = has_slot_game_exe(root) or (root / "slot" / "OneHand.exe").is_file()
+    except OSError:
+        slot_tree = False
+    if is_slot_cabinet_scan_target(target) or slot_tree:
         # Slot cabinets never use ruleta/BuildVersion.txt (roulette USB only).
+        # Leftover ruleta/Ruleta.exe must not steal the Slot profile.
         for profile in _fingerprint_profiles(profiles):
             if scan_target_is_valid(profile, target):
                 return profile

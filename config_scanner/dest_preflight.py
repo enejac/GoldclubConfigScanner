@@ -35,7 +35,19 @@ def goldclub_dest_writable(root: Path | str) -> tuple[bool, str | None]:
     except OSError as exc:
         return False, f"Scan target not reachable: {dest} ({exc})"
 
-    probe_dir = dest / "ruleta" if (dest / "ruleta").is_dir() else dest
+    probe_dir = dest
+    try:
+        slot_exe = (dest / "slot" / "OneHand.exe").is_file() or (
+            dest / "OneHand.exe"
+        ).is_file()
+        ruleta_dir = (dest / "ruleta").is_dir()
+    except OSError:
+        slot_exe = False
+        ruleta_dir = False
+    if slot_exe and (dest / "slot").is_dir():
+        probe_dir = dest / "slot"
+    elif not slot_exe and ruleta_dir:
+        probe_dir = dest / "ruleta"
     try:
         if not probe_dir.is_dir():
             probe_dir = dest
