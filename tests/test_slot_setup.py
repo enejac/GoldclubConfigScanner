@@ -1135,6 +1135,25 @@ def test_is_onehand_debug_build_from_pe_product_version(tmp_path: Path) -> None:
     assert is_onehand_debug_build(gold) is False
 
 
+def test_is_onehand_debug_build_ignores_earlier_numeric_then_finds_debug(
+    tmp_path: Path,
+) -> None:
+    from config_scanner.slot_setup import is_onehand_debug_build
+
+    gold = _fake_goldclub(tmp_path)
+    exe = gold / "slot" / "OneHand.exe"
+    exe.parent.mkdir(parents=True, exist_ok=True)
+    exe.write_bytes(
+        b"MZ"
+        + "ProductVersion\0".encode("utf-16le")
+        + "3.0.0.0+RC2+2667F2\0".encode("utf-16le")
+        + b"\x00" * (5 * 1024 * 1024)
+        + "FileVersion\0".encode("utf-16le")
+        + "Debug\0".encode("utf-16le")
+    )
+    assert is_onehand_debug_build(gold) is True
+
+
 def test_is_onehand_debug_build_from_filename(tmp_path: Path) -> None:
     from config_scanner.slot_setup import is_onehand_debug_build
 
