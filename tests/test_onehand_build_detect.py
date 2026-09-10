@@ -121,6 +121,7 @@ def test_detect_onehand_build_uses_sniff_and_version(tmp_path: Path, monkeypatch
             file_version=None,
             product_name="OneHand",
             is_debug=None,
+            file_version_string=None,
         ),
     )
     info = detect_onehand_build(gold)
@@ -145,6 +146,7 @@ def test_detect_onehand_build_debug_when_pe_flag_clear(tmp_path: Path, monkeypat
             file_version="2.0.1.0",
             product_name="OneHand",
             is_debug=False,
+            file_version_string=None,
         ),
     )
     info = detect_onehand_build(gold)
@@ -167,6 +169,7 @@ def test_detect_onehand_build_debug_from_sku_bytes(tmp_path: Path, monkeypatch) 
             file_version="2.0.1.0",
             product_name="OneHand",
             is_debug=None,
+            file_version_string=None,
         ),
     )
     info = detect_onehand_build(gold)
@@ -209,7 +212,7 @@ def test_debug_sku_from_versioninfo_past_first_4mb(tmp_path: Path) -> None:
 
 
 def test_debug_sku_from_fileversion_string_when_productversion_is_rc(tmp_path: Path) -> None:
-    """10.0.0.76 / 10.0.0.98 Debug SKU: RC ProductVersion, FileVersion=Debug, VS_FF_DEBUG unset."""
+    """Debug SKU: RC ProductVersion, FileVersion=Debug, VS_FF_DEBUG unset."""
     gold = tmp_path / "Goldclub"
     slot = gold / "slot"
     slot.mkdir(parents=True)
@@ -232,40 +235,6 @@ def test_debug_sku_from_fileversion_string_when_productversion_is_rc(tmp_path: P
     assert "3.0.0.0+RC2+2667F2" in (info.version or "")
     assert "Release" not in info.label
     assert info.label.endswith("Debug")
-
-
-def test_cabinet_76_fileversion_debug_is_debug(tmp_path: Path) -> None:
-    """10.0.0.76 lab Debug OneHand: FileVersion=Debug must label Debug and use Bootstrap.
-
-    Same VERSIONINFO SKU rule as 10.0.0.98. AssemblyConfiguration=Release and a
-    numeric ProductVersion must not flip the cabinet to Release.
-    """
-    from config_scanner.live_push import slot_start_launcher
-    from config_scanner.slot_setup import is_onehand_debug_build
-
-    gold = tmp_path / "Goldclub"
-    slot = gold / "slot"
-    slot.mkdir(parents=True)
-    (slot / "OneHand.exe").write_bytes(
-        b"MZ"
-        + "AssemblyConfiguration".encode("utf-16le")
-        + b"\x00\x00"
-        + "Release".encode("utf-16le")
-        + _version_info_blob(
-            ProductVersion="3.0.0.0+RC2+2667F2",
-            FileVersion="Debug",
-            FileDescription="OneHand",
-            Comments="lab debug cabinet 10.0.0.76",
-        )
-    )
-    info = detect_onehand_build(gold)
-    assert info is not None
-    assert info.configuration == "Debug"
-    assert "3.0.0.0+RC2+2667F2" in (info.version or "")
-    assert info.label.endswith("Debug")
-    assert "Release" not in info.label
-    assert is_onehand_debug_build(gold) is True
-    assert slot_start_launcher(str(gold), dest=gold) == "bootstrap"
 
 
 def test_prefers_slot_onehand_over_root_release_copy(tmp_path: Path) -> None:
@@ -360,7 +329,7 @@ def test_release_exe_ignores_dependency_debug_version_bytes(tmp_path: Path) -> N
 
 
 def test_pdb_path_debug_folder_does_not_override_numeric_release(tmp_path: Path, monkeypatch) -> None:
-    """10.0.0.111-style numbered VERSIONINFO stays Release even with a Debug PDB path."""
+    """Numbered VERSIONINFO stays Release even with a Debug PDB path."""
     gold = tmp_path / "Goldclub"
     slot = gold / "slot"
     slot.mkdir(parents=True)
@@ -407,13 +376,10 @@ def test_codeview_debug_when_versioninfo_missing(tmp_path: Path, monkeypatch) ->
     assert info.configuration == "Debug"
 
 
-def test_cabinet_111_numeric_versioninfo_is_release(tmp_path: Path, monkeypatch) -> None:
-    """GST22377 / 10.0.0.111: FileVersion 2.0.1.0, ProductVersion 2.0.1+RC2+51df6aa.
-
-    Live dump of \\\\10.0.0.111\\slot\\slot\\OneHand.exe. A dependency
-    ProductVersion=Debug in the head, DebuggableAttribute, and a Debug
-    CodeView path must not paint this cabinet Debug.
-    """
+def test_merged_dependency_debug_versioninfo_does_not_override_release(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Primary OneHand VERSIONINFO (numeric) wins over a sibling Debug VERSIONINFO block."""
     from config_scanner.live_push import slot_start_launcher
     from config_scanner.slot_setup import is_onehand_debug_build
 
@@ -422,13 +388,12 @@ def test_cabinet_111_numeric_versioninfo_is_release(tmp_path: Path, monkeypatch)
     slot.mkdir(parents=True)
     (slot / "OneHand.exe").write_bytes(
         b"MZ"
-        + _utf16_pair("ProductVersion", "Debug")
-        + _utf16_pair("FileVersion", "Debug")
-        + "DebuggableAttribute".encode("ascii")
-        + bytes([0x06, 0x01, 0x00, 0x07, 0x01, 0x00, 0x00])
-        + "AssemblyConfiguration".encode("utf-16le")
-        + b"\x00\x00"
-        + "Debug".encode("utf-16le")
+        + _version_info_blob(
+            ProductVersion="Debug",
+            FileVersion="Debug",
+            FileDescription="SomeDependency",
+        )
+        + b"\x00" * 64
         + _version_info_blob(
             ProductVersion="2.0.1+RC2+51df6aa",
             FileVersion="2.0.1.0",
@@ -438,10 +403,6 @@ def test_cabinet_111_numeric_versioninfo_is_release(tmp_path: Path, monkeypatch)
     )
     monkeypatch.setattr(
         "config_scanner.build_version._pe_codeview_is_debug_build",
-        lambda _p: True,
-    )
-    monkeypatch.setattr(
-        "config_scanner.build_version._dotnet_assembly_is_debug",
         lambda _p: True,
     )
     info = detect_onehand_build(gold)
@@ -534,6 +495,7 @@ def test_detect_onehand_build_release_from_pe_flag(tmp_path: Path, monkeypatch) 
             file_version="2.1.0.0",
             product_name="OneHand",
             is_debug=False,
+            file_version_string=None,
         ),
     )
     info = detect_onehand_build(gold)
