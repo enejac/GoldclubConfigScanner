@@ -209,7 +209,7 @@ def test_debug_sku_from_versioninfo_past_first_4mb(tmp_path: Path) -> None:
 
 
 def test_debug_sku_from_fileversion_string_when_productversion_is_rc(tmp_path: Path) -> None:
-    """10.0.0.98-style Debug SKU: RC ProductVersion, FileVersion=Debug, VS_FF_DEBUG unset."""
+    """10.0.0.76 / 10.0.0.98 Debug SKU: RC ProductVersion, FileVersion=Debug, VS_FF_DEBUG unset."""
     gold = tmp_path / "Goldclub"
     slot = gold / "slot"
     slot.mkdir(parents=True)
@@ -232,6 +232,40 @@ def test_debug_sku_from_fileversion_string_when_productversion_is_rc(tmp_path: P
     assert "3.0.0.0+RC2+2667F2" in (info.version or "")
     assert "Release" not in info.label
     assert info.label.endswith("Debug")
+
+
+def test_cabinet_76_fileversion_debug_is_debug(tmp_path: Path) -> None:
+    """10.0.0.76 lab Debug OneHand: FileVersion=Debug must label Debug and use Bootstrap.
+
+    Same VERSIONINFO SKU rule as 10.0.0.98. AssemblyConfiguration=Release and a
+    numeric ProductVersion must not flip the cabinet to Release.
+    """
+    from config_scanner.live_push import slot_start_launcher
+    from config_scanner.slot_setup import is_onehand_debug_build
+
+    gold = tmp_path / "Goldclub"
+    slot = gold / "slot"
+    slot.mkdir(parents=True)
+    (slot / "OneHand.exe").write_bytes(
+        b"MZ"
+        + "AssemblyConfiguration".encode("utf-16le")
+        + b"\x00\x00"
+        + "Release".encode("utf-16le")
+        + _version_info_blob(
+            ProductVersion="3.0.0.0+RC2+2667F2",
+            FileVersion="Debug",
+            FileDescription="OneHand",
+            Comments="lab debug cabinet 10.0.0.76",
+        )
+    )
+    info = detect_onehand_build(gold)
+    assert info is not None
+    assert info.configuration == "Debug"
+    assert "3.0.0.0+RC2+2667F2" in (info.version or "")
+    assert info.label.endswith("Debug")
+    assert "Release" not in info.label
+    assert is_onehand_debug_build(gold) is True
+    assert slot_start_launcher(str(gold), dest=gold) == "bootstrap"
 
 
 def test_prefers_slot_onehand_over_root_release_copy(tmp_path: Path) -> None:
@@ -418,6 +452,46 @@ def test_cabinet_111_numeric_versioninfo_is_release(tmp_path: Path, monkeypatch)
     assert "Debug" not in info.label
     assert is_onehand_debug_build(gold) is False
     assert slot_start_launcher(str(gold), dest=gold) == "game-start"
+
+
+def test_lab_cabinets_76_debug_and_111_release(tmp_path: Path) -> None:
+    """Paired lab expectation: 10.0.0.76 → Debug, 10.0.0.111 → Release."""
+    from config_scanner.live_push import slot_start_launcher
+    from config_scanner.slot_setup import is_onehand_debug_build
+
+    cases = (
+        (
+            "10.0.0.76",
+            {"ProductVersion": "3.0.0.0+RC2+2667F2", "FileVersion": "Debug"},
+            "Debug",
+            "bootstrap",
+            True,
+        ),
+        (
+            "10.0.0.111",
+            {"ProductVersion": "2.0.1+RC2+51df6aa", "FileVersion": "2.0.1.0"},
+            "Release",
+            "game-start",
+            False,
+        ),
+    )
+    for host, version_fields, expect_cfg, expect_launcher, expect_debug in cases:
+        gold = tmp_path / host.replace(".", "_")
+        slot = gold / "slot"
+        slot.mkdir(parents=True)
+        (slot / "OneHand.exe").write_bytes(
+            b"MZ"
+            + "AssemblyConfiguration".encode("utf-16le")
+            + b"\x00\x00"
+            + "Release".encode("utf-16le")
+            + _version_info_blob(FileDescription="OneHand", **version_fields)
+        )
+        info = detect_onehand_build(gold)
+        assert info is not None, host
+        assert info.configuration == expect_cfg, host
+        assert info.label.endswith(expect_cfg), host
+        assert is_onehand_debug_build(gold) is expect_debug, host
+        assert slot_start_launcher(str(gold), dest=gold) == expect_launcher, host
 
 
 def test_pdb_path_is_debug_output_uses_folder_not_filename() -> None:

@@ -1003,6 +1003,7 @@ def _read_version_resource(path: Path) -> _VersionResource | None:
 def _is_debug_sku_token(text: str | None) -> bool:
     """True when ProductVersion / FileVersion *is* the Debug SKU name.
 
+    ``FileVersion=Debug`` is Debug (10.0.0.76 / 10.0.0.98).
     ``2.0.1+RC2+51df6aa`` and ``2.0.1.0`` (10.0.0.111) are not Debug.
     Comments / FileDescription / ``Debugger`` must not flip the SKU.
     """
@@ -1018,7 +1019,7 @@ def _has_numeric_version_token(text: str | None) -> bool:
 def _version_resource_is_debug(res: _VersionResource | None) -> bool:
     """Debug SKU only from ProductVersion / FileVersion, not Comments.
 
-    ``FileVersion=Debug`` is 10.0.0.98. A numeric FileVersion such as
+    ``FileVersion=Debug`` is 10.0.0.76 / 10.0.0.98. A numeric FileVersion such as
     ``2.0.1.0`` on 10.0.0.111 stays Release even if a dependency
     VERSIONINFO in the same scan window says Debug.
     """
@@ -1077,11 +1078,11 @@ def _pick_display_product_version(values: list[str] | tuple[str, ...]) -> str:
 def onehand_exe_is_debug_sku(exe_path: Path | str) -> bool:
     """True when this OneHand.exe is the Debug VERSIONINFO SKU.
 
-    ``FileVersion=Debug`` / ``ProductVersion=Debug`` is Debug (10.0.0.98).
-    A numeric ProductVersion + FileVersion (10.0.0.111 ``2.0.1.0`` /
-    ``2.0.1+RC2+51df6aa``) is Release — DebuggableAttribute, a CodeView
-    ``\\Debug\\`` folder, Comments, and dependency VERSIONINFO must not
-    override that.
+    ``FileVersion=Debug`` / ``ProductVersion=Debug`` is Debug (10.0.0.76 /
+    10.0.0.98). A numeric ProductVersion + FileVersion (10.0.0.111
+    ``2.0.1.0`` / ``2.0.1+RC2+51df6aa``) is Release — DebuggableAttribute,
+    a CodeView ``\\Debug\\`` folder, Comments, and dependency VERSIONINFO
+    must not override that.
     """
     path = Path(exe_path)
     try:
@@ -1169,20 +1170,22 @@ def _onehand_configuration(
 ) -> tuple[str, str]:
     """Debug only from the VERSIONINFO SKU name, not from RC/hex version text.
 
-    10.0.0.111 (``2.0.1.0`` / ``2.0.1+RC2+51df6aa``) is Release. 10.0.0.98
-    (``FileVersion=Debug``) is Debug. CLR / CodeView / Comments do not
-    override a numeric ProductVersion + FileVersion.
+    10.0.0.76 / 10.0.0.98 (``FileVersion=Debug``) is Debug even when
+    ProductVersion is a numeric RC string. 10.0.0.111 (``2.0.1.0`` /
+    ``2.0.1+RC2+51df6aa``) is Release. CLR / CodeView / Comments do not
+    override a numeric ProductVersion + FileVersion on Release cabinets.
     """
     del goldclub
     file_version_string = getattr(info, "file_version_string", None)
-    sku_labels = (
-        info.product_version,
-        info.file_version,
-        file_version_string,
-    )
-    if any(_is_debug_sku_token(part) for part in sku_labels):
+    # FileVersion / ProductVersion string "Debug" wins over a numeric sibling
+    # (lab Debug SKUs keep an RC ProductVersion next to FileVersion=Debug).
+    sku_name_labels = (file_version_string, info.product_version)
+    if any(_is_debug_sku_token(part) for part in sku_name_labels):
         return "Debug", "VERSIONINFO string"
-    numeric_release = any(_has_numeric_version_token(part) for part in sku_labels)
+    numeric_release = any(
+        _has_numeric_version_token(part)
+        for part in (info.product_version, info.file_version, file_version_string)
+    )
     try:
         if onehand_exe_is_debug_sku(exe_path):
             return "Debug", "VERSIONINFO ProductVersion/FileVersion"
