@@ -70,6 +70,7 @@ from config_scanner.live_push import (
     live_field_tooltip,
     live_field_validation_errors,
     recipe_display_corruption_errors,
+    canonicalize_live_field_label,
     resolve_live_field_config_files,
     live_push_catalog,
     live_push_ramclear_reasons,
@@ -732,6 +733,7 @@ class LivePushPanel(QWidget):
         for label, path in (
             ("This PC", r"C:\Goldclub"),
             ("10.0.0.90", r"\\10.0.0.90\c$\Goldclub"),
+            ("10.0.0.98", r"\\10.0.0.98\c$\Goldclub"),
             ("10.0.0.111", r"\\10.0.0.111\slot"),
         ):
             btn = QPushButton(label)
@@ -1492,7 +1494,9 @@ class LivePushPanel(QWidget):
             act.setEnabled(False)
             menu.exec(widget.mapToGlobal(pos))
             return
-        paths = resolve_live_field_config_files(goldclub, label)
+        paths = resolve_live_field_config_files(
+            goldclub, canonicalize_live_field_label(label)
+        )
         if not paths:
             act = menu.addAction(f"Config file for {label} not found")
             act.setEnabled(False)
