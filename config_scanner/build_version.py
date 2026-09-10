@@ -906,7 +906,7 @@ def _onehand_configuration(
     labels = (
         info.product_version,
         info.file_version,
-        info.file_version_string,
+        getattr(info, "file_version_string", None),
         info.product_name,
         info.display_version,
         exe_path.name,
