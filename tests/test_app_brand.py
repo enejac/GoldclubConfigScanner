@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from config_scanner.app_brand import build_stamp_text, program_title
+from config_scanner.app_brand import program_title
 from config_scanner.build_stamp_write import current_build_stamp, write_build_stamp
 
 
