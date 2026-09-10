@@ -1167,7 +1167,7 @@ def test_is_onehand_debug_build_v3_rc_hex_without_debug_word(tmp_path: Path) -> 
         + "AssemblyConfiguration\0".encode("utf-16le")
         + "Release\0".encode("utf-16le")
     )
-    assert is_onehand_debug_build(gold) is True
+    assert is_onehand_debug_build(gold) is False
 
 
 def test_is_onehand_debug_build_from_filename(tmp_path: Path) -> None:

@@ -845,84 +845,102 @@ _DOTNET_RELEASE_BLOBS = (
     bytes([0x06, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00]),
     bytes([0x04, 0x01, 0x00, 0x00, 0x00]),
 )
-_LAB_CI_ONEHAND_RE = re.compile(
-    r"\d+\.\d+\.\d+(?:\.\d+)?[+-]RC\d+[+-][0-9A-Fa-f]{6,}\b",
-    re.IGNORECASE,
-)
-# Live Debug SKU on 10.0.0.98 logs "SlotMachine v3.0.0.0" and ships as 3.0.0.0+RC2+hex.
-_ONEHAND_V3_DEBUG_LINE_RE = re.compile(r"\b3\.0\.0(?:\.\d+)?\b")
-_VS_FF_DISABLE_OPT = 0x0100
-# Compiled into the Debug binary (SlotLog text). Readable without ever starting OneHand.
-_STATIC_DEBUG_MARKERS = (
-    b"Static initialization (i0)",
-    "Static initialization (i0)".encode("utf-16le"),
-    b"SlotMachine v3.0.0.0",
-    "SlotMachine v3.0.0.0".encode("utf-16le"),
-)
-
-
 def _dotnet_assembly_is_debug(path: Path) -> bool | None:
-    """True when CLI DebuggableAttribute disables JIT optimizations."""
+    """True when CLI metadata has a Debug DebuggableAttribute blob.
+
+    Only the CLR metadata root is scanned — not the first megabytes of the
+    exe. A head/tail search false-positives on every .NET OneHand.
+    """
     data = _read_clr_metadata_bytes(path)
     if not data:
-        try:
-            data = _read_head_tail_bytes(path, head=4 * 1024 * 1024, tail=1 * 1024 * 1024)
-        except OSError:
-            return None
-    if not data:
         return None
-    if _DOTNET_DEBUG_ATTR not in data and _DOTNET_DEBUG_ATTR.decode().encode("utf-16le") not in data:
+    if _DOTNET_DEBUG_ATTR not in data and _DOTNET_DEBUG_ATTR.decode().encode(
+        "utf-16le"
+    ) not in data:
         return None
     if any(blob in data for blob in _DOTNET_DEBUG_BLOBS):
         return True
-    # Prolog + DebuggingModes with DisableOptimizations (0x100).
-    start = 0
-    while True:
-        idx = data.find(b"\x01\x00", start)
-        if idx < 0 or idx + 6 > len(data):
-            break
-        modes = int.from_bytes(data[idx + 2 : idx + 6], "little")
-        if modes & _VS_FF_DISABLE_OPT:
-            return True
-        start = idx + 1
     if any(blob in data for blob in _DOTNET_RELEASE_BLOBS):
         return False
     return None
 
 
-def _onehand_pdb_present(exe_path: Path) -> bool:
+def _pdb_path_is_debug_output(pdb_path: str) -> bool:
+    """True when the CodeView path has a ``Debug`` folder (not the word in a filename)."""
+    parts = [p for p in re.split(r"[\\/]+", (pdb_path or "").strip()) if p]
+    return any(part.casefold() == "debug" for part in parts[:-1])
+
+
+def _decode_rsds_pdb_path(blob: bytes, offset: int) -> str:
+    if offset + 24 > len(blob) or blob[offset : offset + 4] != b"RSDS":
+        return ""
+    rest = blob[offset + 24 : offset + 24 + 512]
+    end = rest.find(b"\x00")
+    raw = rest if end < 0 else rest[:end]
     try:
-        if exe_path.with_suffix(".pdb").is_file():
+        text = raw.decode("ascii")
+    except UnicodeDecodeError:
+        return ""
+    if not text.lower().endswith(".pdb"):
+        return ""
+    if not all(ch.isprintable() for ch in text):
+        return ""
+    return text
+
+
+def _iter_pe_codeview_pdb_paths(path: Path) -> list[str]:
+    """PDB paths from IMAGE_DEBUG_DIRECTORY (CodeView / RSDS)."""
+    found: list[str] = []
+    try:
+        with path.open("rb") as handle:
+            layout = _read_pe_layout(handle)
+            if layout is None:
+                return found
+            sections, opt = layout
+            magic = int.from_bytes(opt[0:2], "little")
+            if magic == 0x10B:
+                dd = 96
+            elif magic == 0x20B:
+                dd = 112
+            else:
+                return found
+            # IMAGE_DIRECTORY_ENTRY_DEBUG = 6
+            dbg_off = dd + 6 * 8
+            if dbg_off + 8 > len(opt):
+                return found
+            rva = int.from_bytes(opt[dbg_off : dbg_off + 4], "little")
+            size = int.from_bytes(opt[dbg_off + 4 : dbg_off + 8], "little")
+            if not rva or size < 28:
+                return found
+            mapped = _pe_rva_to_offset(sections, rva)
+            if mapped is None:
+                return found
+            file_off, remain = mapped
+            handle.seek(int(file_off))
+            table = handle.read(min(int(size), int(remain), 4096))
+            for i in range(0, len(table) - 27, 28):
+                entry = table[i : i + 28]
+                dtype = int.from_bytes(entry[12:16], "little")
+                data_size = int.from_bytes(entry[16:20], "little")
+                raw_ptr = int.from_bytes(entry[24:28], "little")
+                if dtype != 2 or data_size < 25 or raw_ptr <= 0:
+                    continue
+                handle.seek(raw_ptr)
+                cv = handle.read(min(data_size, 1024))
+                pdb = _decode_rsds_pdb_path(cv, 0)
+                if pdb:
+                    found.append(pdb)
+    except OSError:
+        return found
+    return found
+
+
+def _pe_codeview_is_debug_build(path: Path) -> bool:
+    """True when this exe's own CodeView path was produced from a Debug folder."""
+    for pdb in _iter_pe_codeview_pdb_paths(path):
+        if _pdb_path_is_debug_output(pdb):
             return True
-        sibling = exe_path.with_name("OneHand.pdb")
-        return sibling.is_file()
-    except OSError:
-        return False
-
-
-def _version_is_lab_ci_debug(text: str | None) -> bool:
-    """Lab CI OneHand versions look like ``3.0.0.0+RC2+2667F2``, not ``2.0.1+RC2``."""
-    raw = (text or "").strip()
-    return bool(raw and _LAB_CI_ONEHAND_RE.search(raw))
-
-
-def _version_is_static_debug_sku(text: str | None) -> bool:
-    """Debug SKU from VERSIONINFO / sniffed version — no SlotLog, exe need not have run."""
-    raw = (text or "").strip()
-    if not raw:
-        return False
-    if _version_is_lab_ci_debug(raw):
-        return True
-    return bool(_ONEHAND_V3_DEBUG_LINE_RE.search(raw))
-
-
-def _onehand_exe_has_debug_runtime_markers(exe_path: Path) -> bool:
-    """True when Debug-only SlotLog format strings are compiled into the exe."""
-    try:
-        blob = _read_head_tail_bytes(exe_path, head=8 * 1024 * 1024, tail=2 * 1024 * 1024)
-    except OSError:
-        return False
-    return any(marker in blob for marker in _STATIC_DEBUG_MARKERS)
+    return False
 
 
 def _read_head_tail_bytes(path: Path, *, head: int, tail: int) -> bytes:
@@ -997,6 +1015,17 @@ def _blob_has_debug_sku_strings(blob: bytes) -> bool:
     return _configuration_from_strings(*parts) == "Debug"
 
 
+def _version_is_richer_ci_display(candidate: str, current: str) -> bool:
+    """True when ``candidate`` is a longer +RC+hash string than ``current``.
+
+    Used only to pick a display ProductVersion. Does not mean Debug.
+    """
+    if not candidate or not current:
+        return False
+    rich = re.compile(r"[+-]RC\d+[+-][0-9A-Fa-f]{4,}", re.IGNORECASE)
+    return bool(rich.search(candidate) and not rich.search(current))
+
+
 def _pick_display_product_version(values: list[str] | tuple[str, ...]) -> str:
     """Prefer a numeric / RC ProductVersion over a VERSIONINFO value that is only 'Debug'."""
     cleaned = [str(item).strip() for item in values if str(item).strip()]
@@ -1013,12 +1042,11 @@ def _pick_display_product_version(values: list[str] | tuple[str, ...]) -> str:
 
 
 def onehand_exe_is_debug_sku(exe_path: Path | str) -> bool:
-    """True when this OneHand.exe is the lab Debug SKU.
+    """True when this OneHand.exe is a Debug compile / Debug VERSIONINFO SKU.
 
-    Debug SKUs leave VS_FF_DEBUG unset and often ship
-    ``AssemblyConfiguration=Release``. Do not treat a populated VERSIONINFO
-    table as Release just because it lacks the word Debug — 10.0.0.98 is
-    ``3.0.0.0+RC2+2667F2`` with FileVersion numeric.
+    Version numbers (3.0.0.0, +RC2+hex), SlotLog banners, and
+    AssemblyConfiguration=Release do **not** decide this — those appear on
+    Release binaries too.
     """
     path = Path(exe_path)
     try:
@@ -1026,8 +1054,11 @@ def onehand_exe_is_debug_sku(exe_path: Path | str) -> bool:
             return True
     except OSError:
         return False
-    if _onehand_pdb_present(path):
-        return True
+    try:
+        if _pe_codeview_is_debug_build(path):
+            return True
+    except OSError:
+        pass
     try:
         if _dotnet_assembly_is_debug(path) is True:
             return True
@@ -1040,22 +1071,12 @@ def onehand_exe_is_debug_sku(exe_path: Path | str) -> bool:
     if _version_resource_is_debug(res):
         return True
     if res is not None:
-        for key in ("ProductVersion", "FileVersion", "ProductName", "FileDescription"):
-            if any(_version_is_static_debug_sku(value) for value in res.fields.get(key, ())):
-                return True
-        if _onehand_exe_has_debug_runtime_markers(path):
-            return True
         return False
     try:
         blob = _read_version_scan_bytes(path)
     except OSError:
         return False
-    if _blob_has_debug_sku_strings(blob):
-        return True
-    for key in ("ProductVersion", "FileVersion"):
-        if any(_version_is_static_debug_sku(value) for value in _all_utf16_values_after(blob, key)):
-            return True
-    return _onehand_exe_has_debug_runtime_markers(path)
+    return _blob_has_debug_sku_strings(blob)
 
 
 def _sniff_build_configuration(exe_path: Path) -> str | None:
@@ -1114,7 +1135,7 @@ def _preferred_onehand_version_text(info: _ExeVersionInfo) -> str:
 def _onehand_configuration(
     info: _ExeVersionInfo, exe_path: Path, goldclub: Path
 ) -> tuple[str, str]:
-    """Debug wins over an unset VS_FF_DEBUG bit and AssemblyConfiguration=Release."""
+    """Debug only from compile/VERSIONINFO signals, not from the version number."""
     if info.is_debug is True:
         return "Debug", "VERSIONINFO"
     labels = (
@@ -1127,39 +1148,25 @@ def _onehand_configuration(
     )
     if _configuration_from_strings(*(p or "" for p in labels)) == "Debug":
         return "Debug", "VERSIONINFO string"
-    if any(_version_is_static_debug_sku(p) for p in labels):
-        return "Debug", "OneHand 3.0 / lab CI ProductVersion"
     try:
-        sniff_pv, _sniff_pn = _sniff_exe_version_strings(exe_path)
+        if _pe_codeview_is_debug_build(exe_path):
+            return "Debug", "CodeView PDB path (Debug folder)"
     except OSError:
-        sniff_pv = ""
-    if _version_is_static_debug_sku(sniff_pv):
-        return "Debug", "sniffed OneHand 3.0 / lab CI version"
+        pass
     try:
         if _dotnet_assembly_is_debug(exe_path) is True:
             return "Debug", "DebuggableAttribute"
     except OSError:
         pass
-    if _onehand_pdb_present(exe_path):
-        return "Debug", "OneHand.pdb"
-    if _onehand_exe_has_debug_runtime_markers(exe_path):
-        return "Debug", "compiled SlotMachine v3 / i0 marker"
     try:
         if onehand_exe_is_debug_sku(exe_path):
             return "Debug", "VERSIONINFO ProductVersion/FileVersion"
     except OSError:
         pass
-    sniffed = _sniff_build_configuration(exe_path)
-    if sniffed == "Debug":
-        return "Debug", "AssemblyConfiguration"
-    # AssemblyConfiguration=Release is normal on these Debug SKUs — not decisive.
-    if info.is_debug is False and sniffed != "Debug":
-        if _dotnet_assembly_is_debug(exe_path) is False and not any(
-            _version_is_static_debug_sku(p) for p in labels
-        ):
-            return "Release", "VERSIONINFO"
-    if sniffed == "Release":
-        return "Release", "AssemblyConfiguration"
+    # AssemblyConfiguration is not a compile signal: Debug SKUs often say
+    # Release, and Release binaries contain Debug from other assemblies.
+    if info.is_debug is False:
+        return "Release", "VERSIONINFO"
     return "Release", "default"
 
 
@@ -1383,9 +1390,11 @@ def _extract_version_from_exe(exe_path: Path, *, slot_style: bool = False) -> _E
         sniff_pv, sniff_pn = _sniff_exe_version_strings(exe_path)
         if sniff_pv:
             rich = sniff_pv.strip()
+            # Display only: prefer a longer +RC+hash string over a short 3.0.0.0.
+            # Never use that richer string as a Debug/Release classifier.
             if not pv:
                 pv = rich
-            elif _version_is_lab_ci_debug(rich) and not _version_is_lab_ci_debug(pv):
+            elif _version_is_richer_ci_display(rich, pv):
                 pv = rich
         if sniff_pn and not product_name:
             product_name = sniff_pn
@@ -1411,11 +1420,7 @@ def _extract_version_from_exe(exe_path: Path, *, slot_style: bool = False) -> _E
             private_build,
             *product_versions,
         )
-        if (
-            sku_hint == "Debug"
-            or _configuration_from_strings(comments) == "Debug"
-            or _version_is_static_debug_sku(pv)
-        ):
+        if sku_hint == "Debug" or _configuration_from_strings(comments) == "Debug":
             is_debug = True
         elif is_debug is None and sku_hint == "Release":
             is_debug = False
