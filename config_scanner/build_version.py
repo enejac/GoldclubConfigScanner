@@ -1015,17 +1015,6 @@ def _blob_has_debug_sku_strings(blob: bytes) -> bool:
     return _configuration_from_strings(*parts) == "Debug"
 
 
-def _version_is_richer_ci_display(candidate: str, current: str) -> bool:
-    """True when ``candidate`` is a longer +RC+hash string than ``current``.
-
-    Used only to pick a display ProductVersion. Does not mean Debug.
-    """
-    if not candidate or not current:
-        return False
-    rich = re.compile(r"[+-]RC\d+[+-][0-9A-Fa-f]{4,}", re.IGNORECASE)
-    return bool(rich.search(candidate) and not rich.search(current))
-
-
 def _pick_display_product_version(values: list[str] | tuple[str, ...]) -> str:
     """Prefer a numeric / RC ProductVersion over a VERSIONINFO value that is only 'Debug'."""
     cleaned = [str(item).strip() for item in values if str(item).strip()]
@@ -1390,11 +1379,12 @@ def _extract_version_from_exe(exe_path: Path, *, slot_style: bool = False) -> _E
         sniff_pv, sniff_pn = _sniff_exe_version_strings(exe_path)
         if sniff_pv:
             rich = sniff_pv.strip()
-            # Display only: prefer a longer +RC+hash string over a short 3.0.0.0.
-            # Never use that richer string as a Debug/Release classifier.
-            if not pv:
-                pv = rich
-            elif _version_is_richer_ci_display(rich, pv):
+            # Display only, and only when VERSIONINFO has no real version.
+            # A 32 MB sniff otherwise picks a dependency 3.0.0.0+RC2+… and
+            # poisons a Release 2.x ProductVersion.
+            if rich and (
+                not pv or _configuration_from_strings(pv) == "Debug"
+            ) and _configuration_from_strings(rich) != "Debug":
                 pv = rich
         if sniff_pn and not product_name:
             product_name = sniff_pn
