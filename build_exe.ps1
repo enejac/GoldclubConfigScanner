@@ -22,9 +22,10 @@ if ($InstallDeps) {
 }
 
 $exe = Join-Path $PSScriptRoot "dist\ConfigScanner.exe"
-# Bake the current local minute. Never pass a made-up time.
+# Bake this machine's clock into the exe, then put the empty placeholder back.
 python -m config_scanner.build_stamp_write
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+try {
 python scripts/generate_link2win_hashes.py
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 python -m PyInstaller --noconfirm --clean ConfigScanner.spec
@@ -48,3 +49,7 @@ python -c "from datetime import date; from pathlib import Path; from config_scan
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 Write-Host "Copied tools next to ConfigScanner.exe" -ForegroundColor Green
 Write-Host ("Build complete: {0} ({1} MB)" -f $exe, $sizeMb) -ForegroundColor Green
+}
+finally {
+    python -m config_scanner.build_stamp_write --clear
+}
