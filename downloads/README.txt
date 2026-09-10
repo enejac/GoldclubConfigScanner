@@ -2,15 +2,13 @@ Config Scanner Windows builds
 ================================
 
 Latest exe: Launch-ConfigScanner.exe
-  Stamp:  2026-09-09 13:57
-  SHA256: d7a63d577c131c6819f7032f62379206b2c71780a598c040869a1257265d9306
+  Source: master e8e8a66 + OneHand Debug/Release header (e2cb2b0)
+  Stamp:  2026-09-10 06:18
+  SHA256: 2885103313db4679b9251beff8f8e2f53235815f6313ae5173d60fc66b436ea6
 
 Portable zip (exe + tools): lab_pack.zip
   Folder inside: ConfigScanner-2026-09-10\
-  SHA256: bb604a9def4ea29df653d3db249b502091be7b645c286f3c6039e7967e6e5dee
-
-Company share (copy after you sign in as gold-club\Ezbogar):
-  \\10.0.0.249\WinSystems_SLOT\_Tools\ConfigScanner
+  SHA256: 4bf933524c8dd9fda7fa8995b60a0d9580f44fb1afb7c342e030dc97a388131a
 
 Download via GitHub "Download raw file" while signed in.
 Do not use a cursor.com /opt/cursor/artifacts link.
