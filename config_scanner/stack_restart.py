@@ -70,15 +70,39 @@ def unc_host_from_target(target: str) -> str | None:
     return match.group(1) if match else None
 
 
-def find_stack_scripts() -> tuple[Path, Path] | None:
-    """Resolve Kill-All.ps1 and Run-FullStack.ps1 beside LogInvestigator."""
+def stack_script_dirs() -> tuple[Path, ...]:
+    """Folders that may hold Kill-All / Run-FullStack (USB, install, frozen bundle)."""
     root = app_install_dir()
-    candidates = (
+    dirs: list[Path] = [
         root.parent / "usb_scripts" / "roulette",
         root / "usb_scripts" / "roulette",
         root / "scripts" / "roulette",
         root / "cabinet_tools" / "roulette",
-    )
+    ]
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        meipass = Path(sys._MEIPASS)
+        dirs.extend(
+            [
+                meipass / "cabinet_tools" / "roulette",
+                meipass / "scripts" / "roulette",
+            ]
+        )
+    repo = Path(__file__).resolve().parents[1] / "cabinet_tools" / "roulette"
+    if repo not in dirs:
+        dirs.append(repo)
+    return tuple(dirs)
+
+
+def find_stack_scripts() -> tuple[Path, Path] | None:
+    """Resolve Kill-All.ps1 and Run-FullStack.ps1 (USB first, then bundled in the exe)."""
+    required = ("Kill-All.ps1", "Run-FullStack.ps1", "GoldClubServices.ps1")
+    candidates = stack_script_dirs()
+    for base in candidates:
+        try:
+            if all((base / name).is_file() for name in required):
+                return base / "Kill-All.ps1", base / "Run-FullStack.ps1"
+        except OSError:
+            continue
     kill: Path | None = None
     run: Path | None = None
     for base in candidates:
