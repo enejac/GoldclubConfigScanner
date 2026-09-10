@@ -48,6 +48,7 @@ from config_scanner.live_push import (
     CURRENCY_LABELS,
     CURRENCY_SYMBOL_CHOICES,
     DALLAS_CHOICES,
+    DEFAULT_REMOTE_LIVE_TARGET,
     DEFAULT_BETS,
     INACTIVITY_CHOICES,
     JACKPOT_COUNTERS,
@@ -56,6 +57,7 @@ from config_scanner.live_push import (
     MAGIC_WHEEL_BETS,
     MAGIC_WHEEL_LIMITS,
     MAGIC_WHEEL_SPINS,
+    THIS_PC_LIVE_TARGET,
     DallasReadResult,
     LiveLoadOutcome,
     LivePushResult,
@@ -64,6 +66,7 @@ from config_scanner.live_push import (
     default_live_cabinet_target,
     denom_combo_choices,
     goldclub_stack_kind,
+    is_default_remote_live_target,
     live_field_file_hover,
     live_field_highlight_state,
     live_field_matches,
@@ -515,7 +518,11 @@ class _LoadRunnable(QRunnable):
 
     def run(self) -> None:
         try:
-            self._emitter.finished.emit(load_live_cabinet(self._target))
+            # Default .111 / "This PC" resolve to a local Goldclub root first;
+            # explicit cabinet paths load as typed.
+            self._emitter.finished.emit(
+                load_live_cabinet(self._target, prefer_local=True)
+            )
         except Exception as exc:  # noqa: BLE001
             self._emitter.finished.emit(
                 LiveLoadOutcome(None, None, f"Cannot load cabinet: {exc}", "")
@@ -733,13 +740,19 @@ class LivePushPanel(QWidget):
 
         quick = QHBoxLayout()
         for label, path in (
-            ("This PC", r"C:\Goldclub"),
+            ("This PC", THIS_PC_LIVE_TARGET),
             ("10.0.0.90", r"\\10.0.0.90\c$\Goldclub"),
             ("10.0.0.98", r"\\10.0.0.98\c$\Goldclub"),
-            ("10.0.0.111", r"\\10.0.0.111\slot"),
+            ("10.0.0.111", DEFAULT_REMOTE_LIVE_TARGET),
         ):
             btn = QPushButton(label)
-            btn.setToolTip(f"Load cabinet at {path}")
+            if path == THIS_PC_LIVE_TARGET:
+                btn.setToolTip(
+                    "Load the Goldclub tree on this PC (unlocked G:, C:\\Goldclub, "
+                    "or a D:-H: image). Says what it looked for when none is found."
+                )
+            else:
+                btn.setToolTip(f"Load cabinet at {path}")
             btn.clicked.connect(lambda _=False, p=path: self._pick_cabinet(p))
             self._shortcut_btns.append(btn)
             quick.addWidget(btn)
@@ -1580,6 +1593,7 @@ class LivePushPanel(QWidget):
             return
         self._loaded = outcome.recipe
         self._goldclub = outcome.root
+        self._show_resolved_target(outcome.root)
         self._display_corruption = dict(outcome.display_corruption or {})
         self._set_onehand_build_label(outcome.onehand_build)
         if outcome.root is not None:
@@ -1590,6 +1604,20 @@ class LivePushPanel(QWidget):
         self._update_licence_ui(outcome.licence, goldclub=outcome.root)
         self._status.setText(outcome.status)
         self._refresh_changes()
+
+    def _show_resolved_target(self, root: Path | None) -> None:
+        """Reflect a local root the loader chose over the .111 / This PC default."""
+        if root is None:
+            return
+        current = self._path.text().strip()
+        is_this_pc = current.replace("/", "\\").rstrip("\\").casefold() == (
+            THIS_PC_LIVE_TARGET.casefold()
+        )
+        if not (is_default_remote_live_target(current) or is_this_pc):
+            return
+        chosen = str(root)
+        if chosen.casefold().rstrip("\\") != current.casefold().rstrip("\\"):
+            self._path.setText(chosen)
 
     def _set_onehand_build_label(self, info) -> None:
         label = getattr(self, "_onehand_build_label", None)

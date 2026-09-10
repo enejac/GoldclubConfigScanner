@@ -151,6 +151,90 @@ def test_default_live_target_falls_back_to_111_share(tmp_path: Path) -> None:
     assert chosen == DEFAULT_REMOTE_LIVE_TARGET
 
 
+def test_default_live_target_sweeps_image_drives_after_c() -> None:
+    from config_scanner.live_push import _LOCAL_LIVE_CANDIDATES
+
+    cands = [c.casefold() for c in _LOCAL_LIVE_CANDIDATES]
+    assert cands[0] == "g:"
+    assert cands.index(r"c:\goldclub") < cands.index(r"d:\goldclub")
+    for drive in ("d:", "e:", "f:", "h:"):
+        assert drive in cands
+        assert rf"{drive}\goldclub" in cands
+    assert not any(c.startswith("\\\\") for c in cands), "local sweep must stay local"
+
+    from config_scanner.live_push import _local_candidate_path
+
+    assert _local_candidate_path("G:") == "G:\\"
+    assert _local_candidate_path("d") == "d:\\"
+    assert _local_candidate_path(r"C:\Goldclub") == r"C:\Goldclub"
+    assert _local_candidate_path("/tmp/gold") == "/tmp/gold"
+
+
+def test_this_pc_and_111_default_resolve_local_root_first(tmp_path: Path) -> None:
+    from config_scanner.live_push import (
+        THIS_PC_LIVE_TARGET,
+        is_default_remote_live_target,
+        resolve_live_load_target,
+    )
+
+    gold = _fake_goldclub(tmp_path)
+    cands = (str(tmp_path / "missing"), str(gold))
+
+    assert is_default_remote_live_target(r"\\10.0.0.111\slot")
+    assert is_default_remote_live_target(r"//10.0.0.111/slot/")
+    assert not is_default_remote_live_target(r"\\10.0.0.90\c$\Goldclub")
+
+    target, note = resolve_live_load_target(
+        DEFAULT_REMOTE_LIVE_TARGET, prefer_local=True, local_candidates=cands
+    )
+    assert Path(target) == gold
+    assert "10.0.0.111" in note and str(gold) in note
+
+    target, note = resolve_live_load_target(
+        THIS_PC_LIVE_TARGET, prefer_local=True, local_candidates=cands
+    )
+    assert Path(target) == gold and note
+
+    # Explicit cabinet paths are never swapped.
+    explicit = r"\\10.0.0.90\c$\Goldclub"
+    assert resolve_live_load_target(explicit, prefer_local=True, local_candidates=cands) == (
+        explicit,
+        "",
+    )
+    # Without a local tree the default stays .111 (leave that).
+    assert resolve_live_load_target(
+        DEFAULT_REMOTE_LIVE_TARGET,
+        prefer_local=True,
+        local_candidates=(str(tmp_path / "missing"),),
+    ) == (DEFAULT_REMOTE_LIVE_TARGET, "")
+    assert resolve_live_load_target(
+        DEFAULT_REMOTE_LIVE_TARGET, prefer_local=False, local_candidates=cands
+    ) == (DEFAULT_REMOTE_LIVE_TARGET, "")
+
+
+def test_this_pc_without_goldclub_explains_instead_of_cmdkey(tmp_path: Path) -> None:
+    missing = tmp_path / "Goldclub"
+    root, err = prepare_live_goldclub(str(missing))
+    assert root is None
+    assert "on this PC" in err
+    assert "slot\\themes" in err
+    assert "Browse" in err
+    assert "cmdkey" not in err
+    assert err.strip(), "the Load warning must never be blank"
+
+
+def test_load_live_cabinet_prefer_local_swaps_default(tmp_path: Path, monkeypatch) -> None:
+    from config_scanner import live_push
+    from config_scanner.live_push import load_live_cabinet
+
+    gold = _fake_goldclub(tmp_path)
+    monkeypatch.setattr(live_push, "_LOCAL_LIVE_CANDIDATES", (str(gold),))
+    outcome = load_live_cabinet(DEFAULT_REMOTE_LIVE_TARGET, prefer_local=True)
+    assert outcome.error == ""
+    assert outcome.root == gold
+    assert outcome.recipe is not None
+
+
 def test_live_field_matches_bill_protocol(tmp_path: Path) -> None:
     gold = _fake_goldclub(tmp_path)
     live = load_recipe_from_goldclub(gold, label="live")

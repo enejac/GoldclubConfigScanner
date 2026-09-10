@@ -690,3 +690,83 @@ def test_create_market_writes_user_sidecar(
     assert panel._preset.currentData() == "lab_cop_live"
     assert "Created market" in panel._status.text()
 
+
+
+def test_this_pc_button_loads_local_goldclub_and_shows_its_path(
+    qt_app: QApplication, tmp_path, monkeypatch
+) -> None:
+    """'This PC' must resolve a local Goldclub root, never a blank warning."""
+    from config_scanner import live_push
+    from config_scanner.live_push import THIS_PC_LIVE_TARGET
+    from gui.live_push_panel import LivePushPanel
+    from tests.test_slot_setup import _fake_goldclub
+
+    gold = _fake_goldclub(tmp_path / "gold")
+    monkeypatch.setattr(live_push, "_LOCAL_LIVE_CANDIDATES", (str(gold),))
+    warnings: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "gui.live_push_panel.QMessageBox.warning",
+        lambda _parent, title, text, *a, **k: warnings.append((title, text)),
+    )
+
+    panel = LivePushPanel(autoload=False)
+    panel.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    panel.show()
+    qt_app.processEvents()
+
+    this_pc = next(b for b in panel._shortcut_btns if b.text() == "This PC")
+    this_pc.click()
+    assert panel._path.text() == THIS_PC_LIVE_TARGET
+    from PySide6.QtCore import QThreadPool
+
+    for _ in range(200):
+        qt_app.processEvents()
+        if not panel._busy and panel._goldclub is not None:
+            break
+        QThreadPool.globalInstance().waitForDone(50)
+    assert panel._goldclub == gold
+    assert Path(panel._path.text()) == gold
+    assert warnings == []
+
+
+def test_this_pc_button_without_goldclub_warns_with_text(
+    qt_app: QApplication, tmp_path, monkeypatch
+) -> None:
+    from config_scanner import live_push
+    from gui.live_push_panel import LivePushPanel
+
+    monkeypatch.setattr(
+        live_push, "_LOCAL_LIVE_CANDIDATES", (str(tmp_path / "nothing"),)
+    )
+    monkeypatch.setattr(live_push, "THIS_PC_LIVE_TARGET", str(tmp_path / "Goldclub"))
+    monkeypatch.setattr(
+        "gui.live_push_panel.THIS_PC_LIVE_TARGET", str(tmp_path / "Goldclub")
+    )
+    warnings: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "gui.live_push_panel.QMessageBox.warning",
+        lambda _parent, title, text, *a, **k: warnings.append((title, text)),
+    )
+
+    panel = LivePushPanel(autoload=False)
+    panel.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    panel.show()
+    qt_app.processEvents()
+    panel._pick_cabinet(str(tmp_path / "Goldclub"))
+    from PySide6.QtCore import QThreadPool
+
+    for _ in range(200):
+        qt_app.processEvents()
+        if not panel._busy and panel._status.text() not in {
+            "Connecting to cabinet…",
+            "",
+        }:
+            break
+        QThreadPool.globalInstance().waitForDone(50)
+    assert warnings, "a missing local tree must raise a Load warning"
+    title, text = warnings[-1]
+    assert title == "Load"
+    assert text.strip()
+    assert "on this PC" in text
+    assert "cmdkey" not in text
+    assert panel._status.text().strip()

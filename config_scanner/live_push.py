@@ -1749,14 +1749,25 @@ def cabinet_host_reachable(target: str, *, timeout_sec: float = 2.0) -> tuple[bo
     )
 
 
-# Local Goldclub roots first (cabinet running the exe). Prefer unlocked G: before C:,
-# but never block the UI on a locked BitLocker G: (probe with a short timeout).
-_LOCAL_LIVE_CANDIDATES: tuple[str, ...] = (
-    r"G:",
-    r"C:\Goldclub",
-    r"C:\goldclub",
-    r"C:\Goldclub\slot",
-)
+def _local_live_candidates() -> tuple[str, ...]:
+    """Local Goldclub roots, cabinet volume first, then the same drives the
+    Config Scanner tab sweeps for a slot repo (no full alphabet sweep).
+
+    Order: unlocked ``G:`` (BitLocker game volume), ``C:\\Goldclub`` and its
+    ``slot`` child, then ``D:``..``H:`` image/USB roots and their ``Goldclub``
+    folders. Bare drive roots are probed with a short timeout so a locked
+    volume never blocks the UI.
+    """
+    out: list[str] = [r"G:", r"C:\Goldclub", r"C:\goldclub", r"C:\Goldclub\slot"]
+    for drive in ("D:", "E:", "F:", "H:"):
+        out.append(drive)
+        out.append(rf"{drive}\Goldclub")
+        out.append(rf"{drive}\Goldclub\slot")
+    return tuple(out)
+
+
+_LOCAL_LIVE_CANDIDATES: tuple[str, ...] = _local_live_candidates()
+THIS_PC_LIVE_TARGET = r"C:\Goldclub"
 DEFAULT_REMOTE_LIVE_TARGET = r"\\10.0.0.111\slot"
 
 
@@ -1780,15 +1791,28 @@ def _exists_quick(path: Path, *, timeout_sec: float = 0.3) -> bool:
     return box["ok"]
 
 
+def _is_bare_drive(text: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z]:?", text))
+
+
+def _local_candidate_path(raw: str) -> str:
+    """``G:`` -> ``G:\\`` so Path never treats it as drive-relative to the cwd."""
+    text = str(raw).strip()
+    if _is_bare_drive(text):
+        return text.rstrip(":") + ":\\"
+    return text
+
+
 def _local_goldclub_ready(raw: str) -> bool:
     """True when the path looks like a usable unlocked Goldclub tree."""
     try:
         text = str(raw).replace("/", "\\").rstrip("\\")
-        # Locked BitLocker G: can hang Path.exists for minutes — bail fast.
-        if text.upper() in {"G:", "G"}:
-            if not _exists_quick(Path(r"G:\Bootstrap.exe"), timeout_sec=0.25):
-                return False
-        root = goldclub_root_from_target(raw)
+        bare_drive = _is_bare_drive(text)
+        # Locked BitLocker / sleeping removable drives can hang Path.exists for
+        # minutes — bail fast on bare drive roots.
+        if bare_drive and not _exists_quick(Path(text + "\\"), timeout_sec=0.25):
+            return False
+        root = goldclub_root_from_target(_local_candidate_path(raw))
         if not looks_like_goldclub_root(root):
             return False
         if text.upper() in {"G:", "G"}:
@@ -1798,6 +1822,28 @@ def _local_goldclub_ready(raw: str) -> bool:
         return True
     except (OSError, TimeoutError, ValueError):
         return False
+
+
+def resolve_local_live_goldclub(
+    local_candidates: tuple[str, ...] | None = None,
+) -> Path | None:
+    """First local Goldclub root this PC can see, or ``None`` on a workstation."""
+    for raw in local_candidates if local_candidates is not None else _LOCAL_LIVE_CANDIDATES:
+        if not _local_goldclub_ready(raw):
+            continue
+        try:
+            root = goldclub_root_from_target(_local_candidate_path(raw))
+        except (OSError, TimeoutError, ValueError):
+            continue
+        if looks_like_goldclub_root(root):
+            return root
+    return None
+
+
+def is_default_remote_live_target(raw: str) -> bool:
+    """True when *raw* is the shipped ``\\\\10.0.0.111\\slot`` default (any case/slashes)."""
+    norm = (raw or "").strip().replace("/", "\\").rstrip("\\").casefold()
+    return norm == DEFAULT_REMOTE_LIVE_TARGET.casefold()
 
 
 def default_live_cabinet_target(
@@ -1814,16 +1860,40 @@ def default_live_cabinet_target(
     """
     from config_scanner.build_version import prefer_local_scan_target
 
-    for raw in local_candidates if local_candidates is not None else _LOCAL_LIVE_CANDIDATES:
-        if not _local_goldclub_ready(raw):
-            continue
-        try:
-            root = goldclub_root_from_target(raw)
-        except (OSError, TimeoutError, ValueError):
-            continue
-        if looks_like_goldclub_root(root):
-            return prefer_local_scan_target(str(root))
+    root = resolve_local_live_goldclub(local_candidates)
+    if root is not None:
+        return prefer_local_scan_target(str(root))
     return prefer_local_scan_target(remote)
+
+
+def resolve_live_load_target(
+    raw: str,
+    *,
+    prefer_local: bool,
+    local_candidates: tuple[str, ...] | None = None,
+) -> tuple[str, str]:
+    """Target to actually load plus a note when it was swapped for a local root.
+
+    The shipped default stays ``\\\\10.0.0.111\\slot``; when *prefer_local* is
+    set and the field still holds that default (or the ``This PC`` shortcut),
+    a valid local Goldclub tree wins so a cabinet running the exe never reads
+    another EGM's share by accident.
+    """
+    text = (raw or "").strip()
+    if not prefer_local or not text:
+        return text, ""
+    is_this_pc = text.replace("/", "\\").rstrip("\\").casefold() == (
+        THIS_PC_LIVE_TARGET.casefold()
+    )
+    if not (is_default_remote_live_target(text) or is_this_pc):
+        return text, ""
+    root = resolve_local_live_goldclub(local_candidates)
+    if root is None:
+        return text, ""
+    chosen = str(root)
+    if chosen.casefold().rstrip("\\") == text.casefold().rstrip("\\"):
+        return text, ""
+    return chosen, f"Local Goldclub found at {chosen}; using it instead of {text}."
 
 
 def live_field_matches(live: SlotSetupRecipe, form: SlotSetupRecipe) -> dict[str, bool]:
@@ -2673,6 +2743,18 @@ def prepare_live_goldclub(target: str) -> tuple[Path | None, str]:
     return _probe_live_goldclub(raw, host, retry_auth=True)
 
 
+def _local_goldclub_missing_message(raw: str) -> str:
+    """Explain a missing local Goldclub tree without the UNC/cmdkey advice."""
+    looked = ", ".join(
+        cand for cand in _LOCAL_LIVE_CANDIDATES if not cand.casefold().endswith("\\slot")
+    )
+    return (
+        f"No Goldclub tree at {raw} on this PC (need slot\\themes or slot\\OneHand.exe).\n"
+        f"Also looked in: {looked}.\n"
+        "Use Browse… to pick the Goldclub folder, or a cabinet button for a lab EGM."
+    )
+
+
 def _probe_live_goldclub(
     raw: str, host: str | None, *, retry_auth: bool
 ) -> tuple[Path | None, str]:
@@ -2697,6 +2779,8 @@ def _probe_live_goldclub(
             return None, (
                 f"Folder exists but is not a Goldclub root (need slot\\themes):\n{root}"
             )
+        if not host:
+            return None, _local_goldclub_missing_message(raw)
         return None, (
             f"Cannot reach {raw}. Store the lab login (cmdkey) and check the cabinet is on."
         )
@@ -2726,9 +2810,16 @@ class LiveLoadOutcome:
     onehand_build: OneHandBuildInfo | None = None
 
 
-def load_live_cabinet(target: str) -> LiveLoadOutcome:
-    """Load a cabinet recipe. Never raises — dead shares return an error string."""
+def load_live_cabinet(target: str, *, prefer_local: bool = False) -> LiveLoadOutcome:
+    """Load a cabinet recipe. Never raises — dead shares return an error string.
+
+    With *prefer_local*, the shipped ``\\\\10.0.0.111\\slot`` default and the
+    ``This PC`` shortcut are first resolved against local Goldclub roots.
+    """
     try:
+        target, swapped = resolve_live_load_target(target, prefer_local=prefer_local)
+        if swapped:
+            _lp_log(swapped)
         root, err = prepare_live_goldclub(target)
         if root is None:
             return LiveLoadOutcome(None, None, err, "")
