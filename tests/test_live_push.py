@@ -679,6 +679,73 @@ def test_slot_start_script_falls_back_to_start_process() -> None:
     assert "OneHand did not start after Bootstrap" in script
 
 
+def test_game_start_exe_candidates_for_c_dollar_slot() -> None:
+    from config_scanner.live_push import game_start_exe_candidates
+
+    found = game_start_exe_candidates(
+        r"\\10.0.0.98\c$\Goldclub\slot",
+        dest=r"\\10.0.0.98\c$\Goldclub\slot",
+    )
+    assert r"C:\Goldclub\slot\game-start.exe" in found
+    assert r"G:\slot\game-start.exe" in found
+    gold_root = game_start_exe_candidates(
+        r"\\10.0.0.98\c$\Goldclub",
+        dest=r"\\10.0.0.98\c$\Goldclub",
+    )
+    assert r"C:\Goldclub\slot\game-start.exe" in gold_root
+
+
+def test_slot_start_script_release_uses_game_start_not_onehand() -> None:
+    from config_scanner.live_push import _slot_start_script
+
+    script = _slot_start_script(
+        (r"C:\Goldclub\slot\game-start.exe",),
+        launcher="game-start",
+    )
+    assert r"C:\Goldclub\slot\game-start.exe" in script
+    assert "game-start.exe not found" in script
+    assert "OneHand did not start after game-start" in script
+    assert "OneHand did not start after Bootstrap" not in script
+    assert "Bootstrap.exe did not start" not in script
+    assert "Get-Process -Name Bootstrap" not in script
+    assert "-FilePath OneHand.exe" not in script
+    assert "-Execute OneHand.exe" not in script
+
+
+def test_slot_start_launcher_release_vs_debug(monkeypatch, tmp_path: Path) -> None:
+    from config_scanner.build_version import OneHandBuildInfo
+    from config_scanner.live_push import slot_start_launcher
+
+    gold = tmp_path / "Goldclub"
+    gold.mkdir()
+    monkeypatch.setattr(
+        "config_scanner.live_push.detect_onehand_build",
+        lambda _r: OneHandBuildInfo(version="2.0.1", configuration="Release"),
+    )
+    monkeypatch.setattr(
+        "config_scanner.live_push.goldclub_root_from_target",
+        lambda _p: gold,
+    )
+    assert slot_start_launcher(str(gold)) == "game-start"
+    monkeypatch.setattr(
+        "config_scanner.live_push.detect_onehand_build",
+        lambda _r: OneHandBuildInfo(version="2.0.1", configuration="Debug"),
+    )
+    assert slot_start_launcher(str(gold)) == "bootstrap"
+
+
+def test_watchdog_release_starts_game_start() -> None:
+    from config_scanner.live_push import _slot_bootstrap_watchdog_script
+
+    wd = _slot_bootstrap_watchdog_script(
+        (r"G:\slot\game-start.exe",),
+        launcher="game-start",
+    )
+    assert r"G:\slot\game-start.exe" in wd
+    assert "OneHand,game-start" in wd
+    assert "Bootstrap,OneHand" not in wd
+
+
 def test_live_push_changed_sections_maps_labels() -> None:
     from config_scanner.live_push import live_push_changed_sections
 

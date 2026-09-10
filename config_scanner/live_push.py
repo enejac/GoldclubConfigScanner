@@ -1025,17 +1025,123 @@ def bootstrap_exe_candidates(
     return _unique(found)
 
 
-def _slot_start_script(candidates: tuple[str, ...]) -> str:
+def game_start_exe_candidates(
+    scan_target: str, dest: Path | str | None = None
+) -> tuple[str, ...]:
+    """Cabinet-local slot\\game-start.exe paths (Release OneHand launcher)."""
+    found = [
+        r"G:\slot\game-start.exe",
+        r"C:\goldclub\slot\game-start.exe",
+        r"C:\Goldclub\slot\game-start.exe",
+    ]
+    text = str(dest or scan_target or "").replace("/", "\\")
+    host = unc_host_from_target(scan_target) or unc_host_from_target(text)
+    if host and text:
+        marker = rf"\\{host}\c$".casefold()
+        low = text.casefold()
+        if low.startswith(marker):
+            rest = text[len(rf"\\{host}\c$") :].lstrip("\\")
+            rest_norm = rest.rstrip("\\")
+            if rest_norm:
+                if rest_norm.casefold() == "slot" or rest_norm.casefold().endswith(
+                    "\\slot"
+                ):
+                    found.insert(0, rf"C:\{rest_norm}\game-start.exe")
+                else:
+                    found.insert(0, rf"C:\{rest_norm}\slot\game-start.exe")
+        elif low.rstrip("\\").endswith("\\slot"):
+            found.insert(0, r"C:\goldclub\slot\game-start.exe")
+    return _unique(found)
+
+
+def slot_start_launcher(
+    scan_target: str, dest: Path | str | None = None
+) -> str:
+    """``game-start`` for Release OneHand, ``bootstrap`` for Debug."""
+    raw = dest or scan_target
+    try:
+        root = goldclub_root_from_target(raw)
+    except (OSError, TypeError, ValueError):
+        root = Path(str(raw or ""))
+    try:
+        info = detect_onehand_build(root)
+    except (OSError, TypeError, ValueError):
+        info = None
+    cfg = ((info.configuration if info else "") or "").strip().casefold()
+    if cfg == "debug":
+        return "bootstrap"
+    return "game-start"
+
+
+def slot_start_candidates(
+    scan_target: str,
+    dest: Path | str | None = None,
+    *,
+    launcher: str | None = None,
+) -> tuple[str, ...]:
+    kind = (launcher or slot_start_launcher(scan_target, dest)).strip().casefold()
+    if kind == "game-start":
+        return game_start_exe_candidates(scan_target, dest)
+    return bootstrap_exe_candidates(scan_target, dest)
+
+
+def _slot_start_script(
+    candidates: tuple[str, ...],
+    *,
+    launcher: str = "bootstrap",
+) -> str:
     quoted = ", ".join("'" + c.replace("'", "''") + "'" for c in candidates)
     tried = "; ".join(candidates)
-    return textwrap.dedent(
+    kind = (launcher or "bootstrap").strip().casefold()
+    if kind == "game-start":
+        missing = f"game-start.exe not found. Tried: {tried}"
+        start_fail = "Could not start game-start.exe"
+        after_start = """
+        Start-Sleep -Seconds 5
+        $deadline = (Get-Date).AddSeconds(60)
+        $oh = $null
+        do {
+            $oh = Get-Process -Name OneHand -ErrorAction SilentlyContinue
+            if ($oh) { break }
+            Start-Sleep -Seconds 1
+        } while ((Get-Date) -lt $deadline)
+        if (-not $oh) {
+            if (Get-Process -Name BiOS2 -ErrorAction SilentlyContinue) {
+                throw 'Live Push started BiOS2 menu instead of OneHand'
+            }
+            throw 'OneHand did not start after game-start'
+        }
+        """
+    else:
+        missing = f"Bootstrap.exe not found. Tried: {tried}"
+        start_fail = "Could not start Bootstrap.exe"
+        after_start = """
+        Start-Sleep -Seconds 5
+        if (-not (Get-Process -Name Bootstrap -ErrorAction SilentlyContinue)) {
+            throw 'Bootstrap.exe did not start'
+        }
+        $deadline = (Get-Date).AddSeconds(45)
+        $oh = $null
+        do {
+            $oh = Get-Process -Name OneHand -ErrorAction SilentlyContinue
+            if ($oh) { break }
+            Start-Sleep -Seconds 1
+        } while ((Get-Date) -lt $deadline)
+        if (-not $oh) {
+            if (Get-Process -Name BiOS2 -ErrorAction SilentlyContinue) {
+                throw 'Live Push started BiOS2 menu instead of OneHand'
+            }
+            throw 'OneHand did not start after Bootstrap'
+        }
+        """
+    head = textwrap.dedent(
         f"""
         $ErrorActionPreference = 'Stop'
         $exe = $null
         foreach ($c in @({quoted})) {{
             if (Test-Path -LiteralPath $c) {{ $exe = $c; break }}
         }}
-        if (-not $exe) {{ throw 'Bootstrap.exe not found. Tried: {tried}' }}
+        if (-not $exe) {{ throw '{missing}' }}
         $dir = Split-Path -Parent $exe
         $started = $false
         try {{
@@ -1054,42 +1160,35 @@ def _slot_start_script(candidates: tuple[str, ...]) -> str:
             Start-Process -FilePath $exe -WorkingDirectory $dir
             $started = $true
         }}
-        if (-not $started) {{ throw 'Could not start Bootstrap.exe' }}
-        Start-Sleep -Seconds 5
-        if (-not (Get-Process -Name Bootstrap -ErrorAction SilentlyContinue)) {{
-            throw 'Bootstrap.exe did not start'
-        }}
-        $deadline = (Get-Date).AddSeconds(45)
-        $oh = $null
-        do {{
-            $oh = Get-Process -Name OneHand -ErrorAction SilentlyContinue
-            if ($oh) {{ break }}
-            Start-Sleep -Seconds 1
-        }} while ((Get-Date) -lt $deadline)
-        if (-not $oh) {{
-            if (Get-Process -Name BiOS2 -ErrorAction SilentlyContinue) {{
-                throw 'Live Push started BiOS2 menu instead of OneHand'
-            }}
-            throw 'OneHand did not start after Bootstrap'
-        }}
-        "OK $exe"
+        if (-not $started) {{ throw '{start_fail}' }}
         """
     ).strip()
+    tail = textwrap.dedent(after_start).strip()
+    return head + "\n" + tail + '\n        "OK $exe"'
 
 
 _SLOT_WATCHDOG_MARKER = "GoldClub-LivePush-Watchdog"
 
 
-def _slot_bootstrap_watchdog_script(candidates: tuple[str, ...]) -> str:
-    """Detached starter: if Apply dies after kill, still launch Bootstrap."""
+def _slot_bootstrap_watchdog_script(
+    candidates: tuple[str, ...],
+    *,
+    launcher: str = "bootstrap",
+) -> str:
+    """Detached starter: if Apply dies after kill, still launch the game."""
     quoted = ", ".join("'" + c.replace("'", "''") + "'" for c in candidates)
+    kind = (launcher or "bootstrap").strip().casefold()
+    if kind == "game-start":
+        game_names = "OneHand,game-start"
+    else:
+        game_names = "Bootstrap,OneHand"
     return textwrap.dedent(
         f"""
         # {_SLOT_WATCHDOG_MARKER}
         $ErrorActionPreference = 'SilentlyContinue'
         $deadline = (Get-Date).AddMinutes(10)
         while ((Get-Date) -lt $deadline) {{
-            $game = Get-Process -Name Bootstrap,OneHand -ErrorAction SilentlyContinue
+            $game = Get-Process -Name {game_names} -ErrorAction SilentlyContinue
             if ($game) {{ exit 0 }}
             $tool = @(Get-Process -Name ConfigScanner,LogInvestigator -ErrorAction SilentlyContinue)
             $py = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {{
@@ -1098,7 +1197,7 @@ def _slot_bootstrap_watchdog_script(candidates: tuple[str, ...]) -> str:
             }})
             if ($tool.Count -gt 0 -or $py.Count -gt 0) {{ Start-Sleep -Seconds 5; continue }}
             Start-Sleep -Seconds 8
-            $game = Get-Process -Name Bootstrap,OneHand -ErrorAction SilentlyContinue
+            $game = Get-Process -Name {game_names} -ErrorAction SilentlyContinue
             if ($game) {{ exit 0 }}
             $exe = $null
             foreach ($c in @({quoted})) {{
@@ -1135,8 +1234,10 @@ def _arm_slot_bootstrap_watchdog(
         return
     if not _slot_target_is_local(scan_target) or not running_on_egm():
         return
+    launcher = slot_start_launcher(scan_target, dest)
     script = _slot_bootstrap_watchdog_script(
-        bootstrap_exe_candidates(scan_target, dest)
+        slot_start_candidates(scan_target, dest, launcher=launcher),
+        launcher=launcher,
     )
     path = Path(tempfile.gettempdir()) / "GoldClub-LivePush-Watchdog.ps1"
     try:
@@ -1456,6 +1557,8 @@ def _short_fail(detail: str) -> str:
     text = (detail or "").strip()
     if not text:
         return "unknown error"
+    if "game-start.exe not found" in text:
+        return "game-start.exe did not start on the cabinet."
     if "Bootstrap.exe not found" in text:
         return "Bootstrap.exe did not start on the cabinet."
     return text.splitlines()[0][:240]
@@ -2734,14 +2837,20 @@ def run_slot_stack_kill(scan_target: str) -> tuple[bool, str]:
 def run_slot_stack_start(
     scan_target: str, dest: Path | str | None = None
 ) -> tuple[bool, str]:
-    """Start Bootstrap.exe in the console session on the target cabinet."""
-    candidates = bootstrap_exe_candidates(scan_target, dest)
-    script = _slot_start_script(candidates)
+    """Start the slot game in the console session on the target cabinet.
+
+    Release OneHand: ``slot\\game-start.exe`` (never OneHand.exe directly).
+    Debug OneHand: ``Bootstrap.exe`` (unchanged).
+    """
+    launcher = slot_start_launcher(scan_target, dest)
+    candidates = slot_start_candidates(scan_target, dest, launcher=launcher)
+    script = _slot_start_script(candidates, launcher=launcher)
     local = _slot_target_is_local(scan_target)
     _lp_log(
-        f"slot start local={local} target={scan_target!r} dest={dest!r} "
-        f"candidates={candidates}"
+        f"slot start local={local} launcher={launcher} target={scan_target!r} "
+        f"dest={dest!r} candidates={candidates}"
     )
+    noun = "game-start" if launcher == "game-start" else "Bootstrap"
     if local:
         ok, detail = _run_local_powershell(script, timeout=150)
         _lp_log(f"slot start local result ok={ok} {detail}")
@@ -2760,7 +2869,7 @@ def run_slot_stack_start(
     blob = ((result.stdout or "") + (result.stderr or "")).strip()
     _lp_log(f"slot start remote host={host} exit={result.returncode} {blob[:800]}")
     if result.returncode == 0:
-        return True, blob or f"Bootstrap started on {host}"
+        return True, blob or f"{noun} started on {host}"
     return False, blob or f"Slot start failed on {host} (exit {result.returncode})"
 
 
@@ -3191,6 +3300,11 @@ def commit_live_push(
     stack_started = False
     ramclear_ran = False
     ramclear_detail = ""
+    start_noun = (
+        "game-start"
+        if use_slot and slot_start_launcher(plan_src, dest) == "game-start"
+        else "Bootstrap"
+    )
     if (
         use_slot
         and ramclear_reasons
@@ -3207,8 +3321,9 @@ def commit_live_push(
         _lp_log(f"ramclear ok={ok_rc} {ramclear_detail[:400]}")
         if not ok_rc:
             errors = (
-                "Settings written, but RAM clear failed — Bootstrap was not "
-                f"started: {_short_fail(ramclear_detail)} (log: {log_path})",
+                "Settings written, but RAM clear failed — "
+                f"{start_noun} was not started: {_short_fail(ramclear_detail)} "
+                f"(log: {log_path})",
             )
 
     if use_slot and effective_restart and not errors:
@@ -3219,24 +3334,24 @@ def commit_live_push(
         if not ok_hw:
             errors = (
                 "Settings written, but GoldClub Hardware Subsystem is not "
-                f"Running — Bootstrap was not started: {_short_fail(hw_detail)} "
+                f"Running — {start_noun} was not started: {_short_fail(hw_detail)} "
                 f"(log: {log_path})",
             )
 
     if use_slot and effective_restart and not errors:
-        _emit(progress, "Ensuring game is stopped before Bootstrap…")
+        _emit(progress, f"Ensuring game is stopped before {start_noun}…")
         ok_stop, stop_detail = run_slot_stack_kill(plan_src)
         stack_detail = f"{stack_detail}\n{stop_detail}".strip()
-        _lp_log(f"pre-bootstrap kill ok={ok_stop} {stop_detail[:400]}")
+        _lp_log(f"pre-start kill ok={ok_stop} {stop_detail[:400]}")
         if not ok_stop:
             errors = (
                 "Settings written, but OneHand/Bootstrap was still running — "
-                f"Bootstrap was not started: {_short_fail(stop_detail)} "
+                f"{start_noun} was not started: {_short_fail(stop_detail)} "
                 f"(log: {log_path})",
             )
 
     if use_slot and effective_restart and not errors:
-        _emit(progress, "Starting Bootstrap on the cabinet…")
+        _emit(progress, f"Starting {start_noun} on the cabinet…")
         ok, start_detail = run_slot_stack_start(plan_src, dest=dest)
         stack_started = ok
         stack_detail = f"{stack_detail}\n{start_detail}".strip()
