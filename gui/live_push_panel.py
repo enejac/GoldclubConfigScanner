@@ -685,7 +685,8 @@ class LivePushPanel(QWidget):
             "font-size: 13px; font-weight: 600; color: #9ecbff; padding-left: 12px;"
         )
         self._onehand_build_label.setToolTip(
-            "OneHand.exe ProductVersion and Debug/Release detected from the loaded cabinet."
+            "OneHand.exe VERSIONINFO ProductVersion / FileVersion "
+            "(Debug SKU, not the PE VS_FF_DEBUG bit) from the loaded cabinet."
         )
         self._onehand_build_label.hide()
         head.addWidget(self._onehand_build_label)
@@ -1613,7 +1614,11 @@ class LivePushPanel(QWidget):
         label.setStyleSheet(
             f"font-size: 13px; font-weight: 600; color: {color}; padding-left: 12px;"
         )
-        tip = f"Detected from {getattr(info, 'exe_path', '') or 'OneHand.exe'}"
+        exe = getattr(info, "exe_path", "") or "OneHand.exe"
+        why = (getattr(info, "source", "") or "").strip()
+        tip = f"Detected from {exe}"
+        if why:
+            tip += f" ({why})"
         label.setToolTip(tip)
         label.setText(text)
         label.show()

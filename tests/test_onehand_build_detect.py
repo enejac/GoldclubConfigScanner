@@ -7,12 +7,39 @@ from types import SimpleNamespace
 
 from config_scanner.build_version import (
     OneHandBuildInfo,
+    _all_utf16_values_after,
     _configuration_from_strings,
+    _find_onehand_exe,
     _read_pe_debug_flag,
+    _read_version_resource,
     _sniff_build_configuration,
     detect_onehand_build,
     format_onehand_build_label,
+    onehand_exe_is_debug_sku,
 )
+
+
+def _utf16_pair(key: str, value: str) -> bytes:
+    return (key + "\0").encode("utf-16le") + value.encode("utf-16le") + b"\x00\x00"
+
+
+def _version_info_blob(**strings: str) -> bytes:
+    """Loose VS_VERSIONINFO window the resource parser accepts."""
+    body = b"".join(_utf16_pair(key, value) for key, value in strings.items())
+    payload = (
+        "VS_VERSION_INFO".encode("utf-16le")
+        + b"\x00\x00"
+        + b"\xbd\x04\xef\xfe"
+        + (0x00010000).to_bytes(4, "little")
+        + (0x00020000).to_bytes(4, "little")  # 2.0
+        + (0x00010000).to_bytes(4, "little")  # 1.0
+        + b"\x00" * 8
+        + (0x3F).to_bytes(4, "little")
+        + (0x00).to_bytes(4, "little")  # FileFlags: no VS_FF_DEBUG
+        + body
+    )
+    header = (len(payload) + 6).to_bytes(2, "little") + b"\x00\x00\x00\x00"
+    return header + payload
 
 
 def test_onehand_build_info_label() -> None:
@@ -144,6 +171,125 @@ def test_detect_onehand_build_debug_from_sku_bytes(tmp_path: Path, monkeypatch) 
     assert info is not None
     assert info.configuration == "Debug"
     assert "2.0.1" in info.version
+
+
+def test_all_utf16_values_after_skips_earlier_numeric_product_version() -> None:
+    blob = (
+        _utf16_pair("ProductVersion", "3.0.0.0+RC2+2667F2")
+        + b"\x00" * 16
+        + _utf16_pair("ProductVersion", "Debug")
+    )
+    assert _all_utf16_values_after(blob, "ProductVersion") == (
+        "3.0.0.0+RC2+2667F2",
+        "Debug",
+    )
+
+
+def test_debug_sku_from_versioninfo_past_first_4mb(tmp_path: Path) -> None:
+    gold = tmp_path / "Goldclub"
+    slot = gold / "slot"
+    slot.mkdir(parents=True)
+    exe = slot / "OneHand.exe"
+    prefix = (
+        b"MZ"
+        + _utf16_pair("ProductVersion", "3.0.0.0+RC2+2667F2")
+        + "AssemblyConfiguration".encode("utf-16le")
+        + b"\x00\x00"
+        + "Release".encode("utf-16le")
+        + b"\x00" * (5 * 1024 * 1024)
+    )
+    exe.write_bytes(prefix + _version_info_blob(ProductVersion="Debug", FileVersion="3.0.0.0"))
+    info = detect_onehand_build(gold)
+    assert info is not None
+    assert info.configuration == "Debug"
+    assert info.exe_path.endswith("OneHand.exe")
+    assert "slot" in info.exe_path.replace("\\", "/")
+
+
+def test_debug_sku_from_fileversion_string_when_productversion_is_rc(tmp_path: Path) -> None:
+    """10.0.0.98-style Debug SKU: RC ProductVersion, FileVersion=Debug, VS_FF_DEBUG unset."""
+    gold = tmp_path / "Goldclub"
+    slot = gold / "slot"
+    slot.mkdir(parents=True)
+    exe = slot / "OneHand.exe"
+    exe.write_bytes(
+        b"MZ"
+        + "AssemblyConfiguration".encode("utf-16le")
+        + b"\x00\x00"
+        + "Release".encode("utf-16le")
+        + _version_info_blob(
+            ProductVersion="3.0.0.0+RC2+2667F2",
+            FileVersion="Debug",
+            FileDescription="OneHand",
+        )
+    )
+    assert onehand_exe_is_debug_sku(exe) is True
+    info = detect_onehand_build(gold)
+    assert info is not None
+    assert info.configuration == "Debug"
+    assert "3.0.0.0+RC2+2667F2" in (info.version or "")
+    assert "Release" not in info.label
+    assert info.label.endswith("Debug")
+
+
+def test_prefers_slot_onehand_over_root_release_copy(tmp_path: Path) -> None:
+    gold = tmp_path / "Goldclub"
+    slot = gold / "slot"
+    slot.mkdir(parents=True)
+    (gold / "OneHand.exe").write_bytes(
+        b"MZ" + _version_info_blob(ProductVersion="3.0.0.0+RC2+2667F2", FileDescription="OneHand Release")
+    )
+    (slot / "OneHand.exe").write_bytes(
+        b"MZ" + _version_info_blob(ProductVersion="Debug", FileVersion="3.0.0.0")
+    )
+    assert _find_onehand_exe(gold) == slot / "OneHand.exe"
+    info = detect_onehand_build(gold)
+    assert info is not None
+    assert info.configuration == "Debug"
+    assert Path(info.exe_path) == slot / "OneHand.exe"
+
+
+def test_release_versioninfo_stays_release_when_assembly_is_release(tmp_path: Path) -> None:
+    gold = tmp_path / "Goldclub"
+    slot = gold / "slot"
+    slot.mkdir(parents=True)
+    (slot / "OneHand.exe").write_bytes(
+        b"MZ"
+        + "AssemblyConfiguration".encode("utf-16le")
+        + b"\x00\x00"
+        + "Release".encode("utf-16le")
+        + _version_info_blob(ProductVersion="2.1.0", FileDescription="OneHand")
+    )
+    info = detect_onehand_build(gold)
+    assert info is not None
+    assert info.configuration == "Release"
+
+
+def test_read_version_resource_finds_debug_sku(tmp_path: Path) -> None:
+    exe = tmp_path / "OneHand.exe"
+    exe.write_bytes(b"MZ" + _version_info_blob(ProductVersion="Debug", ProductName="OneHand"))
+    res = _read_version_resource(exe)
+    assert res is not None
+    assert "Debug" in res.fields.get("ProductVersion", ())
+
+
+def test_slot_start_launcher_uses_bootstrap_for_rc_debug_sku(tmp_path: Path) -> None:
+    from config_scanner.live_push import slot_start_launcher
+
+    gold = tmp_path / "Goldclub"
+    slot = gold / "slot"
+    slot.mkdir(parents=True)
+    (slot / "OneHand.exe").write_bytes(
+        b"MZ"
+        + "AssemblyConfiguration".encode("utf-16le")
+        + b"\x00\x00"
+        + "Release".encode("utf-16le")
+        + _version_info_blob(
+            ProductVersion="3.0.0.0+RC2+2667F2",
+            FileVersion="Debug",
+        )
+    )
+    assert slot_start_launcher(str(gold), dest=gold) == "bootstrap"
 
 
 def test_detect_onehand_build_release_from_pe_flag(tmp_path: Path, monkeypatch) -> None:
