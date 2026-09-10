@@ -61,7 +61,11 @@ from config_scanner.live_push import (
     LivePushResult,
     commit_live_push,
     currency_symbol_for,
+    THIS_PC_GOLDCLUB,
+    THIS_PC_MISSING_STATUS,
     default_live_cabinet_target,
+    load_error_dialog_text,
+    this_pc_live_target,
     denom_combo_choices,
     goldclub_stack_kind,
     live_field_file_hover,
@@ -733,14 +737,21 @@ class LivePushPanel(QWidget):
 
         quick = QHBoxLayout()
         for label, path in (
-            ("This PC", r"C:\Goldclub"),
+            ("This PC", THIS_PC_GOLDCLUB),
             ("10.0.0.90", r"\\10.0.0.90\c$\Goldclub"),
             ("10.0.0.98", r"\\10.0.0.98\c$\Goldclub"),
             ("10.0.0.111", r"\\10.0.0.111\slot"),
         ):
             btn = QPushButton(label)
-            btn.setToolTip(f"Load cabinet at {path}")
-            btn.clicked.connect(lambda _=False, p=path: self._pick_cabinet(p))
+            if label == "This PC":
+                btn.setToolTip(
+                    "Load G: or C:\\Goldclub when this machine is a cabinet. "
+                    "No popup if there is no local Goldclub tree."
+                )
+                btn.clicked.connect(self._pick_this_pc)
+            else:
+                btn.setToolTip(f"Load cabinet at {path}")
+                btn.clicked.connect(lambda _=False, p=path: self._pick_cabinet(p))
             self._shortcut_btns.append(btn)
             quick.addWidget(btn)
         quick.addSpacing(18)
@@ -1528,9 +1539,26 @@ class LivePushPanel(QWidget):
         self._status.setText("Reading live cabinet…")
         self._load()
 
+    def _pick_this_pc(self) -> None:
+        """Load the local cabinet tree, or say so without an empty Load dialog."""
+        local = this_pc_live_target()
+        if not local:
+            self._path.setText(THIS_PC_GOLDCLUB)
+            self._status.setText(THIS_PC_MISSING_STATUS)
+            return
+        self._pick_cabinet(local)
+
     def _pick_cabinet(self, path: str) -> None:
         self._path.setText(path)
         self._load()
+
+    def _warn_load(self, text: str) -> None:
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Load")
+        box.setTextFormat(Qt.TextFormat.PlainText)
+        box.setText(load_error_dialog_text(text))
+        box.exec()
 
     def _browse(self) -> None:
         start = self._path.text().strip() or r"C:\Goldclub"
@@ -1546,7 +1574,7 @@ class LivePushPanel(QWidget):
             return
         raw = self._path.text().strip()
         if not raw:
-            QMessageBox.warning(self, "Load", "Enter a cabinet Goldclub path.")
+            self._warn_load("Enter a cabinet Goldclub path.")
             return
         self._set_busy(True)
         self._status.setText("Connecting to cabinet…")
@@ -1568,9 +1596,9 @@ class LivePushPanel(QWidget):
             self._set_onehand_build_label(None)
             return
         if outcome.error or outcome.recipe is None:
-            msg = outcome.error or "Cannot load cabinet."
+            msg = load_error_dialog_text(outcome.error)
             if not silent:
-                QMessageBox.warning(self, "Load", msg)
+                self._warn_load(msg)
             self._status.setText(msg)
             self._goldclub = None
             self._display_corruption = {}
