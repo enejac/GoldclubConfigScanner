@@ -273,6 +273,58 @@ def test_read_version_resource_finds_debug_sku(tmp_path: Path) -> None:
     assert "Debug" in res.fields.get("ProductVersion", ())
 
 
+def test_v3_rc_hex_is_debug_without_debug_word_or_slotlog(tmp_path: Path) -> None:
+    """10.0.0.98 live shape: 3.0.0.0+RC2+2667F2, AssemblyConfiguration=Release.
+
+    SlotLog ``SlotMachine v3.0.0.0`` is evidence the SKU is Debug, but the
+    exe must classify that way before OneHand has ever been started.
+    """
+    from config_scanner.live_push import slot_start_launcher
+    from config_scanner.slot_setup import is_onehand_debug_build
+
+    gold = tmp_path / "Goldclub"
+    slot = gold / "slot"
+    slot.mkdir(parents=True)
+    (slot / "OneHand.exe").write_bytes(
+        b"MZ"
+        + "AssemblyConfiguration".encode("utf-16le")
+        + b"\x00\x00"
+        + "Release".encode("utf-16le")
+        + _version_info_blob(
+            ProductVersion="3.0.0.0+RC2+2667F2",
+            FileVersion="3.0.0.0",
+            FileDescription="OneHand",
+        )
+    )
+    assert not (gold / "var" / "log").exists()
+    info = detect_onehand_build(gold)
+    assert info is not None
+    assert info.configuration == "Debug"
+    assert "3.0.0.0+RC2+2667F2" in (info.version or "")
+    assert info.label.endswith("Debug")
+    assert is_onehand_debug_build(gold) is True
+    assert slot_start_launcher(str(gold), dest=gold) == "bootstrap"
+
+
+def test_slotmachine_v3_banner_in_exe_is_debug_without_running(tmp_path: Path) -> None:
+    gold = tmp_path / "Goldclub"
+    slot = gold / "slot"
+    slot.mkdir(parents=True)
+    (slot / "OneHand.exe").write_bytes(
+        b"MZ"
+        + "AssemblyConfiguration".encode("utf-16le")
+        + b"\x00\x00"
+        + "Release".encode("utf-16le")
+        + "SlotMachine v3.0.0.0".encode("utf-16le")
+        + "Static initialization (i0)".encode("ascii")
+        + _version_info_blob(ProductVersion="3.0.0.0", FileDescription="OneHand")
+    )
+    info = detect_onehand_build(gold)
+    assert info is not None
+    assert info.configuration == "Debug"
+    assert "3.0.0" in (info.version or "")
+
+
 def test_slot_start_launcher_uses_bootstrap_for_rc_debug_sku(tmp_path: Path) -> None:
     from config_scanner.live_push import slot_start_launcher
 
