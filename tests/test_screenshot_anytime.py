@@ -10,7 +10,7 @@ import pytest
 def _import_qt():
     pytest.importorskip("PySide6")
     try:
-        from PySide6.QtCore import QEvent, Qt
+        from PySide6.QtCore import QEvent, QPoint, Qt
         from PySide6.QtGui import QKeyEvent
         from PySide6.QtWidgets import (
             QApplication,
@@ -21,11 +21,21 @@ def _import_qt():
         )
     except ImportError as exc:
         pytest.skip(f"PySide6 Qt plugins unavailable: {exc}")
-    return QEvent, Qt, QKeyEvent, QApplication, QLabel, QMainWindow, QMessageBox, QPushButton
+    return (
+        QEvent,
+        QPoint,
+        Qt,
+        QKeyEvent,
+        QApplication,
+        QLabel,
+        QMainWindow,
+        QMessageBox,
+        QPushButton,
+    )
 
 
 def test_is_screenshot_key_matches_global_shortcuts() -> None:
-    QEvent, Qt, QKeyEvent, *_rest = _import_qt()
+    QEvent, _QPoint, Qt, QKeyEvent, *_rest = _import_qt()
     from gui.screenshot_hotkey import is_screenshot_key
 
     f12 = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_F12, Qt.KeyboardModifier.NoModifier)
@@ -43,7 +53,7 @@ def test_is_screenshot_key_matches_global_shortcuts() -> None:
 
 
 def test_message_box_is_screenshot_target() -> None:
-    _QEvent, Qt, _QKeyEvent, QApplication, QLabel, _QMainWindow, QMessageBox, _QPushButton = (
+    _QEvent, _QPoint, Qt, _QKeyEvent, QApplication, QLabel, _QMainWindow, QMessageBox, _QPush = (
         _import_qt()
     )
     from gui.screenshot_hotkey import is_screenshot_target_dialog
@@ -58,11 +68,37 @@ def test_message_box_is_screenshot_target() -> None:
     app.processEvents()
 
 
-def test_decorate_message_box_adds_button_without_touching_dialog() -> None:
-    _QEvent, Qt, _QKeyEvent, QApplication, _QLabel, QMainWindow, QMessageBox, QPushButton = (
+def test_corner_tool_sits_on_main_bottom_right_not_dialog() -> None:
+    _QEvent, QPoint, Qt, _QKeyEvent, QApplication, _QLabel, QMainWindow, QMessageBox, _QPush = (
         _import_qt()
     )
-    from gui.screenshot_hotkey import OVERLAY_BUTTON_NAME, AnytimeScreenshot
+    from gui.screenshot_hotkey import corner_tool_screen_pos
+    app = QApplication.instance() or QApplication([])
+    win = QMainWindow()
+    win.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    win.setGeometry(100, 80, 800, 600)
+    win.show()
+    app.processEvents()
+    pos = corner_tool_screen_pos(win, 90, 28, margin=8)
+    frame = win.frameGeometry()
+    assert pos.x() == frame.right() - 90 - 8
+    assert pos.y() == frame.bottom() - 28 - 8
+    # Must not use a dialog's top-right (that was the mid-UI SAS hover).
+    box = QMessageBox(win)
+    box.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    box.setGeometry(220, 200, 360, 160)
+    box.show()
+    app.processEvents()
+    dialog_top_right = QPoint(box.frameGeometry().right() - 90, box.frameGeometry().top() - 32)
+    assert pos != dialog_top_right
+    win.close()
+
+
+def test_modal_does_not_inject_screenshot_into_message_box() -> None:
+    _QEvent, _QPoint, Qt, _QKeyEvent, QApplication, _QLabel, QMainWindow, QMessageBox, QPushButton = (
+        _import_qt()
+    )
+    from gui.screenshot_hotkey import TOOL_BUTTON_NAME, AnytimeScreenshot
 
     app = QApplication.instance() or QApplication([])
     win = QMainWindow()
@@ -73,54 +109,11 @@ def test_decorate_message_box_adds_button_without_touching_dialog() -> None:
     box.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
     box.setText("Cabinet warning")
     box.setStandardButtons(QMessageBox.StandardButton.Ok)
-    modality_before = box.windowModality()
     box.show()
-    app.processEvents()
-    size_before = box.size()
-    guard.decorate_dialog(box)
-    app.processEvents()
-    button = box.findChild(QPushButton, OVERLAY_BUTTON_NAME)
-    assert button is not None
-    assert button.text() == "Screenshot"
-    assert button.parent() is box, "button must live inside the dialog, not float"
-    assert box.rect().contains(button.geometry())
-    ok = box.button(QMessageBox.StandardButton.Ok)
-    assert ok is not None
-    from PySide6.QtCore import QRect
-
-    ok_rect = QRect(ok.parentWidget().mapTo(box, ok.pos()), ok.size())
-    assert not button.geometry().intersects(ok_rect)
-    assert box.windowModality() == modality_before
-    assert box.size() == size_before
-    floating = [
-        w
-        for w in app.topLevelWidgets()
-        if w not in (win, box) and w.findChild(QPushButton, OVERLAY_BUTTON_NAME) is not None
-    ]
-    assert not floating, "no floating top-level Screenshot window may be created"
-    guard.shutdown()
-    win.close()
-
-
-def test_shown_dialog_is_decorated_after_its_own_show_pass() -> None:
-    _QEvent, Qt, _QKeyEvent, QApplication, _QLabel, QMainWindow, QMessageBox, QPushButton = (
-        _import_qt()
-    )
-    from gui.screenshot_hotkey import OVERLAY_BUTTON_NAME, AnytimeScreenshot
-
-    app = QApplication.instance() or QApplication([])
-    win = QMainWindow()
-    win.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
-    win.show()
-    guard = AnytimeScreenshot(win)
-    box = QMessageBox(win)
-    box.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
-    box.setText("Load failed")
-    box.show()
-    assert box.findChild(QPushButton, OVERLAY_BUTTON_NAME) is None
     for _ in range(5):
         app.processEvents()
-    assert box.findChild(QPushButton, OVERLAY_BUTTON_NAME) is not None
+    assert box.findChild(QPushButton, TOOL_BUTTON_NAME) is None
+    assert guard._tool.isVisible()
     guard.shutdown()
     win.close()
 
@@ -128,10 +121,10 @@ def test_shown_dialog_is_decorated_after_its_own_show_pass() -> None:
 def test_hotkey_captures_while_warning_is_open(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _QEvent, Qt, _QKeyEvent, QApplication, _QLabel, QMainWindow, QMessageBox, QPushButton = (
+    _QEvent, _QPoint, Qt, _QKeyEvent, QApplication, _QLabel, QMainWindow, QMessageBox, QPushButton = (
         _import_qt()
     )
-    from gui.screenshot_hotkey import OVERLAY_BUTTON_NAME, AnytimeScreenshot
+    from gui.screenshot_hotkey import TOOL_BUTTON_NAME, AnytimeScreenshot
 
     app = QApplication.instance() or QApplication([])
     saved = tmp_path / "from-hotkey.png"
@@ -149,9 +142,9 @@ def test_hotkey_captures_while_warning_is_open(
     box.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
     box.setText("crash?")
     box.show()
-    app.processEvents()
-    guard.decorate_dialog(box)
-    button = box.findChild(QPushButton, OVERLAY_BUTTON_NAME)
+    for _ in range(5):
+        app.processEvents()
+    button = guard._tool.findChild(QPushButton, TOOL_BUTTON_NAME)
     assert button is not None
     button.click()
     app.processEvents()
@@ -162,7 +155,6 @@ def test_hotkey_captures_while_warning_is_open(
 
 
 def test_window_and_hotkey_module_wire_anytime_capture() -> None:
-    # Source-level check so it also runs where PySide6 is not installed.
     SCREENSHOT_SHORTCUT = "Ctrl+Shift+S"
     SCREENSHOT_F12 = "F12"
 
@@ -186,9 +178,8 @@ def test_window_and_hotkey_module_wire_anytime_capture() -> None:
     assert "grab_all_screens" in grab
     assert "composite_widget_grabs" in grab
     assert 'QPushButton("Screenshot"' in hotkey
-    # The floating always-on-top tool window used to land mid-UI above the
-    # dialog and the modality rewrite left QMessageBox bodies blank.
+    assert "corner_tool_screen_pos" in hotkey
+    assert "pin_to_main_bottom_right" in hotkey
+    assert "decorate_dialog" not in hotkey
+    assert "overlay_button_rect" not in hotkey
     assert "setWindowModality" not in hotkey
-    assert "WindowStaysOnTopHint" not in hotkey
-    assert "set_window_always_on_top" not in hotkey
-    assert "Qt.WindowType.Tool" not in hotkey
