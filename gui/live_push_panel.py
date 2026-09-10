@@ -49,6 +49,7 @@ from config_scanner.live_push import (
     CURRENCY_SYMBOL_CHOICES,
     DALLAS_CHOICES,
     DEFAULT_BETS,
+    DEFAULT_REMOTE_LIVE_TARGET,
     INACTIVITY_CHOICES,
     JACKPOT_COUNTERS,
     JACKPOT_LAYOUTS,
@@ -68,6 +69,7 @@ from config_scanner.live_push import (
     this_pc_live_target,
     denom_combo_choices,
     goldclub_stack_kind,
+    is_default_remote_live_target,
     live_field_file_hover,
     live_field_highlight_state,
     live_field_matches,
@@ -519,7 +521,11 @@ class _LoadRunnable(QRunnable):
 
     def run(self) -> None:
         try:
-            self._emitter.finished.emit(load_live_cabinet(self._target))
+            # Default .111 / "This PC" resolve to a local Goldclub root first;
+            # explicit cabinet paths load as typed.
+            self._emitter.finished.emit(
+                load_live_cabinet(self._target, prefer_local=True)
+            )
         except Exception as exc:  # noqa: BLE001
             self._emitter.finished.emit(
                 LiveLoadOutcome(None, None, f"Cannot load cabinet: {exc}", "")
@@ -740,7 +746,7 @@ class LivePushPanel(QWidget):
             ("This PC", THIS_PC_GOLDCLUB),
             ("10.0.0.90", r"\\10.0.0.90\c$\Goldclub"),
             ("10.0.0.98", r"\\10.0.0.98\c$\Goldclub"),
-            ("10.0.0.111", r"\\10.0.0.111\slot"),
+            ("10.0.0.111", DEFAULT_REMOTE_LIVE_TARGET),
         ):
             btn = QPushButton(label)
             if label == "This PC":
@@ -1608,6 +1614,7 @@ class LivePushPanel(QWidget):
             return
         self._loaded = outcome.recipe
         self._goldclub = outcome.root
+        self._show_resolved_target(outcome.root)
         self._display_corruption = dict(outcome.display_corruption or {})
         self._set_onehand_build_label(outcome.onehand_build)
         if outcome.root is not None:
@@ -1618,6 +1625,20 @@ class LivePushPanel(QWidget):
         self._update_licence_ui(outcome.licence, goldclub=outcome.root)
         self._status.setText(outcome.status)
         self._refresh_changes()
+
+    def _show_resolved_target(self, root: Path | None) -> None:
+        """Reflect the local root the loader chose over the .111 / This PC default."""
+        if root is None:
+            return
+        current = self._path.text().strip()
+        is_this_pc = current.replace("/", "\\").rstrip("\\").casefold() == (
+            THIS_PC_GOLDCLUB.casefold()
+        )
+        if not (is_default_remote_live_target(current) or is_this_pc):
+            return
+        chosen = str(root)
+        if chosen.casefold().rstrip("\\") != current.casefold().rstrip("\\"):
+            self._path.setText(chosen)
 
     def _set_onehand_build_label(self, info) -> None:
         label = getattr(self, "_onehand_build_label", None)
