@@ -1,3 +1,3 @@
-# Placeholder only. build_stamp_write.py fills this with datetime.now()
-# at exe build time, then build_exe.ps1 clears it again so git stays empty.
-BUILD_STAMP = ""
+# Written by build_stamp_write.py at exe build time.
+# Do not edit this time by hand.
+BUILD_STAMP = '2026-09-10 17:37'
