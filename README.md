@@ -10,11 +10,13 @@ GitHub will not download a 62 MB file from the **blob** page (the floppy-disk ic
 
 While signed in, open:
 
-https://github.com/enejac/GoldclubConfigScanner/raw/master/downloads/Launch-ConfigScanner.exe
+https://github.com/enejac/GoldclubConfigScanner/raw/master/downloads/ConfigScanner.exe
 
-That is the **View raw** link. Or: **Code → Download ZIP**, then take `downloads\Launch-ConfigScanner.exe`.
+That is the **View raw** link. Or: **Code → Download ZIP**, then take `downloads\ConfigScanner.exe`.
 
-Stamp: **2026-09-10 06:18**. Keep repo `tools\` next to the exe.
+The file on disk is **ConfigScanner.exe**. Windows Properties / Task Manager should show Product name **Config Scanner** (not a leftover browser Save-As name such as `CursorUserSetup-x64-…`).
+
+Stamp: **2026-09-10 09:52**. Keep repo `tools\` next to the exe.
 
 ## Run from source
 
