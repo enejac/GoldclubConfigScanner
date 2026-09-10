@@ -10,7 +10,11 @@ from config_scanner.live_push import (
     LIVE_FIELD_TOOLTIP_CHANGED,
     LIVE_FIELD_TOOLTIP_MATCH,
     commit_live_push,
+    THIS_PC_GOLDCLUB,
+    THIS_PC_MISSING_STATUS,
     default_live_cabinet_target,
+    load_error_dialog_text,
+    this_pc_live_target,
     goldclub_stack_kind,
     live_field_file_hover,
     live_field_highlight_state,
@@ -149,6 +153,27 @@ def test_default_live_target_falls_back_to_111_share(tmp_path: Path) -> None:
         remote=DEFAULT_REMOTE_LIVE_TARGET,
     )
     assert chosen == DEFAULT_REMOTE_LIVE_TARGET
+
+
+def test_this_pc_live_target_none_when_not_a_cabinet(tmp_path: Path) -> None:
+    missing = tmp_path / "no-goldclub"
+    assert this_pc_live_target(local_candidates=(str(missing),)) is None
+    assert "Goldclub" in THIS_PC_MISSING_STATUS
+    assert THIS_PC_GOLDCLUB == r"C:\Goldclub"
+
+
+def test_this_pc_live_target_finds_local_goldclub(tmp_path: Path) -> None:
+    gold = _fake_goldclub(tmp_path)
+    assert Path(this_pc_live_target(local_candidates=(str(gold),))) == gold
+
+
+def test_load_error_dialog_text_never_blank() -> None:
+    assert load_error_dialog_text("") == "Cannot load cabinet."
+    assert load_error_dialog_text("   \n") == "Cannot load cabinet."
+    assert load_error_dialog_text(None) == "Cannot load cabinet."
+    assert load_error_dialog_text("Folder exists but is not a Goldclub root") == (
+        "Folder exists but is not a Goldclub root"
+    )
 
 
 def test_live_field_matches_bill_protocol(tmp_path: Path) -> None:
