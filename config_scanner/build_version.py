@@ -467,16 +467,13 @@ class OneHandBuildInfo:
 
 
 def _read_pe_debug_flag(win32api: object, exe_str: str) -> bool | None:
-    """True when VS_FF_DEBUG is set; False when version info says not debug; else None."""
+    """True when VS_FF_DEBUG is set. Unset is unknown (OneHand Debug SKUs leave it 0)."""
     try:
         info = win32api.GetFileVersionInfo(exe_str, "\\")
         flags = int(info.get("FileFlags") or 0)
-        mask = int(info.get("FileFlagsMask") or 0)
-        if mask & _VS_FF_DEBUG:
-            return bool(flags & _VS_FF_DEBUG)
         if flags & _VS_FF_DEBUG:
             return True
-        return False
+        return None
     except Exception:
         return None
 
@@ -520,7 +517,11 @@ def _configuration_from_strings(*parts: str) -> str | None:
 
 
 def _sniff_build_configuration(exe_path: Path) -> str | None:
-    """Best-effort Debug/Release from UTF-16 strings when PE flags are absent."""
+    """Best-effort Debug/Release from AssemblyConfiguration when PE flags are absent.
+
+    Do not classify from a stray ``Release`` in the first 8 MB — Debug .NET
+    binaries always contain that word from other assemblies.
+    """
     try:
         with exe_path.open("rb") as handle:
             blob = handle.read(8 * 1024 * 1024)
@@ -529,30 +530,73 @@ def _sniff_build_configuration(exe_path: Path) -> str | None:
     if not blob:
         return None
     text = blob.decode("utf-16le", errors="ignore")
-    # Prefer .NET AssemblyConfiguration when present (avoids random "Debugger" hits).
-    asm = re.search(
-        r"AssemblyConfiguration.{0,48}?\b(Debug|Release)\b",
+    configs = re.findall(
+        r"AssemblyConfiguration.{0,80}?\b(Debug|Release)\b",
         text,
         re.IGNORECASE | re.DOTALL,
     )
-    if asm:
-        return "Debug" if asm.group(1).casefold() == "debug" else "Release"
-    # Prefer Release when both words appear — Debug builds usually set VS_FF_DEBUG.
-    has_release = bool(re.search(r"(?<![A-Za-z])Release(?![A-Za-z])", text))
-    has_debug = bool(re.search(r"(?<![A-Za-z])Debug(?![A-Za-z])", text))
-    if has_release and not has_debug:
-        return "Release"
-    if has_debug and not has_release:
+    if not configs:
+        return None
+    if any(token.casefold() == "debug" for token in configs):
         return "Debug"
-    if has_release:
-        return "Release"
-    return None
+    return "Release"
 
 
 def format_onehand_build_label(info: OneHandBuildInfo | None) -> str:
     if info is None:
         return ""
     return info.label
+
+
+def _preferred_onehand_version_text(info: _ExeVersionInfo) -> str:
+    """Numeric ProductVersion/FileVersion; skip a VERSIONINFO value that is only 'Debug'."""
+    candidates = (
+        info.product_version,
+        info.display_version,
+        info.file_version,
+    )
+    numeric: list[str] = []
+    for raw in candidates:
+        text = (raw or "").strip()
+        if text and re.search(r"\d+\.\d+", text):
+            numeric.append(text)
+    if numeric:
+        return numeric[0]
+    for raw in candidates:
+        text = (raw or "").strip()
+        if text and _configuration_from_strings(text) != "Debug":
+            return text
+    return ""
+
+
+def _onehand_configuration(
+    info: _ExeVersionInfo, exe_path: Path, goldclub: Path
+) -> str:
+    """Debug wins over an unset VS_FF_DEBUG bit (OneHand Debug SKUs leave it 0)."""
+    if info.is_debug is True:
+        return "Debug"
+    labels = (
+        info.product_version,
+        info.file_version,
+        info.product_name,
+        info.display_version,
+        exe_path.name,
+    )
+    if _configuration_from_strings(*(p or "" for p in labels)) == "Debug":
+        return "Debug"
+    try:
+        from config_scanner.slot_setup import is_onehand_debug_build
+
+        if is_onehand_debug_build(goldclub):
+            return "Debug"
+    except Exception:
+        pass
+    sniffed = _sniff_build_configuration(exe_path)
+    if sniffed == "Debug":
+        return "Debug"
+    if info.is_debug is False or sniffed == "Release":
+        return "Release"
+    return "Release"
 
 
 def detect_onehand_build(goldclub: Path | str) -> OneHandBuildInfo | None:
@@ -562,10 +606,7 @@ def detect_onehand_build(goldclub: Path | str) -> OneHandBuildInfo | None:
     if exe_path is None:
         return None
     info = _extract_version_from_onehand_exe(exe_path)
-    version = (
-        (info.product_version or info.display_version or info.file_version or "")
-        .strip()
-    )
+    version = _preferred_onehand_version_text(info)
     if not version:
         # SlotLog fallback for cabinets whose PE resources are stripped.
         try:
@@ -578,17 +619,7 @@ def detect_onehand_build(goldclub: Path | str) -> OneHandBuildInfo | None:
                     version = core.lstrip("v")
         except OSError:
             pass
-    configuration = "Unknown"
-    if info.is_debug is True:
-        configuration = "Debug"
-    elif info.is_debug is False:
-        configuration = "Release"
-    else:
-        sniffed = _configuration_from_strings(info.product_name or "") or (
-            _sniff_build_configuration(exe_path)
-        )
-        if sniffed:
-            configuration = sniffed
+    configuration = _onehand_configuration(info, exe_path, root)
     if not version and configuration == "Unknown":
         return None
     return OneHandBuildInfo(
@@ -735,7 +766,14 @@ def _extract_version_from_exe(exe_path: Path, *, slot_style: bool = False) -> _E
             )
             extra_strings = " ".join(
                 _read_pe_string_field(win32api, exe_str, field, lang_cp)
-                for field in ("SpecialBuild", "PrivateBuild", "Comments", "FileDescription")
+                for field in (
+                    "SpecialBuild",
+                    "PrivateBuild",
+                    "Comments",
+                    "FileDescription",
+                    "OriginalFilename",
+                    "InternalName",
+                )
             )
 
         pv = str(product_version).strip()
@@ -757,13 +795,14 @@ def _extract_version_from_exe(exe_path: Path, *, slot_style: bool = False) -> _E
         else:
             display = pv or file_version
 
-        # When PE FileFlags omit VS_FF_DEBUG, SpecialBuild / Comments may still say Debug.
-        if is_debug is None:
-            hinted = _configuration_from_strings(product_name or "", extra_strings)
-            if hinted == "Debug":
-                is_debug = True
-            elif hinted == "Release":
-                is_debug = False
+        # VS_FF_DEBUG is often 0 on OneHand Debug SKUs; VERSIONINFO strings win.
+        hinted = _configuration_from_strings(
+            pv, file_version or "", product_name or "", extra_strings
+        )
+        if hinted == "Debug":
+            is_debug = True
+        elif is_debug is None and hinted == "Release":
+            is_debug = False
 
         return _ExeVersionInfo(
             product_version=pv or None,
