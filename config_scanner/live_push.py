@@ -53,6 +53,7 @@ from config_scanner.slot_setup import (
     normalize_mei_bill_tokens_for_currency,
     read_display_mode,
     recipe_from_jurisdiction_profile,
+    sas_channel_flags_differ,
     LIMIT_SETUP_FIELDS,
     SAS_CHANNEL_FIELDS,
     _resolve_goldclub_rel,
@@ -2558,7 +2559,8 @@ def load_live_cabinet(target: str) -> LiveLoadOutcome:
 
 def _run_local_powershell(script: str, *, timeout: int) -> tuple[bool, str]:
     """Run a script via -EncodedCommand so $vars are not eaten by -Command."""
-    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+    wrapped = "$ProgressPreference = 'SilentlyContinue'\n" + script
+    encoded = base64.b64encode(wrapped.encode("utf-16-le")).decode("ascii")
     run_kw: dict = {
         "capture_output": True,
         "text": True,
@@ -2583,7 +2585,9 @@ def _run_local_powershell(script: str, *, timeout: int) -> tuple[bool, str]:
         return False, f"timed out after {timeout}s"
     except OSError as exc:
         return False, str(exc)
-    blob = ((result.stdout or "") + (result.stderr or "")).strip()
+    blob = _strip_powershell_noise(
+        ((result.stdout or "") + (result.stderr or "")).strip()
+    )
     if result.returncode == 0:
         return True, blob or "OK"
     detail = f"exit {result.returncode}"
@@ -2640,6 +2644,46 @@ def apply_aurum_hostname_for_live_push(
         network_hostname_template=machine,
     )
     return updated
+
+
+def live_push_will_write_aurum_setup(
+    dest: Path,
+    recipe: SlotSetupRecipe,
+    sections: frozenset[str] | None,
+) -> bool:
+    """True when this commit will stage AurumSetup.xml (hostname / currency / channels)."""
+    if sections is None or "aurum" in sections:
+        return True
+    return "sas" in sections and sas_channel_flags_differ(dest, recipe.sas)
+
+
+def ensure_aurum_setup_windows_hostname(dest: Path, scan_target: str) -> None:
+    """Patch live AurumSetup host tokens in place before Aurum reloads the file."""
+    machine = resolve_cabinet_windows_hostname(scan_target)
+    if not machine:
+        _lp_log("aurum host ensure skipped: no Windows hostname")
+        return
+    from config_scanner.cabinet_repairs import (
+        find_aurum_setup_xml,
+        rewrite_aurum_host_tokens,
+    )
+
+    setup = find_aurum_setup_xml(dest)
+    if setup is None:
+        return
+    changed, detail = rewrite_aurum_host_tokens(setup, machine, backup=True)
+    _lp_log(f"aurum host ensure changed={changed} {detail}")
+
+
+_CLIXML_MARK = "#< CLIXML"
+
+
+def _strip_powershell_noise(blob: str) -> str:
+    """Drop CLIXML progress records PowerShell writes to stderr."""
+    text = blob or ""
+    if _CLIXML_MARK in text:
+        text = text.split(_CLIXML_MARK, 1)[0]
+    return text.strip()
 
 
 def _slot_target_is_local(scan_target: str) -> bool:
@@ -3050,7 +3094,7 @@ def commit_live_push(
     staged_files: list[str] = []
     try:
         _emit(progress, "Building settings pack…")
-        if sections is None or "aurum" in sections:
+        if live_push_will_write_aurum_setup(dest, recipe, sections):
             recipe = apply_aurum_hostname_for_live_push(recipe, plan_src)
         build_config_pack(recipe, dest, pack_dir, sections=sections)
         pack_recipe = load_pack_recipe(pack_dir / "recipe.json")
@@ -3126,6 +3170,12 @@ def commit_live_push(
     finally:
         if work_parent is None:
             shutil.rmtree(parent, ignore_errors=True)
+
+    if kind == "slot" and written:
+        try:
+            ensure_aurum_setup_windows_hostname(dest, plan_src)
+        except Exception as exc:  # noqa: BLE001
+            _lp_log(f"aurum host ensure failed: {exc}")
 
     if want_licences:
         _emit(progress, "Copying missing licence files…")
