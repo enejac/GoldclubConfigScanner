@@ -695,7 +695,7 @@ class LivePushPanel(QWidget):
             "cabinet and will be written on apply. Red = invalid, or corrupt display "
             "text (weird '?' / non-ASCII — hover for why). Right-click a setting to "
             "open its config file in Notepad. Apply stops OneHand, writes files, "
-            "starts Bootstrap."
+            "then starts Bootstrap (Debug) or game-start (Release)."
         )
         blurb.setWordWrap(True)
         blurb.setStyleSheet("color: #999;")
@@ -1150,7 +1150,8 @@ class LivePushPanel(QWidget):
         self._restart.setChecked(True)
         self._restart.setToolTip(
             "After writing configs: stop OneHand if needed, then start Bootstrap "
-            "so the new settings take effect. Turn off only if you will restart manually."
+            "(Debug) or slot\\game-start.exe (Release) so the new settings take "
+            "effect. Turn off only if you will restart manually."
         )
         self._restart.toggled.connect(self._sync_commit_button)
         self._full_pack = QCheckBox("Write full pack")
@@ -2752,13 +2753,14 @@ class LivePushPanel(QWidget):
             self._commit.setText("Apply & restart game")
             self._commit.setToolTip(
                 "Write the orange (changed) fields to the cabinet, stop the game, "
-                "then start Bootstrap so settings take effect. Red fields block Apply."
+                "then start Bootstrap (Debug) or game-start (Release) so settings "
+                "take effect. Red fields block Apply."
             )
         else:
             self._commit.setText("Apply")
             self._commit.setToolTip(
                 "Write the orange (changed) fields to the cabinet without restarting "
-                "the game. Turn on Restart game after write if you want Bootstrap started. "
+                "the game. Turn on Restart game after write if you want the game started. "
                 "Red fields block Apply."
             )
 
@@ -2812,7 +2814,8 @@ class LivePushPanel(QWidget):
         effective_restart = restart or force_restart
         if effective_restart and kind == "slot":
             extra = (
-                "\n\nOneHand will stop, the files will be written, then Bootstrap starts. "
+                "\n\nOneHand will stop, the files will be written, then Bootstrap "
+                "(Debug) or slot\\game-start.exe (Release) starts. "
                 "Windows will not reboot."
             )
             if force_restart and not restart:
