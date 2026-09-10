@@ -5,14 +5,14 @@ from __future__ import annotations
 import sys
 from typing import Any, Callable
 
-from PySide6.QtCore import QEvent, QObject, Qt, QTimer
+from PySide6.QtCore import QEvent, QObject, QRect, Qt, QTimer
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
+    QDialogButtonBox,
     QMessageBox,
     QPushButton,
-    QVBoxLayout,
     QWidget,
 )
 
@@ -21,7 +21,7 @@ from config_scanner.ui_screenshot import save_widget_screenshot
 SCREENSHOT_SHORTCUT = "Ctrl+Shift+S"
 SCREENSHOT_F12 = "F12"
 OVERLAY_BUTTON_NAME = "csAnytimeScreenshot"
-TOOL_WINDOW_NAME = "csAnytimeScreenshotTool"
+OVERLAY_MARGIN = 8
 
 _WIN_HOTKEY_CTRL_SHIFT_S = 0x4353
 _WIN_HOTKEY_F12 = 0x4354
@@ -51,16 +51,8 @@ def is_screenshot_key(event: Any) -> bool:
     )
 
 
-def _is_our_chrome(obj: Any) -> bool:
-    try:
-        name = obj.objectName()
-    except Exception:
-        return False
-    return name in {OVERLAY_BUTTON_NAME, TOOL_WINDOW_NAME}
-
-
 def is_screenshot_target_dialog(obj: Any) -> bool:
-    if obj is None or _is_our_chrome(obj):
+    if obj is None:
         return False
     if isinstance(obj, QMessageBox):
         return True
@@ -69,52 +61,40 @@ def is_screenshot_target_dialog(obj: Any) -> bool:
     return False
 
 
-def place_overlay_button(dialog: QWidget, button: QPushButton) -> None:
-    margin = 8
+def overlay_button_rect(dialog: QWidget, button: QPushButton) -> QRect:
+    """Bottom-left corner of *dialog*; top-right if the dialog's own buttons sit there.
+
+    A ``QMessageBox`` keeps its icon and text at the top and right-aligns its
+    OK/Cancel row at the bottom, so bottom-left is the one corner that stays
+    empty. The button is a child of the dialog, so it is never blocked by the
+    dialog's modality and never floats over the main window.
+    """
     button.adjustSize()
-    button.move(max(margin, dialog.width() - button.width() - margin), margin)
+    size = button.size()
+    bottom_left = QRect(
+        OVERLAY_MARGIN,
+        max(OVERLAY_MARGIN, dialog.height() - size.height() - OVERLAY_MARGIN),
+        size.width(),
+        size.height(),
+    )
+    for box in dialog.findChildren(QDialogButtonBox):
+        if not box.isVisible():
+            continue
+        for own in box.buttons():
+            own_rect = QRect(box.mapTo(dialog, own.pos()), own.size())
+            if own.isVisible() and own_rect.intersects(bottom_left):
+                return QRect(
+                    max(OVERLAY_MARGIN, dialog.width() - size.width() - OVERLAY_MARGIN),
+                    OVERLAY_MARGIN,
+                    size.width(),
+                    size.height(),
+                )
+    return bottom_left
+
+
+def place_overlay_button(dialog: QWidget, button: QPushButton) -> None:
+    button.setGeometry(overlay_button_rect(dialog, button))
     button.raise_()
-
-
-class _ScreenshotToolButton(QWidget):
-    """Sibling of the main window so WindowModal warnings cannot block it."""
-
-    def __init__(self, on_click: Callable[[], None]) -> None:
-        super().__init__(
-            None,
-            Qt.WindowType.Tool
-            | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.FramelessWindowHint,
-        )
-        self.setObjectName(TOOL_WINDOW_NAME)
-        self.setWindowTitle("Screenshot")
-        self.setAttribute(Qt.WidgetAttribute.WA_QuitOnClose, False)
-        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
-        button = QPushButton("Screenshot", self)
-        button.setObjectName(OVERLAY_BUTTON_NAME)
-        button.setToolTip(
-            "Save a PNG of the app and any warning on top (F12 / Ctrl+Shift+S)."
-        )
-        button.clicked.connect(on_click)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.addWidget(button)
-        self.adjustSize()
-
-    def place_above(self, dialog: QWidget) -> None:
-        self.adjustSize()
-        frame = dialog.frameGeometry()
-        x = frame.right() - self.width()
-        y = frame.top() - self.height() - 4
-        screen = dialog.screen()
-        if screen is not None:
-            avail = screen.availableGeometry()
-            if y < avail.top():
-                y = frame.top() + 8
-                x = min(frame.right() + 8, avail.right() - self.width())
-            x = max(avail.left(), min(x, avail.right() - self.width()))
-            y = max(avail.top(), min(y, avail.bottom() - self.height()))
-        self.move(x, y)
 
 
 class _OverlayPlacer(QObject):
@@ -124,21 +104,26 @@ class _OverlayPlacer(QObject):
         self._button = button
 
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:  # noqa: N802
-        if obj is self._dialog and event.type() == QEvent.Type.Resize:
-            place_overlay_button(self._dialog, self._button)
+        # getattr: shiboken may hand us a bare re-created wrapper (no __dict__)
+        # once the Python side has been collected but the C++ filter lives on.
+        dialog = getattr(self, "_dialog", None)
+        button = getattr(self, "_button", None)
+        if dialog is None or button is None:
+            return False
+        if obj is dialog and event.type() == QEvent.Type.Resize:
+            place_overlay_button(dialog, button)
         return False
 
 
 class AnytimeScreenshot(QObject):
-    """App-wide screenshot: hotkeys, dialog button, and a floating control."""
+    """App-wide screenshot: F12 / Ctrl+Shift+S plus a button inside each warning."""
 
     def __init__(self, main_window: QWidget) -> None:
         super().__init__(main_window)
         self._win = main_window
         self._busy = False
-        self._tool = _ScreenshotToolButton(self.capture)
-        self._modals: list[QWidget] = []
         self._win_hotkeys: Any = None
+        self._placers: list[_OverlayPlacer] = []
 
         for seq in (SCREENSHOT_SHORTCUT, SCREENSHOT_F12):
             shortcut = QShortcut(QKeySequence(seq), main_window)
@@ -163,33 +148,42 @@ class AnytimeScreenshot(QObject):
             self._win.removeEventFilter(self)
         except Exception:
             pass
-        self._tool.hide()
-        self._tool.close()
         _uninstall_win_hotkeys(self._win_hotkeys)
         self._win_hotkeys = None
 
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:  # noqa: N802
+        win = getattr(self, "_win", None)
+        if win is None:
+            return False
         et = event.type()
-        if obj is self._win and et == QEvent.Type.Close:
+        if obj is win and et == QEvent.Type.Close:
             self.shutdown()
             return False
         if et == QEvent.Type.KeyPress and is_screenshot_key(event):
             if not getattr(event, "isAutoRepeat", lambda: False)():
                 self.capture()
             return True
-        if et in (QEvent.Type.Polish, QEvent.Type.Show) and is_screenshot_target_dialog(
-            obj
-        ):
-            self.decorate_dialog(obj)
-            if et == QEvent.Type.Show:
-                self._on_modal_shown(obj)
-        if et == QEvent.Type.Hide and is_screenshot_target_dialog(obj):
-            self._on_modal_hidden(obj)
+        if et == QEvent.Type.Show and is_screenshot_target_dialog(obj):
+            # QMessageBox fixes its size inside its own showEvent; decorating
+            # after that pass keeps its text/icon/buttons laid out untouched.
+            QTimer.singleShot(0, lambda dialog=obj: self._decorate_if_alive(dialog))
         return False
 
+    def _decorate_if_alive(self, dialog: QWidget) -> None:
+        try:
+            from shiboken6 import isValid
+        except Exception:  # pragma: no cover - shiboken ships with PySide6
+            isValid = None  # type: ignore[assignment]
+        if isValid is not None and not isValid(dialog):
+            return
+        try:
+            if not dialog.isVisible():
+                return
+        except RuntimeError:
+            return
+        self.decorate_dialog(dialog)
+
     def decorate_dialog(self, dialog: QWidget) -> None:
-        if isinstance(dialog, QMessageBox):
-            dialog.setWindowModality(Qt.WindowModality.WindowModal)
         if dialog.property("_cs_ss_ready"):
             return
         dialog.setProperty("_cs_ss_ready", True)
@@ -202,32 +196,16 @@ class AnytimeScreenshot(QObject):
             "Save a PNG of the app and this warning (also F12 / Ctrl+Shift+S)."
         )
         button.clicked.connect(self.capture)
-        button.show()
         place_overlay_button(dialog, button)
+        button.show()
         placer = _OverlayPlacer(dialog, button)
         dialog.installEventFilter(placer)
-        dialog.setProperty("_cs_ss_placer", placer)
-
-    def _on_modal_shown(self, dialog: QWidget) -> None:
-        if dialog not in self._modals:
-            self._modals.append(dialog)
-        self._tool.place_above(dialog)
-        self._tool.show()
-        self._tool.raise_()
-        try:
-            from gui.win_title_bar import set_window_always_on_top
-
-            set_window_always_on_top(self._tool, True)
-        except Exception:
-            pass
-
-    def _on_modal_hidden(self, dialog: QWidget) -> None:
-        if dialog in self._modals:
-            self._modals.remove(dialog)
-        if self._modals:
-            self._tool.place_above(self._modals[-1])
-            return
-        self._tool.hide()
+        placers = getattr(self, "_placers", None)
+        if placers is not None:
+            placers.append(placer)
+            dialog.destroyed.connect(
+                lambda _obj=None, p=placer: p in placers and placers.remove(p)
+            )
 
     def capture(self) -> None:
         if self._busy:
