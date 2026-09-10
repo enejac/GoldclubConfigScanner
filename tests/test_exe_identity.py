@@ -31,5 +31,11 @@ def test_gitignore_allows_downloads_configscanner_exe() -> None:
 
 
 def test_shipped_download_exe_is_named_configscanner() -> None:
+    exe = ROOT / "downloads" / "ConfigScanner.exe"
     exes = sorted(p.name for p in (ROOT / "downloads").glob("*.exe"))
     assert exes == ["ConfigScanner.exe"], exes
+    data = exe.read_bytes()
+    assert "ConfigScanner.exe".encode("utf-16-le") in data
+    assert "OriginalFilename".encode("utf-16-le") in data
+    assert b"CursorUserSetup" not in data
+    assert "CursorUserSetup".encode("utf-16-le") not in data
