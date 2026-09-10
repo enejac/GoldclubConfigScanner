@@ -137,3 +137,23 @@ def test_username_ok_rejects_domain_on_111() -> None:
     assert la._username_ok_for_host(r"10.0.0.111\test", "10.0.0.111")
     assert not la._username_ok_for_host(r"GOLD-CLUB\test", "10.0.0.111")
     assert la._username_ok_for_host(r"GOLD-CLUB\test", "10.0.0.90")
+
+
+def test_require_lab_fleet_ip_allows_any_lab_lan_host() -> None:
+    assert la.require_lab_fleet_ip("10.0.0.98") == "10.0.0.98"
+    assert la.require_lab_fleet_ip("10.0.0.76") == "10.0.0.76"
+    assert la.require_lab_fleet_ip("10.0.0.90") == "10.0.0.90"
+    with pytest.raises(la.FleetAllowlistError, match="10.0.0.0/24"):
+        la.require_lab_fleet_ip("8.8.8.8")
+    with pytest.raises(la.FleetAllowlistError, match="10.0.0.0/24"):
+        la.require_lab_fleet_ip("10.1.0.76")
+    with pytest.raises(la.FleetAllowlistError, match="Invalid cabinet IP"):
+        la.require_lab_fleet_ip("not-an-ip")
+    with pytest.raises(la.FleetAllowlistError, match="Invalid cabinet IP"):
+        la.require_lab_fleet_ip("10.0.0.999")
+
+
+def test_lab_winrm_auth_is_ntlm_on_lab_lan() -> None:
+    assert la.lab_winrm_authentication("10.0.0.98") == "Default"
+    assert la.lab_winrm_authentication("10.0.0.111") == "Default"
+    assert la.lab_winrm_authentication("8.8.8.8") == "Negotiate"
