@@ -6,7 +6,7 @@ Forked from [GoldclubLogInvestigator](https://github.com/enejac/GoldclubLogInves
 
 ## Download Windows exe
 
-GitHub will not download a 62 MB file from the **blob** page (the floppy-disk icon is dead; it only says it cannot preview the file).
+GitHub will not download a 43 MB file from the **blob** page (the floppy-disk icon is dead; it only says it cannot preview the file).
 
 While signed in, open:
 
@@ -14,7 +14,7 @@ https://github.com/enejac/GoldclubConfigScanner/raw/master/downloads/Launch-Conf
 
 That is the **View raw** link. Or: **Code → Download ZIP**, then take `downloads\Launch-ConfigScanner.exe`.
 
-Stamp: **2026-09-10 06:18**. Keep repo `tools\` next to the exe.
+Stamp: **2026-09-10 08:48 UTC**. Keep repo `tools\` next to the exe.
 
 ## Run from source
 
