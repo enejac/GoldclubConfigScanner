@@ -69,7 +69,7 @@ def load_profiles() -> list[GameProfile]:
             GameProfile(
                 id="roulette_usb",
                 label="Ruleta Alegro Wing",
-                default_target=r"\\10.0.0.90\c$\Goldclub",
+                default_target=r"C:\Goldclub",
                 build_version_relative_path="ruleta/BuildVersion.txt",
                 build_fingerprint=None,
                 scan_roots=[

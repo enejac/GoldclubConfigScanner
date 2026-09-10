@@ -5,7 +5,18 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, QRunnable, QSize, QThreadPool, QTimer, Qt, Signal
+from PySide6.QtCore import (
+    QEasingCurve,
+    QEvent,
+    QObject,
+    QPropertyAnimation,
+    QRunnable,
+    QSize,
+    QThreadPool,
+    QTimer,
+    Qt,
+    Signal,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -14,6 +25,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QFrame,
+    QGraphicsOpacityEffect,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -49,7 +61,6 @@ from config_scanner.live_push import (
     CURRENCY_SYMBOL_CHOICES,
     DALLAS_CHOICES,
     DEFAULT_BETS,
-    DEFAULT_REMOTE_LIVE_TARGET,
     INACTIVITY_CHOICES,
     JACKPOT_COUNTERS,
     JACKPOT_LAYOUTS,
@@ -64,8 +75,9 @@ from config_scanner.live_push import (
     currency_symbol_for,
     THIS_PC_GOLDCLUB,
     THIS_PC_MISSING_STATUS,
-    default_live_cabinet_target,
+    detect_local_live_cabinet,
     load_error_dialog_text,
+    resolve_live_target_from_user,
     this_pc_live_target,
     denom_combo_choices,
     goldclub_stack_kind,
@@ -654,7 +666,7 @@ class LivePushPanel(QWidget):
         self._dallas_emitter = _PushEmitter()
         self._dallas_emitter.progress.connect(self._on_progress)
         self._dallas_emitter.finished.connect(self._on_dallas_finished)
-        self._shortcut_btns: list[QPushButton] = []
+        self._detect_anim: QPropertyAnimation | None = None
         self._licence_status: LiveLicenceStatus | None = None
         self._licence_goldclub: Path | None = None
         self._licence_pack_origin = ""
@@ -717,13 +729,20 @@ class LivePushPanel(QWidget):
 
         cab = QHBoxLayout()
         cab.addWidget(QLabel("Cabinet:"))
-        self._path = QLineEdit(default_live_cabinet_target())
-        self._path.setPlaceholderText(r"\\10.0.0.111\slot  or  C:\Goldclub")
+        self._path = QLineEdit("")
+        self._path.setPlaceholderText(r"C:\Goldclub  or  G:\  — or enter a cabinet IP")
         self._path.setToolTip(
-            "Goldclub root on the EGM: UNC share (e.g. \\\\10.0.0.111\\slot) "
-            "or a local path (C:\\Goldclub / G:\\ when unlocked)."
+            "Local Goldclub on this PC (C:\\Goldclub / G:\\) is detected automatically. "
+            "Use a cabinet IP only when you want to edit a remote EGM."
         )
         cab.addWidget(self._path, stretch=1)
+        this_pc = QPushButton("This PC")
+        this_pc.setToolTip(
+            "Load G: or C:\\Goldclub when this machine is a cabinet. "
+            "No popup if there is no local Goldclub tree."
+        )
+        this_pc.clicked.connect(self._pick_this_pc)
+        cab.addWidget(this_pc)
         browse = QPushButton("Browse…")
         browse.setToolTip("Pick a local Goldclub folder.")
         browse.clicked.connect(self._browse)
@@ -742,26 +761,41 @@ class LivePushPanel(QWidget):
         self._load_spinner.setToolTip("Loading cabinet…")
         outer.addLayout(cab)
 
+        self._detect_status = QLabel("Looking for Goldclub on this PC…")
+        self._detect_status.setObjectName("liveDetectStatus")
+        self._detect_status.setWordWrap(True)
+        self._detect_status.setStyleSheet("color: #9ecbff; font-weight: 600;")
+        outer.addWidget(self._detect_status)
+
+        self._ip_row = QWidget()
+        ip_lay = QHBoxLayout(self._ip_row)
+        ip_lay.setContentsMargins(0, 0, 0, 0)
+        ip_lay.addWidget(QLabel("Cabinet IP:"))
+        self._ip = QLineEdit("")
+        self._ip.setPlaceholderText("10.0.0.x")
+        self._ip.setToolTip(
+            "Lab cabinet address. Connect tries \\\\IP\\c$\\Goldclub then \\\\IP\\slot."
+        )
+        self._ip.returnPressed.connect(self._connect_remote_ip)
+        ip_lay.addWidget(self._ip, stretch=1)
+        self._ip_connect = QPushButton("Connect")
+        self._ip_connect.setToolTip("Open the Goldclub share on that cabinet.")
+        self._ip_connect.clicked.connect(self._connect_remote_ip)
+        ip_lay.addWidget(self._ip_connect)
+        self._ip_row.hide()
+        outer.addWidget(self._ip_row)
+
+        self._use_remote_btn = QPushButton("Use a cabinet IP instead")
+        self._use_remote_btn.setFlat(True)
+        self._use_remote_btn.setStyleSheet("color: #9ecbff; text-align: left;")
+        self._use_remote_btn.setToolTip(
+            "Skip the local Goldclub on this PC and edit a remote cabinet."
+        )
+        self._use_remote_btn.clicked.connect(self._use_remote_instead)
+        self._use_remote_btn.hide()
+        outer.addWidget(self._use_remote_btn)
+
         quick = QHBoxLayout()
-        for label, path in (
-            ("This PC", THIS_PC_GOLDCLUB),
-            ("10.0.0.90", r"\\10.0.0.90\c$\Goldclub"),
-            ("10.0.0.98", r"\\10.0.0.98\c$\Goldclub"),
-            ("10.0.0.111", DEFAULT_REMOTE_LIVE_TARGET),
-        ):
-            btn = QPushButton(label)
-            if label == "This PC":
-                btn.setToolTip(
-                    "Load G: or C:\\Goldclub when this machine is a cabinet. "
-                    "No popup if there is no local Goldclub tree."
-                )
-                btn.clicked.connect(self._pick_this_pc)
-            else:
-                btn.setToolTip(f"Load cabinet at {path}")
-                btn.clicked.connect(lambda _=False, p=path: self._pick_cabinet(p))
-            self._shortcut_btns.append(btn)
-            quick.addWidget(btn)
-        quick.addSpacing(18)
         quick.addWidget(QLabel("Market:"))
         self._preset = QComboBox()
         self._preset.setToolTip(
@@ -1269,11 +1303,75 @@ class LivePushPanel(QWidget):
             QTimer.singleShot(0, self.ensure_started)
 
     def ensure_started(self) -> None:
-        """Start the first cabinet load once (safe to call from rapid navigation)."""
+        """Detect local Goldclub, then load or ask for a cabinet IP."""
         if self._started:
             return
         self._started = True
-        QTimer.singleShot(0, self._autoload)
+        QTimer.singleShot(0, self._begin_detect)
+
+    def _fade_detect_status(self, text: str, *, kind: str = "info") -> None:
+        colors = {
+            "info": "#9ecbff",
+            "ok": "#7dcea0",
+            "ask": "#f0c674",
+        }
+        self._detect_status.setText(text)
+        self._detect_status.setStyleSheet(
+            f"color: {colors.get(kind, colors['info'])}; font-weight: 600;"
+        )
+        effect = QGraphicsOpacityEffect(self._detect_status)
+        self._detect_status.setGraphicsEffect(effect)
+        anim = QPropertyAnimation(effect, b"opacity", self)
+        anim.setDuration(240)
+        anim.setStartValue(0.15)
+        anim.setEndValue(1.0)
+        anim.setEasingCurve(QEasingCurve.Type.InOutQuad)
+        anim.start()
+        self._detect_anim = anim
+
+    def _begin_detect(self) -> None:
+        self._fade_detect_status("Looking for Goldclub on C: and G:…", kind="info")
+        QTimer.singleShot(160, self._finish_detect)
+
+    def _finish_detect(self) -> None:
+        local = detect_local_live_cabinet()
+        if local:
+            self._path.setText(local)
+            self._fade_detect_status(f"Using local Goldclub — {local}", kind="ok")
+            self._ip_row.hide()
+            self._use_remote_btn.show()
+            self._autoload()
+            return
+        self._path.clear()
+        self._fade_detect_status(
+            "No Goldclub on this PC. Enter the cabinet IP to continue.",
+            kind="ask",
+        )
+        self._ip_row.show()
+        self._use_remote_btn.hide()
+        self._ip.setFocus()
+
+    def _use_remote_instead(self) -> None:
+        self._ip_row.show()
+        self._use_remote_btn.hide()
+        self._fade_detect_status(
+            "Enter a cabinet IP. Local Goldclub stays unused until you Load it.",
+            kind="ask",
+        )
+        self._ip.setFocus()
+
+    def _connect_remote_ip(self) -> None:
+        typed = self._ip.text().strip() or self._path.text().strip()
+        if not typed:
+            QMessageBox.warning(self, "Cabinet IP", "Enter a cabinet IP (for example 10.0.0.98).")
+            return
+        target = resolve_live_target_from_user(typed, probe=True)
+        if not target:
+            QMessageBox.warning(self, "Cabinet IP", "That does not look like an IP or Goldclub path.")
+            return
+        self._path.setText(target)
+        self._fade_detect_status(f"Connecting to {target}…", kind="info")
+        self._load()
 
     def _live_field_widgets(self) -> list[tuple[str, QWidget]]:
         return [
@@ -1580,8 +1678,13 @@ class LivePushPanel(QWidget):
         if self._busy:
             return
         raw = self._path.text().strip()
+        if not raw and self._ip.text().strip():
+            self._connect_remote_ip()
+            return
         if not raw:
-            self._warn_load("Enter a cabinet Goldclub path.")
+            self._warn_load(
+                "No local Goldclub found. Enter a cabinet IP or browse a folder."
+            )
             return
         self._set_busy(True)
         self._status.setText("Connecting to cabinet…")
@@ -2762,7 +2865,7 @@ class LivePushPanel(QWidget):
         if self._loaded is None:
             self._update_math_fix_row(())
             self._changes.setText(
-                "Waiting for the live cabinet (local Goldclub, or \\\\10.0.0.111\\slot). "
+                "Waiting for a Goldclub tree (local C:\\ / G:\\, or a cabinet IP). "
                 "Green = matches; orange = pending edit; red = invalid."
             )
             self._changes.setStyleSheet("color: #999;")
@@ -2939,8 +3042,10 @@ class LivePushPanel(QWidget):
         self._commit.setEnabled(not busy)
         self._load_btn.setEnabled(not busy)
         self._dallas_read.setEnabled(not busy and not self._dallas_busy)
-        for btn in self._shortcut_btns:
-            btn.setEnabled(not busy)
+        if getattr(self, "_ip_connect", None) is not None:
+            self._ip_connect.setEnabled(not busy)
+        if getattr(self, "_use_remote_btn", None) is not None:
+            self._use_remote_btn.setEnabled(not busy)
         spinner = getattr(self, "_load_spinner", None)
         if spinner is not None:
             spinner.set_active(busy)

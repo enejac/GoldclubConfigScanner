@@ -37,7 +37,7 @@ def test_default_live_target_skips_hung_g_drive(monkeypatch) -> None:
         "config_scanner.build_version.prefer_local_scan_target",
         lambda s: s,
     )
-    assert default_live_cabinet_target() == r"\\10.0.0.111\slot"
+    assert default_live_cabinet_target() == ""
 
 
 def test_live_push_panel_debounces_and_blocks_fill() -> None:
