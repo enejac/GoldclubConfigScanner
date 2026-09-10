@@ -123,7 +123,7 @@ def _run_encoded_powershell(script: str, *, timeout: int) -> RemoteRunResult:
 
 
 def ensure_lab_winrm_trusted_hosts(*, ip: str) -> None:
-    """Best-effort: add a *fleet* cabinet IP to local WinRM TrustedHosts (NTLM-by-IP)."""
+    """Best-effort: add a lab-LAN cabinet IP to local WinRM TrustedHosts (NTLM-by-IP)."""
     try:
         host = require_lab_fleet_ip(ip)
     except FleetAllowlistError:

@@ -1,4 +1,4 @@
-"""Lab fleet allowlist and silent SMB login (test/test).
+"""Lab LAN access and silent SMB login (test/test).
 
 The lab password is the documented throwaway ``test`` account. ``cmdkey``
 alone is not enough: Windows keeps a per-server SMB session, so a first
@@ -6,8 +6,9 @@ attempt with this PC's login (or ``GOLD-CLUB\\test`` on workgroup ``.111``)
 sticks as WinError 1326 until we cancel that session and connect with the
 host-specific user (``10.0.0.111\\test``, not the domain account).
 
-SMB auto-login (no Credential Manager popup, no WinRM) applies to every
-host on the lab LAN ``10.0.0.0/24``. WinRM/PsExec stay fleet-allowlisted.
+SMB, WinRM, PsExec, and Live Push apply to every host on the lab LAN
+``10.0.0.0/24`` (not a hardcoded cabinet list). ``LAB_FLEET_IPS`` is only
+the named shortcut / cmdkey bootstrap set.
 """
 
 from __future__ import annotations
@@ -73,7 +74,7 @@ _WNET_CONNECT_COMMANDLINE = 0x00000800
 # will NOT return a ``cmdkey``-stored domain password via ``CredRead`` (fails
 # with error 87). SMB is opened with WNetAddConnection2 so Load does not
 # need a prior Credential Manager popup. WinRM still uses this password
-# for fleet hosts only. Override with GOLDCLUB_LAB_PASSWORD.
+# for any 10.0.0.0/24 host. Override with GOLDCLUB_LAB_PASSWORD.
 _LAB_PASSWORD_ENV = "GOLDCLUB_LAB_PASSWORD"
 _LAB_DEFAULT_PASSWORD = "test"
 
@@ -85,23 +86,22 @@ class LabCredentialError(RuntimeError):
 
 
 class FleetAllowlistError(ValueError):
-    """Raised when a remote IP is outside the known lab fleet."""
+    """Raised when a remote IP is outside the lab LAN (10.0.0.0/24)."""
 
 
 def is_lab_fleet_ip(ip: str) -> bool:
+    """True for a named shortcut cabinet (UI / cmdkey bootstrap list)."""
     host = (ip or "").strip()
     return host in LAB_FLEET_IPS
 
 
 def is_lab_lan_ip(ip: str) -> bool:
-    """True for any IPv4 on the lab subnet (10.0.0.0/24), not only the known fleet.
+    """True for any IPv4 on the lab subnet (10.0.0.0/24).
 
-    SMB auto-login uses this so a cabinet like ``10.0.0.76`` gets test/test
-    without a Credential Manager popup. WinRM stays on ``require_lab_fleet_ip``.
+    Live Push, SMB auto-login, and WinRM use this so a cabinet like
+    ``10.0.0.98`` is allowed without adding it to ``LAB_FLEET_IPS``.
     """
     host = (ip or "").strip()
-    if host in LAB_FLEET_IPS:
-        return True
     if not host or not _IPV4_RE.fullmatch(host):
         return False
     octets = [int(p) for p in host.split(".")]
@@ -111,19 +111,19 @@ def is_lab_lan_ip(ip: str) -> bool:
 
 
 def require_lab_fleet_ip(ip: str) -> str:
+    """Allow any 10.0.0.0/24 cabinet for Live Push / WinRM / PsExec."""
     host = (ip or "").strip()
+    if is_lab_lan_ip(host):
+        return host
     if not host or not _IPV4_RE.fullmatch(host):
         raise FleetAllowlistError(f"Invalid cabinet IP: {ip!r}")
     octets = [int(p) for p in host.split(".")]
     if any(o > 255 for o in octets):
         raise FleetAllowlistError(f"Invalid cabinet IP: {ip!r}")
-    if host not in LAB_FLEET_IPS:
-        allowed = ", ".join(sorted(LAB_FLEET_IPS))
-        raise FleetAllowlistError(
-            f"Remote operations are limited to the lab fleet ({allowed}). "
-            f"Refusing non-fleet IP: {host}"
-        )
-    return host
+    raise FleetAllowlistError(
+        f"Remote operations are limited to the lab LAN (10.0.0.0/24). "
+        f"Refusing: {host}"
+    )
 
 
 def _decode_cred_blob(blob: object) -> str:
@@ -267,16 +267,16 @@ def format_lab_smb_logon_failure(host: str, exc: BaseException) -> str:
 
 
 def lab_winrm_authentication(ip: str | None) -> str:
-    """``Invoke-Command -Authentication`` value for a fleet cabinet.
+    """``Invoke-Command -Authentication`` value for a lab-LAN cabinet.
 
-    Fleet hosts are always reached by IP. ``Negotiate`` tries Kerberos first and
+    Lab hosts are always reached by IP. ``Negotiate`` tries Kerberos first and
     often fails with ``0x8009030e`` ("logon session does not exist") when the
     app runs on a local EGM or other non-interactive logon context. ``Default``
     picks NTLM for workgroup hosts and is safe for IP-based domain cabinets too
     (TrustedHosts + explicit ``PSCredential``).
     """
     host = (ip or "").strip()
-    if host in LAB_FLEET_IPS:
+    if is_lab_lan_ip(host):
         return "Default"
     return "Negotiate"
 
