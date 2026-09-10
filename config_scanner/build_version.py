@@ -997,22 +997,63 @@ def _read_version_resource(path: Path) -> _VersionResource | None:
     )
 
 
+def _is_debug_sku_token(text: str | None) -> bool:
+    """True when ProductVersion / FileVersion *is* the Debug SKU name.
+
+    ``2.0.1+RC2+51df6aa`` and ``2.0.1.0`` (10.0.0.111) are not Debug.
+    Comments / FileDescription / ``Debugger`` must not flip the SKU.
+    """
+    folded = (text or "").strip().casefold()
+    return folded == "debug" or folded.startswith("debug ") or folded.startswith("debug-")
+
+
+def _has_numeric_version_token(text: str | None) -> bool:
+    raw = (text or "").strip()
+    return bool(raw) and bool(re.search(r"\d+\.\d+", raw)) and not _is_debug_sku_token(raw)
+
+
 def _version_resource_is_debug(res: _VersionResource | None) -> bool:
+    """Debug SKU only from ProductVersion / FileVersion, not Comments.
+
+    ``FileVersion=Debug`` is 10.0.0.98. A numeric FileVersion such as
+    ``2.0.1.0`` on 10.0.0.111 stays Release even if a dependency
+    VERSIONINFO in the same scan window says Debug.
+    """
     if res is None:
         return False
-    parts: list[str] = []
-    for key in _SKU_VERSION_KEYS + ("Comments",):
-        parts.extend(res.fields.get(key, ()))
-    return _configuration_from_strings(*parts) == "Debug"
+    file_versions = list(res.fields.get("FileVersion", ()))
+    product_versions = list(res.fields.get("ProductVersion", ()))
+    if any(_is_debug_sku_token(value) for value in file_versions):
+        return True
+    pv_debug = any(_is_debug_sku_token(value) for value in product_versions)
+    pv_numeric = any(_has_numeric_version_token(value) for value in product_versions)
+    if pv_debug and not pv_numeric:
+        return True
+    return False
+
+
+def _version_resource_is_numeric_release(res: _VersionResource | None) -> bool:
+    """Official VERSIONINFO is a numbered SKU (GST22377 / 10.0.0.111)."""
+    if res is None or _version_resource_is_debug(res):
+        return False
+    for key in ("ProductVersion", "FileVersion"):
+        if any(_has_numeric_version_token(value) for value in res.fields.get(key, ())):
+            return True
+    return bool(res.file_version_numeric) and _has_numeric_version_token(
+        res.file_version_numeric
+    )
 
 
 def _blob_has_debug_sku_strings(blob: bytes) -> bool:
     if not blob:
         return False
-    parts: list[str] = []
-    for key in _SKU_VERSION_KEYS:
-        parts.extend(_all_utf16_values_after(blob, key))
-    return _configuration_from_strings(*parts) == "Debug"
+    file_versions = _all_utf16_values_after(blob, "FileVersion")
+    product_versions = _all_utf16_values_after(blob, "ProductVersion")
+    if any(_is_debug_sku_token(value) for value in file_versions):
+        return True
+    pv_debug = any(_is_debug_sku_token(value) for value in product_versions)
+    pv_numeric = any(_has_numeric_version_token(value) for value in product_versions)
+    return bool(pv_debug and not pv_numeric)
 
 
 def _pick_display_product_version(values: list[str] | tuple[str, ...]) -> str:
@@ -1031,11 +1072,13 @@ def _pick_display_product_version(values: list[str] | tuple[str, ...]) -> str:
 
 
 def onehand_exe_is_debug_sku(exe_path: Path | str) -> bool:
-    """True when this OneHand.exe is a Debug compile / Debug VERSIONINFO SKU.
+    """True when this OneHand.exe is the Debug VERSIONINFO SKU.
 
-    Version numbers (3.0.0.0, +RC2+hex), SlotLog banners, and
-    AssemblyConfiguration=Release do **not** decide this — those appear on
-    Release binaries too.
+    ``FileVersion=Debug`` / ``ProductVersion=Debug`` is Debug (10.0.0.98).
+    A numeric ProductVersion + FileVersion (10.0.0.111 ``2.0.1.0`` /
+    ``2.0.1+RC2+51df6aa``) is Release — DebuggableAttribute, a CodeView
+    ``\\Debug\\`` folder, Comments, and dependency VERSIONINFO must not
+    override that.
     """
     path = Path(exe_path)
     try:
@@ -1044,21 +1087,18 @@ def onehand_exe_is_debug_sku(exe_path: Path | str) -> bool:
     except OSError:
         return False
     try:
-        if _pe_codeview_is_debug_build(path):
-            return True
-    except OSError:
-        pass
-    try:
-        if _dotnet_assembly_is_debug(path) is True:
-            return True
-    except OSError:
-        pass
-    try:
         res = _read_version_resource(path)
     except OSError:
         res = None
     if _version_resource_is_debug(res):
         return True
+    if _version_resource_is_numeric_release(res):
+        return False
+    try:
+        if _pe_codeview_is_debug_build(path):
+            return True
+    except OSError:
+        pass
     if res is not None:
         return False
     try:
@@ -1124,36 +1164,31 @@ def _preferred_onehand_version_text(info: _ExeVersionInfo) -> str:
 def _onehand_configuration(
     info: _ExeVersionInfo, exe_path: Path, goldclub: Path
 ) -> tuple[str, str]:
-    """Debug only from compile/VERSIONINFO signals, not from the version number."""
-    if info.is_debug is True:
-        return "Debug", "VERSIONINFO"
-    labels = (
+    """Debug only from the VERSIONINFO SKU name, not from RC/hex version text.
+
+    10.0.0.111 (``2.0.1.0`` / ``2.0.1+RC2+51df6aa``) is Release. 10.0.0.98
+    (``FileVersion=Debug``) is Debug. CLR / CodeView / Comments do not
+    override a numeric ProductVersion + FileVersion.
+    """
+    del goldclub
+    file_version_string = getattr(info, "file_version_string", None)
+    sku_labels = (
         info.product_version,
         info.file_version,
-        getattr(info, "file_version_string", None),
-        info.product_name,
-        info.display_version,
-        exe_path.name,
+        file_version_string,
     )
-    if _configuration_from_strings(*(p or "" for p in labels)) == "Debug":
+    if any(_is_debug_sku_token(part) for part in sku_labels):
         return "Debug", "VERSIONINFO string"
-    try:
-        if _pe_codeview_is_debug_build(exe_path):
-            return "Debug", "CodeView PDB path (Debug folder)"
-    except OSError:
-        pass
-    try:
-        if _dotnet_assembly_is_debug(exe_path) is True:
-            return "Debug", "DebuggableAttribute"
-    except OSError:
-        pass
+    numeric_release = any(_has_numeric_version_token(part) for part in sku_labels)
     try:
         if onehand_exe_is_debug_sku(exe_path):
             return "Debug", "VERSIONINFO ProductVersion/FileVersion"
     except OSError:
         pass
-    # AssemblyConfiguration is not a compile signal: Debug SKUs often say
-    # Release, and Release binaries contain Debug from other assemblies.
+    if numeric_release:
+        return "Release", "VERSIONINFO"
+    if info.is_debug is True:
+        return "Debug", "VERSIONINFO"
     if info.is_debug is False:
         return "Release", "VERSIONINFO"
     return "Release", "default"
@@ -1372,9 +1407,11 @@ def _extract_version_from_exe(exe_path: Path, *, slot_style: bool = False) -> _E
                     file_version_string = (debug_fv or fv_strings)[0]
             if not file_version and res.file_version_numeric:
                 file_version = res.file_version_numeric
-            if res.file_flags is not None and res.file_flags & _VS_FF_DEBUG:
-                is_debug = True
             if _version_resource_is_debug(res):
+                is_debug = True
+            elif _version_resource_is_numeric_release(res):
+                is_debug = False
+            elif res.file_flags is not None and res.file_flags & _VS_FF_DEBUG:
                 is_debug = True
         sniff_pv, sniff_pn = _sniff_exe_version_strings(exe_path)
         if sniff_pv:
@@ -1399,21 +1436,23 @@ def _extract_version_from_exe(exe_path: Path, *, slot_style: bool = False) -> _E
         else:
             display = pv or file_version
 
-        # VS_FF_DEBUG is often 0 on OneHand Debug SKUs; VERSIONINFO strings win.
-        # Do not treat a stray "Release" in Comments as the SKU.
-        sku_hint = _configuration_from_strings(
-            pv,
-            file_version_string,
-            product_name or "",
-            file_description,
-            special_build,
-            private_build,
-            *product_versions,
+        # VS_FF_DEBUG is often 0 on OneHand Debug SKUs; FileVersion=Debug wins.
+        # Do not treat Comments / FileDescription / a stray "Release" as the SKU.
+        # 10.0.0.111 is 2.0.1.0 — numeric VERSIONINFO is Release.
+        sku_debug = any(
+            _is_debug_sku_token(item)
+            for item in (pv, file_version_string, *product_versions)
         )
-        if sku_hint == "Debug" or _configuration_from_strings(comments) == "Debug":
+        if sku_debug:
             is_debug = True
-        elif is_debug is None and sku_hint == "Release":
+        elif _has_numeric_version_token(pv) or _has_numeric_version_token(
+            file_version_string
+        ):
             is_debug = False
+        elif is_debug is None:
+            sku_hint = _configuration_from_strings(pv, file_version_string)
+            if sku_hint == "Release":
+                is_debug = False
 
         return _ExeVersionInfo(
             product_version=pv or None,

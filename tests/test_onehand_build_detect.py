@@ -325,7 +325,8 @@ def test_release_exe_ignores_dependency_debug_version_bytes(tmp_path: Path) -> N
     assert info.version == "2.1.0"
 
 
-def test_pdb_path_debug_folder_is_debug(tmp_path: Path, monkeypatch) -> None:
+def test_pdb_path_debug_folder_does_not_override_numeric_release(tmp_path: Path, monkeypatch) -> None:
+    """10.0.0.111-style numbered VERSIONINFO stays Release even with a Debug PDB path."""
     gold = tmp_path / "Goldclub"
     slot = gold / "slot"
     slot.mkdir(parents=True)
@@ -343,7 +344,80 @@ def test_pdb_path_debug_folder_is_debug(tmp_path: Path, monkeypatch) -> None:
     )
     info = detect_onehand_build(gold)
     assert info is not None
+    assert info.configuration == "Release"
+
+
+def test_codeview_debug_when_versioninfo_missing(tmp_path: Path, monkeypatch) -> None:
+    gold = tmp_path / "Goldclub"
+    slot = gold / "slot"
+    slot.mkdir(parents=True)
+    exe = slot / "OneHand.exe"
+    exe.write_bytes(b"MZ\x00\x00")
+    monkeypatch.setattr(
+        "config_scanner.build_version._pe_codeview_is_debug_build",
+        lambda _p: True,
+    )
+    monkeypatch.setattr(
+        "config_scanner.build_version._extract_version_from_onehand_exe",
+        lambda _path: SimpleNamespace(
+            product_version=None,
+            display_version=None,
+            file_version=None,
+            product_name="OneHand",
+            is_debug=None,
+            file_version_string=None,
+        ),
+    )
+    info = detect_onehand_build(gold)
+    assert info is not None
     assert info.configuration == "Debug"
+
+
+def test_cabinet_111_numeric_versioninfo_is_release(tmp_path: Path, monkeypatch) -> None:
+    """GST22377 / 10.0.0.111: FileVersion 2.0.1.0, ProductVersion 2.0.1+RC2+51df6aa.
+
+    Live dump of \\\\10.0.0.111\\slot\\slot\\OneHand.exe. A dependency
+    ProductVersion=Debug in the head, DebuggableAttribute, and a Debug
+    CodeView path must not paint this cabinet Debug.
+    """
+    from config_scanner.live_push import slot_start_launcher
+    from config_scanner.slot_setup import is_onehand_debug_build
+
+    gold = tmp_path / "Goldclub"
+    slot = gold / "slot"
+    slot.mkdir(parents=True)
+    (slot / "OneHand.exe").write_bytes(
+        b"MZ"
+        + _utf16_pair("ProductVersion", "Debug")
+        + _utf16_pair("FileVersion", "Debug")
+        + "DebuggableAttribute".encode("ascii")
+        + bytes([0x06, 0x01, 0x00, 0x07, 0x01, 0x00, 0x00])
+        + "AssemblyConfiguration".encode("utf-16le")
+        + b"\x00\x00"
+        + "Debug".encode("utf-16le")
+        + _version_info_blob(
+            ProductVersion="2.0.1+RC2+51df6aa",
+            FileVersion="2.0.1.0",
+            FileDescription="OneHand",
+            Comments="built with debugger helpers",
+        )
+    )
+    monkeypatch.setattr(
+        "config_scanner.build_version._pe_codeview_is_debug_build",
+        lambda _p: True,
+    )
+    monkeypatch.setattr(
+        "config_scanner.build_version._dotnet_assembly_is_debug",
+        lambda _p: True,
+    )
+    info = detect_onehand_build(gold)
+    assert info is not None
+    assert info.configuration == "Release"
+    assert "2.0.1+RC2+51df6aa" in (info.version or "")
+    assert info.label.endswith("Release")
+    assert "Debug" not in info.label
+    assert is_onehand_debug_build(gold) is False
+    assert slot_start_launcher(str(gold), dest=gold) == "game-start"
 
 
 def test_pdb_path_is_debug_output_uses_folder_not_filename() -> None:
