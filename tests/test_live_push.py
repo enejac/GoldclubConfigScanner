@@ -1248,3 +1248,66 @@ def test_commit_writes_leftover_single_denomination(tmp_path: Path, monkeypatch)
     )
     assert "<SingleDenomination>10</SingleDenomination>" in jur
 
+
+def test_strip_powershell_clixml_progress() -> None:
+    from config_scanner.live_push import _strip_powershell_noise
+
+    blob = "OK\n#< CLIXML\n<Objs Version=\"1.1.0.1\"></Objs>"
+    assert _strip_powershell_noise(blob) == "OK"
+
+
+def test_commit_sas_only_heals_overlay_hostname_without_rewriting_setup(
+    tmp_path: Path, monkeypatch
+) -> None:
+    gold = _fake_goldclub(tmp_path)
+    aurum = gold / "Services" / "aurum" / "config" / "AurumSetup.xml"
+    aurum.write_text(
+        '<?xml version="1.0"?>\n'
+        "<AurumSetup>\n"
+        "  <CurrencyTable><CurrencyCode>USD</CurrencyCode></CurrencyTable>\n"
+        "  <ProcessorConfig><CurrencyId>USD</CurrencyId></ProcessorConfig>\n"
+        "  <Network>\n"
+        "    <NetworkHostName>GST20664</NetworkHostName>\n"
+        "    <ServiceURI>net.tcp://GST20664:50011/aurum</ServiceURI>\n"
+        "    <MessengerURI>net.tcp://GST20664:50010/msg</MessengerURI>\n"
+        "  </Network>\n"
+        '  <EGM id="GCC_ST_20664_01" CabinetSerialNumber="20664" />\n'
+        "</AurumSetup>\n",
+        encoding="utf-8",
+    )
+    recipe = load_recipe_from_goldclub(gold, label="live")
+    recipe.sas.address = 9
+
+    monkeypatch.setattr(
+        "config_scanner.live_push.resolve_cabinet_windows_hostname",
+        lambda _t: "GST22377",
+    )
+    monkeypatch.setattr("config_scanner.live_push.goldclub_stack_kind", lambda _r: "slot")
+    monkeypatch.setattr(
+        "config_scanner.live_push.run_slot_stack_kill",
+        lambda *_a, **_k: (True, "stopped"),
+    )
+    monkeypatch.setattr(
+        "config_scanner.live_push.run_slot_stack_start",
+        lambda *_a, **_k: (True, "bootstrap"),
+    )
+
+    result = commit_live_push(
+        recipe,
+        gold,
+        restart_stack=False,
+        scan_target=str(gold),
+        work_parent=tmp_path / "work-sas-host",
+        backup=False,
+    )
+    assert result.ok, result.errors
+    written = {w.replace("\\", "/").casefold() for w in result.written}
+    assert not any(name.endswith("aurumsetup.xml") for name in written)
+    assert any("clientsset.xml" in name for name in written)
+    text = aurum.read_text(encoding="utf-8")
+    assert "<NetworkHostName>GST22377</NetworkHostName>" in text
+    assert "net.tcp://GST22377:50011/aurum" in text
+    assert "GST20664" not in text
+    assert 'id="GCC_ST_20664_01"' in text
+    assert (gold / "Services" / "aurum" / "config" / "AurumSetup.xml.bak-host-GST20664").is_file()
+

@@ -1170,3 +1170,75 @@ def test_licence_push_default_checked_skips_debug() -> None:
         )
         is False
     )
+
+
+def test_sas_address_pack_does_not_rewrite_aurum_setup(tmp_path: Path) -> None:
+    from config_scanner.slot_setup import patch_clients_set, sas_channel_flags_differ
+
+    live = _fake_goldclub(tmp_path)
+    original = (live / "Services" / "aurum" / "config" / "AurumSetup.xml").read_bytes()
+    recipe = load_recipe_from_goldclub(live, label="sas-addr")
+    assert not sas_channel_flags_differ(live, recipe.sas)
+    recipe.sas.address = 9
+    pack = tmp_path / "sas-only"
+    built = build_config_pack(recipe, live, pack, sections=frozenset({"sas"}))
+    files = {f.replace("\\", "/").casefold() for f in built.files}
+    assert not any(name.endswith("aurumsetup.xml") for name in files)
+    assert any("clientsset.xml" in name for name in files)
+    assert any("sassetupdata.xml" in name for name in files)
+    assert (live / "Services" / "aurum" / "config" / "AurumSetup.xml").read_bytes() == original
+
+    dest = tmp_path / "clients-out.xml"
+    patch_clients_set(
+        live / "Services" / "aurum" / "config" / "SASControler1" / "ClientsSet.xml",
+        dest,
+        recipe.sas,
+    )
+    text = dest.read_text(encoding="utf-8")
+    assert 'xmlns="http://tempuri.org/ClientsSet.xsd"' in text
+    assert "ns0:" not in text
+    assert "SASAddress>9</" in text
+
+
+def test_sas_channel_pack_still_stages_aurum_setup(tmp_path: Path) -> None:
+    from config_scanner.slot_setup import (
+        AurumIdentitySettings,
+        patch_aurum_setup_placeholders,
+        sas_channel_flags_differ,
+    )
+
+    live = _fake_goldclub(tmp_path)
+    src = live / "Services" / "aurum" / "config" / "AurumSetup.xml"
+    src.write_text(
+        """<?xml version="1.0"?>
+<AurumSetup>
+  <Network>
+    <Configs>
+      <Subscribers>
+        <HostId>1</HostId>
+        <HostName>SASControler1</HostName>
+      </Subscribers>
+      <EgmsDevices>
+        <DeviceClass>bonus</DeviceClass>
+        <OwnerHostId>0</OwnerHostId>
+        <LastConfigurationChange>4</LastConfigurationChange>
+      </EgmsDevices>
+    </Configs>
+  </Network>
+</AurumSetup>
+""",
+        encoding="utf-8",
+    )
+    recipe = load_recipe_from_goldclub(live, label="ch")
+    assert recipe.sas.bonusing_controler is False
+    recipe.sas.bonusing_controler = True
+    assert sas_channel_flags_differ(live, recipe.sas)
+    pack = tmp_path / "sas-ch"
+    built = build_config_pack(recipe, live, pack, sections=frozenset({"sas"}))
+    files = {f.replace("\\", "/").casefold() for f in built.files}
+    assert any(name.endswith("aurumsetup.xml") for name in files)
+    out = tmp_path / "ch.xml"
+    patch_aurum_setup_placeholders(
+        src, out, AurumIdentitySettings(), sas=recipe.sas
+    )
+    assert "<OwnerHostId>1</OwnerHostId>" in out.read_text(encoding="utf-8")

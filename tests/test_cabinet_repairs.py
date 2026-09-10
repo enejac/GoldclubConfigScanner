@@ -159,6 +159,19 @@ def test_aurum_repair_writes_a_backup(tmp_path, monkeypatch):
     assert "GST20664" in backup.read_text(encoding="utf-8")
 
 
+def test_find_aurum_setup_xml_accepts_services_casing(tmp_path):
+    root = tmp_path / "Goldclub"
+    cfg = root / "Services" / "aurum" / "config"
+    cfg.mkdir(parents=True)
+    (cfg / "AurumSetup.xml").write_text(_AURUM_XML, encoding="utf-8")
+    found = cr.find_aurum_setup_xml(root)
+    assert found is not None
+    assert found.is_file()
+    changed, detail = cr.rewrite_aurum_host_tokens(found, "GST22377")
+    assert changed, detail
+    assert "GST22377" in found.read_text(encoding="utf-8")
+
+
 def test_aurum_diagnose_not_applicable_without_config(tmp_path):
     root = tmp_path / "Goldclub"
     root.mkdir()

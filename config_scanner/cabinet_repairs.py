@@ -463,6 +463,87 @@ def _aurum_setup_path(root: Path) -> Path:
     return root / Path(_AURUM_SETUP_REL)
 
 
+def find_aurum_setup_xml(goldclub: Path) -> Path | None:
+    """Locate AurumSetup.xml under a Goldclub root (any Services/services casing)."""
+    direct = _aurum_setup_path(goldclub)
+    try:
+        if direct.is_file():
+            return direct
+    except OSError:
+        pass
+    from config_scanner.slot_setup import _resolve_goldclub_rel
+
+    found = _resolve_goldclub_rel(goldclub, _AURUM_SETUP_REL)
+    if found is not None:
+        try:
+            if found.is_file():
+                return found
+        except OSError:
+            return None
+    return None
+
+
+def rewrite_aurum_host_tokens(
+    setup: Path,
+    machine: str,
+    *,
+    backup: bool = True,
+) -> tuple[bool, str]:
+    """In-place NetworkHostName / ServiceURI / MessengerURI rewrite.
+
+    Does not round-trip the file through ElementTree — LoadSetup is sensitive
+    to that (GST22377: overlay host GST20664 left SASControler1 unconfigured).
+    Returns ``(changed, detail)``.
+    """
+    machine = (machine or "").strip()
+    if not machine or not _HOSTNAME_RE.match(machine):
+        return False, "invalid Windows hostname"
+    try:
+        text = setup.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return False, f"could not read {setup}: {exc}"
+
+    hosts = _aurum_host_names(text)
+    stale = [h for h in hosts if h.casefold() != machine.casefold()]
+    if not stale:
+        return False, f"AurumSetup already targets {machine}"
+
+    notes: list[str] = []
+    patched = text
+    for old in stale:
+        for element in _HOST_ELEMENTS:
+            pattern = re.compile(
+                rf"(<{element}>\s*)([^<]*?)(\s*</{element}>)", re.IGNORECASE
+            )
+
+            def _swap(match: re.Match[str], _old: str = old) -> str:
+                value = match.group(2)
+                if _old.casefold() not in value.casefold():
+                    return match.group(0)
+                replaced = re.sub(re.escape(_old), machine, value, flags=re.IGNORECASE)
+                return f"{match.group(1)}{replaced}{match.group(3)}"
+
+            patched = pattern.sub(_swap, patched)
+        notes.append(f"{old} -> {machine}")
+
+    if patched == text:
+        return False, "found a stale host block but no host token to rewrite"
+
+    if backup:
+        backup_path = setup.with_name(f"{setup.name}.bak-host-{stale[0]}")
+        try:
+            if not backup_path.exists():
+                shutil.copy2(setup, backup_path)
+                notes.append(f"backup {backup_path.name}")
+        except OSError as exc:
+            return False, f"could not backup {setup}: {exc}"
+    try:
+        setup.write_text(patched, encoding="utf-8")
+    except OSError as exc:
+        return False, f"could not write {setup}: {exc}"
+    return True, "; ".join(notes) or f"rewrote host tokens to {machine}"
+
+
 def _cabinet_machine_name(ctx: RepairContext) -> str | None:
     if not ctx.is_remote:
         return (os.environ.get("COMPUTERNAME") or "").strip() or None
@@ -540,8 +621,15 @@ def _diagnose_aurum_hostname(ctx: RepairContext) -> RepairFinding:
 
 
 def _repair_aurum_hostname(ctx: RepairContext) -> RepairOutcome:
-    setup = _aurum_setup_path(ctx.goldclub_root)
+    setup = find_aurum_setup_xml(ctx.goldclub_root)
     machine = _cabinet_machine_name(ctx)
+    if setup is None:
+        return RepairOutcome(
+            repair_id="aurum_setup_hostname",
+            title=_TITLE_AURUM,
+            ok=False,
+            detail=f"No {_AURUM_SETUP_REL} - this cabinet has no Aurum config.",
+        )
     if not machine or not _HOSTNAME_RE.match(machine):
         return RepairOutcome(
             repair_id="aurum_setup_hostname",
@@ -549,69 +637,22 @@ def _repair_aurum_hostname(ctx: RepairContext) -> RepairOutcome:
             ok=False,
             detail="Could not resolve a usable Windows hostname for the cabinet.",
         )
-    try:
-        text = setup.read_text(encoding="utf-8", errors="replace")
-    except OSError as exc:
-        return RepairOutcome(
-            repair_id="aurum_setup_hostname",
-            title=_TITLE_AURUM,
-            ok=False,
-            detail=f"Could not read {_AURUM_SETUP_REL}: {exc}",
-        )
-
-    hosts = _aurum_host_names(text)
-    stale = [h for h in hosts if h.casefold() != machine.casefold()]
-    if not stale:
+    changed, detail = rewrite_aurum_host_tokens(setup, machine, backup=True)
+    if not changed and "already targets" in detail:
         return RepairOutcome(
             repair_id="aurum_setup_hostname",
             title=_TITLE_AURUM,
             ok=True,
             detail=f"AurumSetup already targets {machine}.",
         )
-
-    notes: list[str] = []
-    patched = text
-    for old in stale:
-        # Only the host tokens. EGM id (GCC_ST_..._01) and CabinetSerialNumber are
-        # licensing identity and must survive untouched.
-        for element in _HOST_ELEMENTS:
-            pattern = re.compile(
-                rf"(<{element}>\s*)([^<]*?)(\s*</{element}>)", re.IGNORECASE
-            )
-
-            def _swap(match: re.Match[str], _old: str = old) -> str:
-                value = match.group(2)
-                if _old.casefold() not in value.casefold():
-                    return match.group(0)
-                replaced = re.sub(re.escape(_old), machine, value, flags=re.IGNORECASE)
-                return f"{match.group(1)}{replaced}{match.group(3)}"
-
-            patched = pattern.sub(_swap, patched)
-        notes.append(f"{old} -> {machine}")
-
-    if patched == text:
+    if not changed:
         return RepairOutcome(
             repair_id="aurum_setup_hostname",
             title=_TITLE_AURUM,
             ok=False,
-            detail="Found a stale host block but no host token to rewrite.",
-            notes=tuple(notes),
+            detail=detail,
         )
-
-    backup = setup.with_name(f"{setup.name}.bak-host-{stale[0]}")
-    try:
-        if not backup.exists():
-            shutil.copy2(setup, backup)
-            notes.append(f"backup {backup.name}")
-        setup.write_text(patched, encoding="utf-8")
-    except OSError as exc:
-        return RepairOutcome(
-            repair_id="aurum_setup_hostname",
-            title=_TITLE_AURUM,
-            ok=False,
-            detail=f"Could not write {_AURUM_SETUP_REL}: {exc}",
-            notes=tuple(notes),
-        )
+    notes = tuple(part.strip() for part in detail.split(";") if part.strip())
     return RepairOutcome(
         repair_id="aurum_setup_hostname",
         title=_TITLE_AURUM,
@@ -620,7 +661,7 @@ def _repair_aurum_hostname(ctx: RepairContext) -> RepairOutcome:
             f"Rewrote the AurumSetup host tokens to {machine}. Restart "
             "GoldClub.Aurum.Services and the game; expect 50010 and 50011 to listen."
         ),
-        notes=tuple(notes),
+        notes=notes,
     )
 
 

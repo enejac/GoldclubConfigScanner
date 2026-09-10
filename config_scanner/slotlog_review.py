@@ -118,8 +118,9 @@ _RULES: tuple[tuple[str, str, str, str, str, re.Pattern[str] | None, tuple[str, 
         "error",
         "Aurum EGM failed to start",
         "SAS enabled",
-        "OneHand could not create AurumEGM (often wrong AurumSetup host or SAS config). "
-        "Check SAS / Aurum hostname — do not rewrite serialport maps.",
+        "OneHand could not create AurumEGM (wrong AurumSetup host block, not "
+        "the SAS address checkbox). Use More → Diagnose & repair cabinet "
+        "(AurumSetup host) — do not rewrite serialport maps.",
         None,
         (
             "AurumEGM creation error",
@@ -527,9 +528,9 @@ def review_slot_logs(
                 detail="AurumEGM..ctor / creation error in SlotLog with no later messenger.",
                 field_label="SAS enabled",
                 fix_hint=(
-                    "OneHand could not create AurumEGM (often wrong AurumSetup host "
-                    "or SAS config). Check SAS / Aurum hostname — do not rewrite "
-                    "serialport maps."
+                    "OneHand could not create AurumEGM (wrong AurumSetup host "
+                    "block). Use More → Diagnose & repair cabinet — do not "
+                    "rewrite serialport maps."
                 ),
                 log_rel="var/log/SlotLog",
             )

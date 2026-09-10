@@ -819,9 +819,27 @@ def _parse_xml(path: Path) -> ET.ElementTree:
     return ET.parse(path)
 
 
+def _xml_default_namespace(root: ET.Element) -> str | None:
+    tag = root.tag
+    if isinstance(tag, str) and tag.startswith("{"):
+        return tag[1:].split("}", 1)[0]
+    return None
+
+
 def _write_tree(tree: ET.ElementTree, path: Path) -> None:
+    """Serialize XML without turning ``xmlns="…"`` into ``ns0:`` prefixes.
+
+    ClientsSet / SASsetupData use a default namespace. ElementTree's default
+    writer rewrites that as ``<ns0:ClientsSet xmlns:ns0="…"`` which C#
+    XmlSerializer then fails to bind — SAS address/AFT never load.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    tree.write(path, encoding="utf-8", xml_declaration=True)
+    root = tree.getroot()
+    kwargs: dict[str, object] = {"encoding": "utf-8", "xml_declaration": True}
+    ns = _xml_default_namespace(root)
+    if ns:
+        kwargs["default_namespace"] = ns
+    path.write_bytes(ET.tostring(root, **kwargs))
 
 
 def _write_jurisdiction_config(tree: ET.ElementTree, path: Path) -> None:
@@ -1463,6 +1481,15 @@ def leftover_jurisdiction_single_denomination(
     if single != int(denomination_list[0]):
         return single
     return None
+
+
+def sas_channel_flags_differ(goldclub: Path, sas: SasSettings) -> bool:
+    """True when SAS channel OwnerHostId flags disagree with live AurumSetup."""
+    live_flags = read_sas_channel_flags(goldclub)
+    for field, _label, _cls in SAS_CHANNEL_FIELDS:
+        if bool(getattr(sas, field, True)) != bool(live_flags.get(field, True)):
+            return True
+    return False
 
 
 # Union of Market names seen across GameStar Country Selector SKUs.
@@ -2937,8 +2964,8 @@ def build_config_pack(
         return sections is None or section in sections
 
     def _stage(rel: str, patcher) -> None:  # noqa: ANN001
-        src = live / rel
-        if not src.is_file():
+        src = _resolve_goldclub_rel(live, rel)
+        if src is None or not src.is_file():
             return
         dest = pack_dir / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -3176,7 +3203,10 @@ def build_config_pack(
     want_aurum = _want("aurum") and (
         recipe.aurum_identity.network_hostname_template or currency
     )
-    want_sas_channels = _want("sas")
+    # SAS address / AFT / lock live in ClientsSet + SASsetupData. Rewriting
+    # AurumSetup.xml for those (ElementTree round-trip) drops the Windows
+    # hostname Network block → AurumEGM..ctor NRE / SASControler1 NOT FOUND.
+    want_sas_channels = _want("sas") and sas_channel_flags_differ(live, recipe.sas)
     if want_aurum or want_sas_channels:
         identity = (
             recipe.aurum_identity if want_aurum else AurumIdentitySettings()
