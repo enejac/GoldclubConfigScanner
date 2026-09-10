@@ -416,6 +416,9 @@ def normalize_game_drive(game_drive: str) -> str:
         return cleaned.rstrip("\\")
     if re.fullmatch(r"[A-Za-z]:", cleaned):
         return f"{cleaned[0].upper()}:\\"
+    if os.name != "nt":
+        # A trailing backslash is a real character in the POSIX name.
+        return cleaned.rstrip("/\\") or cleaned
     if cleaned.endswith("\\"):
         return cleaned
     return cleaned + "\\"
