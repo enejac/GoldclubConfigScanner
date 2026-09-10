@@ -40,6 +40,25 @@ def test_saved_maximized_and_fullscreen() -> None:
     )
 
 
+def test_window_display_flags_with_qt_enum() -> None:
+    pytest.importorskip("PySide6.QtCore")
+    from PySide6.QtCore import Qt
+
+    class _FlagWin:
+        def isMaximized(self) -> bool:
+            return False
+
+        def isFullScreen(self) -> bool:
+            return False
+
+        def windowState(self):
+            return Qt.WindowState.WindowMaximized
+
+    maximized, fullscreen = SettingsManager._window_display_flags(_FlagWin())
+    assert maximized is True
+    assert fullscreen is False
+
+
 def test_settings_bool_parses_qsettings_strings() -> None:
     assert SettingsManager._settings_bool(True) is True
     assert SettingsManager._settings_bool("true") is True
@@ -168,9 +187,10 @@ def test_first_restore_without_saved_geometry_is_maximized(
 
 
 def test_window_defaults_to_live_push_and_maximized(isolated_settings: str) -> None:
-    pytest.importorskip("PySide6")
-    from PySide6.QtWidgets import QApplication
-
+    try:
+        from PySide6.QtWidgets import QApplication
+    except ImportError as exc:
+        pytest.skip(str(exc))
     QApplication.instance() or QApplication([])
     from gui.config_scanner_window import ConfigScannerWindow
 
@@ -182,9 +202,10 @@ def test_window_defaults_to_live_push_and_maximized(isolated_settings: str) -> N
 
 
 def test_simple_shell_show_push_opens_panel(monkeypatch: pytest.MonkeyPatch) -> None:
-    pytest.importorskip("PySide6")
-    from PySide6.QtWidgets import QApplication
-
+    try:
+        from PySide6.QtWidgets import QApplication
+    except ImportError as exc:
+        pytest.skip(str(exc))
     QApplication.instance() or QApplication([])
     from gui.simple_home import SimpleShell
 

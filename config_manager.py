@@ -455,13 +455,23 @@ class SettingsManager:
         is_max = bool(getattr(window, "isMaximized", lambda: False)())
         is_fs = bool(getattr(window, "isFullScreen", lambda: False)())
         window_state = getattr(window, "windowState", None)
-        if callable(window_state):
+        if not callable(window_state):
+            return is_max, is_fs
+        state = window_state()
+        max_flag = Qt.WindowState.WindowMaximized
+        fs_flag = Qt.WindowState.WindowFullScreen
+        max_bit = getattr(max_flag, "value", 0x00000002)
+        fs_bit = getattr(fs_flag, "value", 0x00000004)
+        try:
+            is_max = is_max or bool(state & max_flag)
+            is_fs = is_fs or bool(state & fs_flag)
+        except TypeError:
             try:
-                bits = int(window_state())
+                bits = int(state)
             except (TypeError, ValueError):
                 bits = 0
-            is_max = is_max or bool(bits & int(Qt.WindowState.WindowMaximized))
-            is_fs = is_fs or bool(bits & int(Qt.WindowState.WindowFullScreen))
+            is_max = is_max or bool(bits & int(max_bit))
+            is_fs = is_fs or bool(bits & int(fs_bit))
         return is_max, is_fs
 
     @staticmethod
