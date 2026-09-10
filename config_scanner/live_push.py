@@ -1548,11 +1548,36 @@ def backup_live_push_files(
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, target)
             copied += 1
-        except OSError:
-            continue
+        except OSError as exc:
+            raise OSError(f"Could not backup {norm}: {exc}") from exc
     if copied == 0:
         return None
     return bak
+
+
+def restore_live_push_backup(
+    dest_goldclub: Path | str,
+    backup_dir: Path,
+) -> list[str]:
+    """Copy a Live Push backup folder back onto the live Goldclub root."""
+    from network.lab_access import safe_join_under
+
+    dest = goldclub_root_from_target(dest_goldclub)
+    root = Path(backup_dir)
+    errors: list[str] = []
+    if not root.is_dir():
+        return [f"backup folder missing: {root}"]
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(root).as_posix()
+        try:
+            target = safe_join_under(dest, rel)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, target)
+        except (OSError, ValueError) as exc:
+            errors.append(f"{rel}: {exc}")
+    return errors
 
 
 def _short_fail(detail: str) -> str:
@@ -3363,12 +3388,22 @@ def commit_live_push(
         written = applied.written
         skipped = applied.skipped
         errors = applied.errors
+        if errors and backup_dir:
+            rb = restore_live_push_backup(dest, Path(backup_dir))
+            if rb:
+                errors = errors + tuple(f"backup restore: {item}" for item in rb)
+            else:
+                errors = errors + ("Reverted live files from backup.",)
         _lp_log(
             f"write done files={len(written)} skipped={len(skipped)} "
             f"errors={errors} sections={sorted(sections) if sections else 'full'}"
         )
     except (OSError, ValueError, FileNotFoundError) as exc:
         errors = (str(exc),)
+        if backup_dir:
+            rb = restore_live_push_backup(dest, Path(backup_dir))
+            if not rb:
+                errors = errors + ("Reverted live files from backup.",)
     finally:
         if work_parent is None:
             shutil.rmtree(parent, ignore_errors=True)

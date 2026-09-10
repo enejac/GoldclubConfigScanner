@@ -193,6 +193,22 @@ def _norm_market(text: str) -> str:
     return re.sub(r"[^a-z0-9]", "", (text or "").casefold())
 
 
+_MARKET_CANON: dict[str, str] = {
+    "trinidad": "trinidadtobago",
+    "tt": "trinidadtobago",
+    "trinidadandtobago": "trinidadtobago",
+    "trinidadtobago": "trinidadtobago",
+    "pr": "puertorico",
+    "puertorico": "puertorico",
+    "southafrica": "southafrica",
+    "sa": "southafrica",
+}
+
+
+def _canonical_market(norm: str) -> str:
+    return _MARKET_CANON.get(norm, norm)
+
+
 def consistency_issues(
     *,
     currency: str | None = None,
@@ -295,11 +311,11 @@ def probe_against_profile(
 
 
 def leaf_matches_profile_country(leaf_country: str, profile: JurisdictionProfile) -> bool:
-    a = _norm_market(leaf_country)
-    b = _norm_market(profile.country)
+    a = _canonical_market(re.sub(r"[^a-z]", "", (leaf_country or "").casefold()))
+    b = _canonical_market(re.sub(r"[^a-z]", "", (profile.country or "").casefold()))
     if not a or not b:
-        return True
-    return a in b or b in a or a == b
+        return False
+    return a == b
 
 
 def build_expected_from_leaf(goldclub: Path) -> dict[str, Any]:

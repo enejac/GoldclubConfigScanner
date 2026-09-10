@@ -557,6 +557,7 @@ class ConfigScannerTabWidget(QFrame):
         self._last_scan_snapshot_name: str | None = None
         self._apply_buttons: list[tuple[QWidget, bool]] = []
         self._busy = False
+        self._closing = False
         self._busy_op: str | None = None
         self._target_valid = False
         self._validate_seq = 0
@@ -3221,6 +3222,9 @@ class ConfigScannerTabWidget(QFrame):
         )
 
     def _on_apply_finished(self, ok: bool, result: object, message: str) -> None:
+        if not self._ui_active():
+            self._set_busy(False)
+            return
         wrote = self._pending_write_snapshot
         wrote_scope = self._pending_write_scope
         presave = self._presave_snapshot_for_write
@@ -3872,16 +3876,27 @@ class ConfigScannerTabWidget(QFrame):
         self._validate_timer.stop()
         self._run_target_validation()
 
+    def mark_closing(self) -> None:
+        self._closing = True
+
+    def _ui_active(self) -> bool:
+        return (not self._closing) and self.isVisible()
+
     def _run_target_validation(self) -> None:
         text = self._drive_edit.text().strip()
         self._validate_seq += 1
         self._validate_pending = text
+        seq = self._validate_seq
         if not text:
-            self._on_target_validated("", False)
+            self._on_target_validated("", False, seq)
             return
-        schedule_validate_scan_target(self._pool, self._service, text, self._emitter)
+        schedule_validate_scan_target(
+            self._pool, self._service, text, self._emitter, seq=seq
+        )
 
-    def _on_target_validated(self, path: str, valid: bool) -> None:
+    def _on_target_validated(self, path: str, valid: bool, seq: int = -1) -> None:
+        if seq >= 0 and seq != self._validate_seq:
+            return
         current = self._drive_edit.text().strip()
         if path != current:
             return
