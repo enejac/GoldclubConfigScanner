@@ -2028,7 +2028,7 @@ def read_math_settings(goldclub: Path) -> list[MathDenomSettings]:
         return []
     out: list[MathDenomSettings] = []
     for game_dir in sorted(themes.iterdir()):
-        if not game_dir.is_dir() or game_dir.name.casefold() == "data":
+        if not game_dir.is_dir() or not receives_live_push_bet_steps(game_dir.name):
             continue
         math_path = game_dir / "MathSettings.xml"
         if not math_path.is_file():
@@ -2556,7 +2556,18 @@ def patch_math_bet_multipliers(
     _write_tree(tree, dest)
 
 
+# Live Push writes BetMultipliers only into these themes' MathSettings.xml.
+# RouletteGame keeps its own roulette math; Link2WinFeature is JSON packs;
+# data/ is shared assets. Underscore-prefixed folders are disabled titles.
 _MATH_THEME_SKIP = frozenset({"data", "RouletteGame", "Link2WinFeature"})
+
+
+def receives_live_push_bet_steps(theme_name: str) -> bool:
+    """False when Live Push must not overwrite this theme's bet steps."""
+    name = (theme_name or "").strip()
+    if not name or name.startswith("_"):
+        return False
+    return name.casefold() not in {n.casefold() for n in _MATH_THEME_SKIP}
 
 
 def _math_theme_names(goldclub: Path) -> list[str]:
@@ -2573,11 +2584,7 @@ def _math_theme_names(goldclub: Path) -> list[str]:
             if not game_dir.is_dir():
                 continue
             theme_name = game_dir.name
-            if theme_name.startswith("_"):
-                continue
-            if theme_name.casefold() in {
-                n.casefold() for n in _MATH_THEME_SKIP
-            }:
+            if not receives_live_push_bet_steps(theme_name):
                 continue
             if (game_dir / "MathSettings.xml").is_file():
                 names.append(theme_name)
@@ -3055,6 +3062,8 @@ def build_config_pack(
                 else [math.theme]
             )
             for theme in themes:
+                if not receives_live_push_bet_steps(theme):
+                    continue
                 rel = f"slot/themes/{theme}/MathSettings.xml"
                 src = live / rel
                 if not src.is_file():
