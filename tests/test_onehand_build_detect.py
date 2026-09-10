@@ -30,17 +30,26 @@ def test_configuration_from_strings() -> None:
 
 def test_sniff_prefers_assembly_configuration(tmp_path: Path) -> None:
     exe = tmp_path / "OneHand.exe"
-    # Both words appear; AssemblyConfiguration wins.
     payload = "junk Debugger junk AssemblyConfiguration\x00Release more Debug"
     exe.write_bytes(b"\x00" * 64 + payload.encode("utf-16le"))
     assert _sniff_build_configuration(exe) == "Release"
 
 
-def test_sniff_release_when_both_plain_words(tmp_path: Path) -> None:
+def test_sniff_assembly_debug_wins_over_dependency_release(tmp_path: Path) -> None:
+    exe = tmp_path / "OneHand.exe"
+    payload = (
+        "mscorlib Release AssemblyConfiguration\x00Debug "
+        "Newtonsoft.Json Release"
+    )
+    exe.write_bytes(b"\x00" * 64 + payload.encode("utf-16le"))
+    assert _sniff_build_configuration(exe) == "Debug"
+
+
+def test_sniff_ignores_stray_release_word(tmp_path: Path) -> None:
     exe = tmp_path / "OneHand.exe"
     payload = "Debug path and Release config"
     exe.write_bytes(b"\x00" * 32 + payload.encode("utf-16le"))
-    assert _sniff_build_configuration(exe) == "Release"
+    assert _sniff_build_configuration(exe) is None
 
 
 def test_read_pe_debug_flag_true() -> None:
@@ -53,14 +62,14 @@ def test_read_pe_debug_flag_true() -> None:
     assert _read_pe_debug_flag(win32, r"C:\fake\OneHand.exe") is True
 
 
-def test_read_pe_debug_flag_false() -> None:
+def test_read_pe_debug_flag_unset_is_unknown() -> None:
     win32 = SimpleNamespace(
         GetFileVersionInfo=lambda _path, _key: {
             "FileFlags": 0x0,
             "FileFlagsMask": 0x3F,
         }
     )
-    assert _read_pe_debug_flag(win32, r"C:\fake\OneHand.exe") is False
+    assert _read_pe_debug_flag(win32, r"C:\fake\OneHand.exe") is None
 
 
 def test_detect_onehand_build_uses_sniff_and_version(tmp_path: Path, monkeypatch) -> None:
@@ -91,6 +100,50 @@ def test_detect_onehand_build_uses_sniff_and_version(tmp_path: Path, monkeypatch
     assert info.version == "2.0.1+RC2"
     assert info.configuration == "Debug"
     assert "OneHand" in info.label
+
+
+def test_detect_onehand_build_debug_when_pe_flag_clear(tmp_path: Path, monkeypatch) -> None:
+    gold = tmp_path / "Goldclub"
+    gold.mkdir()
+    exe = gold / "OneHand.exe"
+    exe.write_bytes(b"MZ" + "ProductVersion\0Debug\0".encode("utf-16le"))
+
+    monkeypatch.setattr(
+        "config_scanner.build_version._extract_version_from_onehand_exe",
+        lambda _path: SimpleNamespace(
+            product_version="Debug",
+            display_version=None,
+            file_version="2.0.1.0",
+            product_name="OneHand",
+            is_debug=False,
+        ),
+    )
+    info = detect_onehand_build(gold)
+    assert info is not None
+    assert info.configuration == "Debug"
+    assert info.version == "2.0.1.0"
+
+
+def test_detect_onehand_build_debug_from_sku_bytes(tmp_path: Path, monkeypatch) -> None:
+    gold = tmp_path / "Goldclub"
+    (gold / "slot").mkdir(parents=True)
+    exe = gold / "slot" / "OneHand.exe"
+    exe.write_bytes(b"MZ" + "ProductVersion\0Debug\0".encode("utf-16le"))
+
+    monkeypatch.setattr(
+        "config_scanner.build_version._extract_version_from_onehand_exe",
+        lambda _path: SimpleNamespace(
+            product_version="2.0.1+RC2",
+            display_version="v2.0.1-rc2",
+            file_version="2.0.1.0",
+            product_name="OneHand",
+            is_debug=None,
+        ),
+    )
+    info = detect_onehand_build(gold)
+    assert info is not None
+    assert info.configuration == "Debug"
+    assert "2.0.1" in info.version
 
 
 def test_detect_onehand_build_release_from_pe_flag(tmp_path: Path, monkeypatch) -> None:
