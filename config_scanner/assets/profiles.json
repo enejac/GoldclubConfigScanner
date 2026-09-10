@@ -3,7 +3,7 @@
     {
       "id": "roulette_usb",
       "label": "Ruleta Alegro Wing",
-      "defaultTarget": "\\\\10.0.0.90\\c$\\Goldclub",
+      "defaultTarget": "C:\\Goldclub",
       "buildVersionRelativePath": "ruleta/BuildVersion.txt",
       "scanRoots": [
         {
@@ -29,13 +29,7 @@
       "discoverTargets": [
         "D:",
         "G:",
-        "C:\\Goldclub",
-        "\\\\10.0.0.90\\c$\\Goldclub",
-        "\\\\10.0.0.90\\d$\\Goldclub",
-        "\\\\10.0.0.111\\slot",
-        "\\\\10.0.0.111\\c$\\Goldclub",
-        "\\\\10.0.0.98\\slot",
-        "\\\\10.0.0.98\\c$\\Goldclub"
+        "C:\\Goldclub"
       ]
     },
     {
@@ -50,14 +44,7 @@
         "C:\\Goldclub\\slot",
         "D:",
         "D:\\Goldclub",
-        "D:\\Goldclub\\slot",
-        "\\\\10.0.0.90\\c$\\Goldclub",
-        "\\\\10.0.0.90\\c$\\Goldclub\\slot",
-        "\\\\10.0.0.90\\d$\\Goldclub\\slot",
-        "\\\\10.0.0.111\\slot",
-        "\\\\10.0.0.111\\c$\\Goldclub",
-        "\\\\10.0.0.98\\slot",
-        "\\\\10.0.0.98\\c$\\Goldclub"
+        "D:\\Goldclub\\slot"
       ],
       "buildVersionRelativePath": null,
       "buildFingerprint": {

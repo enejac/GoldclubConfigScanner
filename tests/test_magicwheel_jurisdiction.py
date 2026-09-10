@@ -188,13 +188,18 @@ def test_magic_wheel_bet_change_includes_jurisdiction_section() -> None:
     assert "jurisdiction" in sections
 
 
-def test_slot_profile_discovers_cabinet_98() -> None:
+def test_slot_profiles_do_not_hardcode_lab_ips() -> None:
     slot = get_profile("slot_lab_90")
     roulette = get_profile("roulette_usb")
-    assert r"\\10.0.0.98\c$\Goldclub" in slot.discover_targets
-    assert r"\\10.0.0.98\c$\Goldclub" in roulette.discover_targets
+    for profile in (slot, roulette):
+        assert not any("10.0.0." in item for item in profile.discover_targets)
+        assert "10.0.0." not in profile.default_target
     panel = (
         Path(__file__).resolve().parents[1] / "gui" / "live_push_panel.py"
     ).read_text(encoding="utf-8")
-    assert r"\\10.0.0.98\c$\Goldclub" in panel
+    assert '("10.0.0.90"' not in panel
+    assert '("10.0.0.98"' not in panel
+    assert "This PC" not in panel
+    assert "Use a cabinet IP instead" in panel
+    assert "_begin_detect" in panel
     assert "canonicalize_live_field_label" in panel

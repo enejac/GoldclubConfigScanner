@@ -6,7 +6,6 @@ from pathlib import Path
 
 from config_scanner.jurisdiction import find_jurisdiction
 from config_scanner.live_push import (
-    DEFAULT_REMOTE_LIVE_TARGET,
     LIVE_FIELD_TOOLTIP_CHANGED,
     LIVE_FIELD_TOOLTIP_MATCH,
     commit_live_push,
@@ -139,16 +138,29 @@ def test_default_live_target_prefers_local_goldclub(tmp_path: Path) -> None:
         local_candidates=(str(gold),),
         remote=r"\\10.0.0.111\slot",
     )
-    assert Path(chosen) == gold
+    assert str(chosen).replace("\\", "/").rstrip("/") == str(gold).replace("\\", "/").rstrip("/")
 
 
-def test_default_live_target_falls_back_to_111_share(tmp_path: Path) -> None:
+def test_default_live_target_empty_when_no_local(tmp_path: Path) -> None:
     missing = tmp_path / "no-goldclub"
     chosen = default_live_cabinet_target(
         local_candidates=(str(missing),),
-        remote=DEFAULT_REMOTE_LIVE_TARGET,
+        remote="",
     )
-    assert chosen == DEFAULT_REMOTE_LIVE_TARGET
+    assert chosen == ""
+
+
+def test_live_targets_for_typed_ip() -> None:
+    from config_scanner.live_push import live_targets_for_ip, resolve_live_target_from_user
+
+    assert live_targets_for_ip("10.0.0.98")[0] == r"\\10.0.0.98\c$\Goldclub"
+    assert r"\\10.0.0.98\slot" in live_targets_for_ip("10.0.0.98")
+    assert live_targets_for_ip(r"\\10.0.0.98\slot") == (r"\\10.0.0.98\slot",)
+    assert resolve_live_target_from_user("10.0.0.76", probe=False) == (
+        r"\\10.0.0.76\c$\Goldclub"
+    )
+    assert live_targets_for_ip("") == ()
+    assert live_targets_for_ip("not-an-ip") == ()
 
 
 def test_live_field_matches_bill_protocol(tmp_path: Path) -> None:

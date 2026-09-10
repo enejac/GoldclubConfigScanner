@@ -1724,13 +1724,17 @@ def cabinet_host_reachable(target: str, *, timeout_sec: float = 2.0) -> tuple[bo
 
 # Local Goldclub roots first (cabinet running the exe). Prefer unlocked G: before C:,
 # but never block the UI on a locked BitLocker G: (probe with a short timeout).
+# Do not list lab IPs here — the operator types one only when no local tree exists.
 _LOCAL_LIVE_CANDIDATES: tuple[str, ...] = (
     r"G:",
+    r"G:\Goldclub",
+    r"G:\Goldclub\slot",
     r"C:\Goldclub",
     r"C:\goldclub",
     r"C:\Goldclub\slot",
 )
-DEFAULT_REMOTE_LIVE_TARGET = r"\\10.0.0.111\slot"
+DEFAULT_REMOTE_LIVE_TARGET = ""
+_IPV4_HOST_RE = re.compile(r"^(?:\d{1,3}\.){3}\d{1,3}$")
 
 
 def _exists_quick(path: Path, *, timeout_sec: float = 0.3) -> bool:
@@ -1773,18 +1777,11 @@ def _local_goldclub_ready(raw: str) -> bool:
         return False
 
 
-def default_live_cabinet_target(
+def detect_local_live_cabinet(
     *,
     local_candidates: tuple[str, ...] | None = None,
-    remote: str = DEFAULT_REMOTE_LIVE_TARGET,
 ) -> str:
-    """Pick the Goldclub tree this machine can see without a drive-letter sweep.
-
-    On a cabinet the exe prefers unlocked ``G:`` then ``C:\\Goldclub``. On a
-    workstation those folders are absent, so the path stays the lab share
-    ``\\\\10.0.0.111\\slot``. ``prefer_local_scan_target`` still folds a
-    loopback admin share back to a drive letter when this PC *is* the host.
-    """
+    """Local Goldclub on G: or C:, or empty when this PC has no tree."""
     from config_scanner.build_version import prefer_local_scan_target
 
     for raw in local_candidates if local_candidates is not None else _LOCAL_LIVE_CANDIDATES:
@@ -1796,7 +1793,73 @@ def default_live_cabinet_target(
             continue
         if looks_like_goldclub_root(root):
             return prefer_local_scan_target(str(root))
-    return prefer_local_scan_target(remote)
+    return ""
+
+
+def live_targets_for_ip(raw: str) -> tuple[str, ...]:
+    """UNC Goldclub roots for a typed cabinet IP or pasted share."""
+    from config_scanner.build_version import normalize_scan_target
+
+    text = (raw or "").strip().strip('"')
+    if not text:
+        return ()
+    if text.startswith("\\\\"):
+        return (normalize_scan_target(text),)
+    first, sep, rest = text.partition("\\")
+    if _IPV4_HOST_RE.fullmatch(first) and sep and rest.strip():
+        return (normalize_scan_target(rf"\\{first}\{rest.strip()}"),)
+    host = first.strip()
+    if not _IPV4_HOST_RE.fullmatch(host):
+        return ()
+    return (
+        rf"\\{host}\c$\Goldclub",
+        rf"\\{host}\slot",
+        rf"\\{host}\c$\Goldclub\slot",
+    )
+
+
+def resolve_live_target_from_user(
+    raw: str,
+    *,
+    probe: bool = True,
+) -> str:
+    """Local path, pasted UNC, or first reachable share for a typed IP."""
+    text = (raw or "").strip().strip('"')
+    if not text:
+        return ""
+    if not text.startswith("\\\\") and not _IPV4_HOST_RE.fullmatch(text.split("\\", 1)[0]):
+        return text
+    candidates = live_targets_for_ip(text)
+    if not candidates:
+        return text
+    if not probe:
+        return candidates[0]
+    for cand in candidates:
+        try:
+            if _exists_quick(Path(cand), timeout_sec=1.2) and _local_goldclub_ready(cand):
+                return cand
+        except (OSError, TimeoutError, ValueError):
+            continue
+    return candidates[0]
+
+
+def default_live_cabinet_target(
+    *,
+    local_candidates: tuple[str, ...] | None = None,
+    remote: str = DEFAULT_REMOTE_LIVE_TARGET,
+) -> str:
+    """Pick a local Goldclub tree (G: then C:). Empty when none — do not guess an IP.
+
+    ``prefer_local_scan_target`` still folds a loopback admin share back to a
+    drive letter when this PC *is* the host. ``remote`` is only used when the
+    caller passes one (tests / an operator-typed IP).
+    """
+    from config_scanner.build_version import prefer_local_scan_target
+
+    local = detect_local_live_cabinet(local_candidates=local_candidates)
+    if local:
+        return local
+    return prefer_local_scan_target(remote) if remote else ""
 
 
 def live_field_matches(live: SlotSetupRecipe, form: SlotSetupRecipe) -> dict[str, bool]:

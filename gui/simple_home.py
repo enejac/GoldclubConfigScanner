@@ -408,9 +408,10 @@ class SimpleShell(QWidget):
     def _start_math_preflight(self) -> None:
         from config_scanner.live_push import default_live_cabinet_target
 
-        worker = _MathPreflightRunnable(
-            default_live_cabinet_target(), self._preflight_emitter
-        )
+        target = default_live_cabinet_target()
+        if not target:
+            return
+        worker = _MathPreflightRunnable(target, self._preflight_emitter)
         QThreadPool.globalInstance().start(worker)
 
     def _show_home(self) -> None:
