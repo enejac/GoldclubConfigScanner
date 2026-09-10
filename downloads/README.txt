@@ -1,12 +1,14 @@
 Config Scanner Windows build
 ===========================
 
-Latest exe (only build kept in git): Launch-ConfigScanner.exe
-  Stamp:  2026-09-10 06:18
-  SHA256: 2885103313db4679b9251beff8f8e2f53235815f6313ae5173d60fc66b436ea6
+GitHub's blob Download button does not work for this 62 MB file.
+Use View raw (you must be signed in):
 
-Put the repo tools\ folder next to it (Encryptor, BiOS2_PackageGenerator).
-Do not commit dated ConfigScanner-*.exe copies or lab_pack.zip.
+  https://github.com/enejac/GoldclubConfigScanner/raw/master/downloads/Launch-ConfigScanner.exe
 
-Download via GitHub "Download raw file" while signed in.
-Do not use a cursor.com /opt/cursor/artifacts link.
+Or: Code → Download ZIP, then downloads\Launch-ConfigScanner.exe
+
+Stamp:  2026-09-10 06:18
+SHA256: 2885103313db4679b9251beff8f8e2f53235815f6313ae5173d60fc66b436ea6
+
+Put the repo tools\ folder next to the exe.

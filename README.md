@@ -4,6 +4,18 @@ Standalone SHA1 snapshot / compare / restore tool for GoldClub EGM config.
 
 Forked from [GoldclubLogInvestigator](https://github.com/enejac/GoldclubLogInvestigator) at `d355681` so scanner work can diverge from the log-triage app. Roulette restore is proven; the next structural work is slot-EGM auto-adapt (profiles, scan roots, OneHand vs Ruleta).
 
+## Download Windows exe
+
+GitHub will not download a 62 MB file from the **blob** page (the floppy-disk icon is dead; it only says it cannot preview the file).
+
+While signed in, open:
+
+https://github.com/enejac/GoldclubConfigScanner/raw/master/downloads/Launch-ConfigScanner.exe
+
+That is the **View raw** link. Or: **Code → Download ZIP**, then take `downloads\Launch-ConfigScanner.exe`.
+
+Stamp: **2026-09-10 06:18**. Keep repo `tools\` next to the exe.
+
 ## Run from source
 
 ```powershell
