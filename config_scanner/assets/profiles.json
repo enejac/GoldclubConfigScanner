@@ -33,7 +33,9 @@
         "\\\\10.0.0.90\\c$\\Goldclub",
         "\\\\10.0.0.90\\d$\\Goldclub",
         "\\\\10.0.0.111\\slot",
-        "\\\\10.0.0.111\\c$\\Goldclub"
+        "\\\\10.0.0.111\\c$\\Goldclub",
+        "\\\\10.0.0.98\\slot",
+        "\\\\10.0.0.98\\c$\\Goldclub"
       ]
     },
     {
@@ -53,7 +55,9 @@
         "\\\\10.0.0.90\\c$\\Goldclub\\slot",
         "\\\\10.0.0.90\\d$\\Goldclub\\slot",
         "\\\\10.0.0.111\\slot",
-        "\\\\10.0.0.111\\c$\\Goldclub"
+        "\\\\10.0.0.111\\c$\\Goldclub",
+        "\\\\10.0.0.98\\slot",
+        "\\\\10.0.0.98\\c$\\Goldclub"
       ],
       "buildVersionRelativePath": null,
       "buildFingerprint": {

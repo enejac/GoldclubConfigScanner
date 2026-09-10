@@ -48,6 +48,8 @@ from config_scanner.slot_setup import (
     goldclub_root_from_target,
     leftover_jurisdiction_single_denomination,
     load_recipe_from_goldclub,
+    iter_magicwheel_setting_rels,
+    math_settings_rels,
     merge_play_limits,
     missing_display_mode_assets,
     normalize_mei_bill_tokens_for_currency,
@@ -1319,12 +1321,12 @@ _LABEL_SECTIONS: dict[str, frozenset[str]] = {
     "Denoms (cents)": frozenset(
         {"mgconfig", "jurisdiction", "link2win", "magicwheel", "math"}
     ),
-    "Bet multipliers": frozenset({"math", "mgconfig"}),
+    "Bet multipliers": frozenset({"math"}),
     "Magic wheel limit": frozenset({"magicwheel", "jurisdiction"}),
-    "Magic wheel bet": frozenset({"magicwheel"}),
-    "Magic wheel enabled": frozenset({"magicwheel"}),
-    "Magic wheel max spins": frozenset({"magicwheel"}),
-    "Magic wheel average": frozenset({"magicwheel"}),
+    "Magic wheel bet": frozenset({"magicwheel", "jurisdiction"}),
+    "Magic wheel enabled": frozenset({"magicwheel", "jurisdiction"}),
+    "Magic wheel max spins": frozenset({"magicwheel", "jurisdiction"}),
+    "Magic wheel average": frozenset({"magicwheel", "jurisdiction"}),
     "Jackpot counters": frozenset({"mgconfig"}),
     "Jackpot receipt": frozenset({"hardware"}),
     "Jackpot celebration": frozenset({"mgconfig"}),
@@ -1851,15 +1853,26 @@ LIVE_OPTION_HELP: dict[str, str] = {
         "setup for the selected denoms / market."
     ),
     "Magic wheel limit": (
-        "Maximum money the magic wheel can award (machine currency units)."
+        "Maximum money the magic wheel can award. Written to "
+        "jurisdiction_config MagicWheelPackSettings/MoneyLimit and, when "
+        "present, magicwheel_Config.xml — not mgconfig."
     ),
     "Magic wheel bet": (
-        "Magic-wheel entry bet in cents. Must match the active denom pack."
+        "Magic-wheel entry bet in cents. Newer gamepacks store this in "
+        "jurisdiction_config MagicWheelPackSettings; older images use "
+        "magicwheel_Config.xml. Must match the active denom pack."
     ),
-    "Magic wheel enabled": "Turns the magic-wheel feature on or off in mgconfig.",
-    "Magic wheel max spins": "Maximum spins allowed in a magic-wheel session.",
+    "Magic wheel enabled": (
+        "Turns the magic-wheel feature on or off in jurisdiction_config "
+        "MagicWheelPackSettings and/or magicwheel_Config.xml — not mgconfig."
+    ),
+    "Magic wheel max spins": (
+        "Maximum spins allowed in a magic-wheel session "
+        "(jurisdiction_config / magicwheel_Config.xml)."
+    ),
     "Magic wheel average": (
-        "Expected average win for magic-wheel math. Must match the denom pack."
+        "Expected average win for magic-wheel math. Written with the other "
+        "wheel knobs (not mgconfig). Must match the denom pack."
     ),
     "Jackpot counters": "How many progressive / jackpot counters the UI shows.",
     "Jackpot receipt": "Jackpot receipt / ticket layout style.",
@@ -1999,12 +2012,37 @@ LIVE_FIELD_CONFIG_RELS: dict[str, tuple[str, ...]] = {
         "slot/themes/Link2WinFeature/Link2WinBonusMath.json",
         "slot/themes/Link2WinFeature/Link2WinBonusMath_Config2.json",
     ),
-    "Bet multipliers": (_MGCONFIG_REL,),
-    "Magic wheel limit": (_JURISDICTION_REL, _MGCONFIG_REL),
-    "Magic wheel bet": (_MGCONFIG_REL,),
-    "Magic wheel enabled": (_MGCONFIG_REL,),
-    "Magic wheel max spins": (_MGCONFIG_REL,),
-    "Magic wheel average": (_MGCONFIG_REL,),
+    "Bet multipliers": ("slot/themes/*/MathSettings.xml",),
+    "Magic wheel limit": (
+        _JURISDICTION_REL,
+        "slot/themes/magicwheel_Config.xml",
+        "slot/themes/magicwheel.xml",
+        "slot/themes/magicwheel_3Screens.xml",
+    ),
+    "Magic wheel bet": (
+        _JURISDICTION_REL,
+        "slot/themes/magicwheel_Config.xml",
+        "slot/themes/magicwheel.xml",
+        "slot/themes/magicwheel_3Screens.xml",
+    ),
+    "Magic wheel enabled": (
+        _JURISDICTION_REL,
+        "slot/themes/magicwheel_Config.xml",
+        "slot/themes/magicwheel.xml",
+        "slot/themes/magicwheel_3Screens.xml",
+    ),
+    "Magic wheel max spins": (
+        _JURISDICTION_REL,
+        "slot/themes/magicwheel_Config.xml",
+        "slot/themes/magicwheel.xml",
+        "slot/themes/magicwheel_3Screens.xml",
+    ),
+    "Magic wheel average": (
+        _JURISDICTION_REL,
+        "slot/themes/magicwheel_Config.xml",
+        "slot/themes/magicwheel.xml",
+        "slot/themes/magicwheel_3Screens.xml",
+    ),
     "Jackpot counters": (_MGCONFIG_REL,),
     "Jackpot receipt": (_MGCONFIG_REL, _HARDWARE_CONFIG_REL),
     "Jackpot celebration": (_MGCONFIG_REL,),
@@ -2152,6 +2190,52 @@ def live_display_corruption_errors(goldclub: Path | str) -> dict[str, str]:
     return out
 
 
+_FIELD_LABEL_ALIASES: dict[str, str] = {
+    "Money limit": "Magic wheel limit",
+    "Wheel bet": "Magic wheel bet",
+    "Max spins": "Magic wheel max spins",
+    "Money average": "Magic wheel average",
+    "Symbol": "Currency symbol",
+    "Target market": "Market",
+    "Inactivity": "Inactivity to selector",
+}
+
+_MAGIC_WHEEL_LABELS: frozenset[str] = frozenset(
+    {
+        "Magic wheel limit",
+        "Magic wheel bet",
+        "Magic wheel enabled",
+        "Magic wheel max spins",
+        "Magic wheel average",
+    }
+)
+
+
+def canonicalize_live_field_label(label: str) -> str:
+    """Map form captions (Money limit) to snapshot / right-click keys."""
+    text = (label or "").strip()
+    return _FIELD_LABEL_ALIASES.get(text, text)
+
+
+def _live_field_rels_for(goldclub: Path, label: str) -> list[str]:
+    canon = canonicalize_live_field_label(label)
+    if canon in _MAGIC_WHEEL_LABELS:
+        try:
+            discovered = iter_magicwheel_setting_rels(goldclub)
+        except (OSError, ValueError):
+            discovered = []
+        if discovered:
+            return list(discovered)
+    if canon == "Bet multipliers":
+        try:
+            math_rels = math_settings_rels(goldclub)
+        except (OSError, ValueError):
+            math_rels = []
+        if math_rels:
+            return math_rels
+    return list(LIVE_FIELD_CONFIG_RELS.get(canon, ()))
+
+
 def resolve_live_field_config_files(
     goldclub: Path | str, label: str
 ) -> list[Path]:
@@ -2159,20 +2243,29 @@ def resolve_live_field_config_files(
     found: list[Path] = []
     seen: set[str] = set()
     root = Path(goldclub)
-    for rel in LIVE_FIELD_CONFIG_RELS.get(label, ()):
-        path = _resolve_goldclub_rel(root, rel)
-        if path is None:
-            continue
+    for rel in _live_field_rels_for(root, label):
+        pattern = str(rel).replace("\\", "/").lstrip("/")
         try:
-            if not path.is_file():
-                continue
-            key = str(path).casefold()
-            if key in seen:
-                continue
-            seen.add(key)
-            found.append(path)
-        except OSError:
+            matches = (
+                list(root.glob(pattern))
+                if "*" in pattern
+                else [_resolve_goldclub_rel(root, pattern)]
+            )
+        except (OSError, ValueError):
             continue
+        for path in matches:
+            if path is None:
+                continue
+            try:
+                if not path.is_file():
+                    continue
+                key = str(path).casefold()
+                if key in seen:
+                    continue
+                seen.add(key)
+                found.append(path)
+            except OSError:
+                continue
     return found
 
 
