@@ -141,6 +141,9 @@ def test_jurisdiction_wizard_module_imports() -> None:
 
 
 def test_jurisdiction_wizard_constructs(monkeypatch) -> None:
+    import pytest
+
+    pytest.importorskip("PySide6")
     from PySide6.QtWidgets import QApplication, QGroupBox
 
     from gui.jurisdiction_wizard import JurisdictionWizard
