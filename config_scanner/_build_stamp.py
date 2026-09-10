@@ -1,3 +1,3 @@
-# Written by build_stamp_write.py at exe build time.
-# Do not edit this time by hand.
-BUILD_STAMP = '2026-09-10 17:37'
+# Written by build_stamp_write.py at exe build time from datetime.now().
+# Do not commit a real minute — run: python -m config_scanner.build_stamp_write --clear
+BUILD_STAMP = '2026-09-10 19:06'
