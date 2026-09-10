@@ -11,7 +11,7 @@ Or: Code → Download ZIP, then downloads\ConfigScanner.exe
 The file is ConfigScanner.exe (Windows VERSIONINFO OriginalFilename).
 Do not keep a leftover Save-As name such as CursorUserSetup-x64-….
 
-Stamp:  2026-09-10 13:15
-SHA256: f26939040eecf8203c654f38b84c861913523d9a8ee860e76d4f2f90b4cb5443
+Stamp:  2026-09-10 13:30
+SHA256: ac3dc58519d239fc0ea8b8119fcee68d63b38ab74e8f06e1c995e29b2689811b
 
 Put the repo tools\ folder next to the exe.
