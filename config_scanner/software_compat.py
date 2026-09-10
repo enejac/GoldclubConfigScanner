@@ -24,7 +24,7 @@ from config_scanner.build_version import (
 
 
 class SoftwarePushError(OSError):
-    """Config + Ruleta software cannot continue without a successful pack copy."""
+    """Config + game software cannot continue without a successful pack copy."""
 
 
 SNAPSHOT_SOFTWARE_SUBDIR = "software"
@@ -115,13 +115,66 @@ def format_live_ruleta_sw_banner(version: str | None) -> str:
     return f"Running: Ruleta.exe {ver}"
 
 
+def snapshot_profile_is_slot(snapshot_info: BuildInfo | None) -> bool:
+    """True when ``build-info.json`` ``profile_id`` is a Slot profile."""
+    if snapshot_info is None:
+        return False
+    return (snapshot_info.profile_id or "").strip().casefold().startswith("slot")
+
+
+def slot_software_pack_has_onehand(pack: Path | None) -> bool:
+    """True when ``software/`` contains OneHand.exe (Slot full snapshot)."""
+    if pack is None:
+        return False
+    try:
+        return (pack / "slot" / "OneHand.exe").is_file() or (
+            pack / "OneHand.exe"
+        ).is_file()
+    except OSError:
+        return False
+
+
+def live_target_has_slot_exe(scan_target: str) -> bool:
+    """True when the live Goldclub tree has OneHand (leftover Ruleta.exe ignored)."""
+    from config_scanner.build_version import has_slot_game_exe
+
+    try:
+        root = scan_target_path(scan_target)
+    except (OSError, ValueError):
+        return False
+    try:
+        return has_slot_game_exe(root) or (root / "slot" / "OneHand.exe").is_file()
+    except OSError:
+        return False
+
+
+def restore_uses_slot_software(
+    snapshot_info: BuildInfo | None = None,
+    scan_target: str | None = None,
+    snapshot_dir: Path | None = None,
+) -> bool:
+    """True when restore must not use the Ruleta pack / swap path.
+
+    A leftover ``ruleta\\`` folder (even with ``Ruleta.exe``) on a Slot
+    Goldclub tree must not force a Ruleta ``software_versions`` pack.
+    Snapshot ``profile_id`` starting with ``slot``, embedded OneHand, or
+    live OneHand all select the Slot path.
+    """
+    if snapshot_profile_is_slot(snapshot_info):
+        return True
+    if slot_software_pack_has_onehand(snapshot_embedded_software_dir(snapshot_dir)):
+        return True
+    if scan_target:
+        return live_target_has_slot_exe(scan_target)
+    return False
+
+
 def software_version_mismatch_warning(
     snapshot_info: BuildInfo,
     scan_target: str,
 ) -> str | None:
     """Warn when restoring roulette config onto a different Ruleta major.minor."""
-    profile = (snapshot_info.profile_id or "").strip().casefold()
-    if profile.startswith("slot"):
+    if restore_uses_slot_software(snapshot_info, scan_target):
         return None
     snap = snapshot_ruleta_major_minor(snapshot_info)
     try:
@@ -638,8 +691,18 @@ def find_ruleta_software_pack(
     return candidates[0] if candidates else None
 
 
-def restore_scope_hint(snapshot_info: BuildInfo) -> str:
+def restore_scope_hint(
+    snapshot_info: BuildInfo,
+    snapshot_dir: Path | None = None,
+) -> str:
     """Short note when a snapshot is not a self-contained full backup."""
+    if snapshot_profile_is_slot(snapshot_info):
+        if snapshot_has_embedded_software(snapshot_dir):
+            return ""
+        return (
+            " This snapshot has no embedded software. Create a full snapshot "
+            "to capture config + slot binaries together."
+        )
     pack = find_ruleta_software_pack(snapshot_info)
     if pack is not None:
         return (
@@ -649,6 +712,112 @@ def restore_scope_hint(snapshot_info: BuildInfo) -> str:
     return (
         " This snapshot has no embedded software. Create a full snapshot "
         "to capture config + Ruleta binaries together."
+    )
+
+
+_SLOT_KEEP_PROFILE_NAMES = frozenset({"hardwareconfig.xml", "mgconfig.xml"})
+
+
+def _push_slot_software_tree(
+    pack: Path,
+    dest_root: Path,
+    *,
+    keep_profile: bool,
+) -> int:
+    """Copy captured Slot software onto the Goldclub root. Never writes ``ruleta\\``."""
+    from config_scanner.machine_identity import is_licence_path
+    from config_scanner.write_scope import is_protected_write_path
+
+    copied = 0
+    for dirpath, dirnames, filenames in os.walk(pack):
+        dirnames[:] = [
+            name
+            for name in dirnames
+            if name.casefold() not in _SLOT_SKIP_DIR_NAMES
+            and name.casefold() != "ruleta"
+        ]
+        current = Path(dirpath)
+        try:
+            rel_dir = current.relative_to(pack).as_posix()
+        except ValueError:
+            continue
+        for name in filenames:
+            rel = name if rel_dir in {".", ""} else f"{rel_dir}/{name}"
+            if is_protected_write_path(rel) or is_licence_path(rel):
+                continue
+            if keep_profile and (
+                name.casefold() in _SLOT_KEEP_PROFILE_NAMES
+                or name.casefold() == "serialports.conf"
+            ):
+                continue
+            if _slot_should_skip_file(rel, name):
+                continue
+            source = current / name
+            target = dest_root / Path(*rel.split("/"))
+            try:
+                if not source.is_file():
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, target)
+                copied += 1
+            except OSError:
+                continue
+    return copied
+
+
+def push_matching_slot_software(
+    snapshot_info: BuildInfo,
+    scan_target: str,
+    *,
+    snapshot_dir: Path | None = None,
+    keep_profile: bool = False,
+) -> str:
+    """Copy embedded Slot ``software/`` onto the Goldclub root. Returns a note."""
+    del snapshot_info
+    pack = snapshot_embedded_software_dir(snapshot_dir)
+    if not slot_software_pack_has_onehand(pack):
+        raise SoftwarePushError(
+            "No slot software in this snapshot. Create a full snapshot "
+            "(config + software)."
+        )
+    assert pack is not None
+    dest = goldclub_root_for_slot_software(scan_target)
+    copied = _push_slot_software_tree(pack, dest, keep_profile=keep_profile)
+    if copied == 0:
+        raise SoftwarePushError(
+            f"Slot software push from {pack} wrote 0 files to {dest}."
+        )
+    kind = "binaries (cabinet profile kept)" if keep_profile else "software"
+    return f"Pushed {copied} slot {kind} files from snapshot software/ to {dest}."
+
+
+def push_matching_game_software(
+    snapshot_info: BuildInfo,
+    scan_target: str,
+    *,
+    snapshot_dir: Path | None = None,
+    versions_dir: Path | None = None,
+    tool_root: Path | None = None,
+    clear_trial_tokens: bool = True,
+    keep_profile: bool = False,
+) -> str:
+    """Push Slot OneHand or Ruleta binaries for a full-software restore."""
+    if restore_uses_slot_software(
+        snapshot_info, scan_target, snapshot_dir=snapshot_dir
+    ):
+        return push_matching_slot_software(
+            snapshot_info,
+            scan_target,
+            snapshot_dir=snapshot_dir,
+            keep_profile=keep_profile,
+        )
+    return push_matching_ruleta_software(
+        snapshot_info,
+        scan_target,
+        snapshot_dir=snapshot_dir,
+        versions_dir=versions_dir,
+        tool_root=tool_root,
+        clear_trial_tokens=clear_trial_tokens,
     )
 
 

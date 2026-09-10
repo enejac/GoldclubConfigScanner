@@ -98,6 +98,21 @@ def test_needs_seamless_trial_prep(monkeypatch) -> None:
         write_scope="full_software",
         version_transfer=True,
     )
+    monkeypatch.setattr(
+        "config_scanner.cabinet_trial_prep.plan_stack_restart",
+        lambda _t: StackRestartPlan(
+            mode="remote",
+            host="10.0.0.76",
+            kill_ps1="",
+            run_ps1="",
+            kind="slot",
+        ),
+    )
+    assert not needs_seamless_trial_prep(
+        r"\\10.0.0.76\slot",
+        write_scope="full_software",
+        version_transfer=True,
+    )
     assert not needs_seamless_trial_prep(
         r"\\10.0.0.111\slot",
         write_scope="full",

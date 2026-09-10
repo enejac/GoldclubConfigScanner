@@ -60,7 +60,11 @@ def needs_seamless_trial_prep(
     if not version_transfer:
         return False
     plan = plan_stack_restart(scan_target)
-    return plan is not None and plan.mode == "remote"
+    if plan is None or plan.mode != "remote":
+        return False
+    if getattr(plan, "kind", "roulette") == "slot":
+        return False
+    return True
 
 
 def prepare_cabinet_for_seamless_transfer(
