@@ -8,6 +8,8 @@ from pathlib import Path
 import pytest
 
 from config_scanner.ui_screenshot import (
+    composite_widget_grabs,
+    pixmap_is_usable,
     save_widget_screenshot,
     screenshot_output_dir,
     screenshot_png_path,
@@ -43,11 +45,14 @@ def test_screenshot_png_path_avoids_overwrite(tmp_path: Path) -> None:
     assert second.suffix == ".png"
 
 
-def test_save_widget_screenshot_writes_png(tmp_path: Path) -> None:
+def test_save_widget_screenshot_writes_png(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     pytest.importorskip("PySide6")
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QApplication, QLabel
 
+    monkeypatch.setattr("config_scanner.ui_screenshot.grab_all_screens", lambda: None)
     app = QApplication.instance() or QApplication([])
     widget = QLabel("ui")
     widget.resize(160, 80)
@@ -62,6 +67,25 @@ def test_save_widget_screenshot_writes_png(tmp_path: Path) -> None:
     assert dest.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
 
 
+def test_composite_widget_grabs_includes_second_window() -> None:
+    pytest.importorskip("PySide6")
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication, QLabel
+
+    app = QApplication.instance() or QApplication([])
+    main = QLabel("main")
+    warn = QLabel("warning")
+    for widget, width in ((main, 120), (warn, 80)):
+        widget.resize(width, 40)
+        widget.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+        widget.show()
+    app.processEvents()
+    pix = composite_widget_grabs([main, warn])
+    assert pixmap_is_usable(pix)
+    assert pix.width() >= 120 + 80
+    assert pix.height() >= 40
+
+
 def test_window_wires_screenshot_control() -> None:
     src = (
         Path(__file__).resolve().parents[1] / "gui" / "config_scanner_window.py"
@@ -69,3 +93,6 @@ def test_window_wires_screenshot_control() -> None:
     assert "save_widget_screenshot" in src
     assert 'QPushButton("Screenshot")' in src
     assert "Ctrl+Shift+S" in src
+    assert "ApplicationShortcut" in src
+    assert "install_anytime_screenshot" in src
+    assert "F12" in src

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -36,6 +36,7 @@ from gui.theme_utils import apply_theme
 from config_manager import SettingsManager
 from config_scanner.app_brand import program_title
 from config_scanner.ui_screenshot import save_widget_screenshot
+from gui.screenshot_hotkey import install_anytime_screenshot
 
 logger = get_logger(__name__)
 
@@ -125,13 +126,16 @@ class ConfigScannerWindow(QMainWindow):
         sb.addWidget(self._status, stretch=1)
         self._screenshot_btn = QPushButton("Screenshot")
         self._screenshot_btn.setToolTip(
-            "Save a PNG of this window next to ConfigScanner.exe "
-            "(Ctrl+Shift+S). Does not capture the desktop."
+            "Save a PNG of the app and any warning on top, next to "
+            "ConfigScanner.exe. Works while a dialog is open "
+            "(Ctrl+Shift+S or F12)."
         )
         self._screenshot_btn.clicked.connect(self._screenshot_ui)
         sb.addPermanentWidget(self._screenshot_btn)
         self._screenshot_shortcut = QShortcut(QKeySequence("Ctrl+Shift+S"), self)
+        self._screenshot_shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
         self._screenshot_shortcut.activated.connect(self._screenshot_ui)
+        self._anytime_screenshot = install_anytime_screenshot(self)
 
         app = QApplication.instance()
         if app is not None:
@@ -203,6 +207,9 @@ class ConfigScannerWindow(QMainWindow):
             self._simple.mark_closing()
         if self._scanner is not None and hasattr(self._scanner, "mark_closing"):
             self._scanner.mark_closing()
+        guard = getattr(self, "_anytime_screenshot", None)
+        if guard is not None:
+            guard.shutdown()
         SettingsManager.save_config_scanner_window_geometry(self)
         super().closeEvent(event)
 
