@@ -1758,6 +1758,11 @@ _LOCAL_LIVE_CANDIDATES: tuple[str, ...] = (
     r"C:\Goldclub\slot",
 )
 DEFAULT_REMOTE_LIVE_TARGET = r"\\10.0.0.111\slot"
+THIS_PC_GOLDCLUB = r"C:\Goldclub"
+THIS_PC_MISSING_STATUS = (
+    "This PC has no Goldclub tree (C:\\Goldclub / G:). "
+    "Pick a lab cabinet or Browse."
+)
 
 
 def _exists_quick(path: Path, *, timeout_sec: float = 0.3) -> bool:
@@ -1800,6 +1805,28 @@ def _local_goldclub_ready(raw: str) -> bool:
         return False
 
 
+def this_pc_live_target(
+    *,
+    local_candidates: tuple[str, ...] | None = None,
+) -> str | None:
+    """Local Goldclub if this machine is a cabinet, else ``None``.
+
+    Does not fall back to a lab UNC share — that is what the IP buttons are for.
+    """
+    from config_scanner.build_version import prefer_local_scan_target
+
+    for raw in local_candidates if local_candidates is not None else _LOCAL_LIVE_CANDIDATES:
+        if not _local_goldclub_ready(raw):
+            continue
+        try:
+            root = goldclub_root_from_target(raw)
+        except (OSError, TimeoutError, ValueError):
+            continue
+        if looks_like_goldclub_root(root):
+            return prefer_local_scan_target(str(root))
+    return None
+
+
 def default_live_cabinet_target(
     *,
     local_candidates: tuple[str, ...] | None = None,
@@ -1814,16 +1841,16 @@ def default_live_cabinet_target(
     """
     from config_scanner.build_version import prefer_local_scan_target
 
-    for raw in local_candidates if local_candidates is not None else _LOCAL_LIVE_CANDIDATES:
-        if not _local_goldclub_ready(raw):
-            continue
-        try:
-            root = goldclub_root_from_target(raw)
-        except (OSError, TimeoutError, ValueError):
-            continue
-        if looks_like_goldclub_root(root):
-            return prefer_local_scan_target(str(root))
+    local = this_pc_live_target(local_candidates=local_candidates)
+    if local:
+        return local
     return prefer_local_scan_target(remote)
+
+
+def load_error_dialog_text(error: str | None) -> str:
+    """Body for the Load warning. Never return blank (empty QMessageBox)."""
+    text = str(error or "").strip()
+    return text or "Cannot load cabinet."
 
 
 def live_field_matches(live: SlotSetupRecipe, form: SlotSetupRecipe) -> dict[str, bool]:

@@ -690,3 +690,48 @@ def test_create_market_writes_user_sidecar(
     assert panel._preset.currentData() == "lab_cop_live"
     assert "Created market" in panel._status.text()
 
+
+def test_this_pc_no_local_tree_does_not_open_load_dialog(qt_app, monkeypatch) -> None:
+    from config_scanner.live_push import THIS_PC_GOLDCLUB, THIS_PC_MISSING_STATUS
+    from gui.live_push_panel import LivePushPanel
+
+    seen: list[str] = []
+    monkeypatch.setattr("gui.live_push_panel.this_pc_live_target", lambda: None)
+    monkeypatch.setattr(
+        "gui.live_push_panel.LivePushPanel._warn_load",
+        lambda self, text: seen.append(text),
+    )
+    monkeypatch.setattr(
+        "gui.live_push_panel.LivePushPanel._load",
+        lambda self: seen.append("load"),
+    )
+    panel = LivePushPanel(autoload=False)
+    panel.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    panel.show()
+    qt_app.processEvents()
+    panel._pick_this_pc()
+    assert seen == []
+    assert panel._path.text() == THIS_PC_GOLDCLUB
+    assert panel._status.text() == THIS_PC_MISSING_STATUS
+
+
+def test_this_pc_loads_when_local_goldclub_exists(qt_app, monkeypatch, tmp_path) -> None:
+    from gui.live_push_panel import LivePushPanel
+    from tests.test_slot_setup import _fake_goldclub
+
+    gold = _fake_goldclub(tmp_path)
+    loaded: list[str] = []
+    monkeypatch.setattr(
+        "gui.live_push_panel.this_pc_live_target", lambda: str(gold)
+    )
+    monkeypatch.setattr(
+        "gui.live_push_panel.LivePushPanel._load",
+        lambda self: loaded.append(self._path.text()),
+    )
+    panel = LivePushPanel(autoload=False)
+    panel.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    panel.show()
+    qt_app.processEvents()
+    panel._pick_this_pc()
+    assert loaded == [str(gold)]
+
