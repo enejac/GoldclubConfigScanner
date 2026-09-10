@@ -4,14 +4,38 @@ from datetime import datetime
 from pathlib import Path
 
 from config_scanner.app_brand import build_stamp_text, program_title
+from config_scanner.build_stamp_write import current_build_stamp, write_build_stamp
 
 
-def test_build_exe_writes_stamp() -> None:
+def test_build_exe_writes_stamp_via_now() -> None:
     src = (
         Path(__file__).resolve().parents[1] / "build_exe.ps1"
     ).read_text(encoding="utf-8")
-    assert "config_scanner/_build_stamp.py" in src
-    assert "%Y-%m-%d %H:%M" in src
+    writer = (
+        Path(__file__).resolve().parents[1]
+        / "config_scanner"
+        / "build_stamp_write.py"
+    ).read_text(encoding="utf-8")
+    assert "config_scanner.build_stamp_write" in src
+    assert "datetime.now()" in writer
+    assert "%Y-%m-%d %H:%M" in writer
+    assert "Do not invent" in writer or "Do not edit this time by hand" in writer
+
+
+def test_current_build_stamp_is_this_minute() -> None:
+    allowed = {datetime.now().strftime("%Y-%m-%d %H:%M")}
+    stamp = current_build_stamp()
+    allowed.add(datetime.now().strftime("%Y-%m-%d %H:%M"))
+    assert stamp in allowed
+
+
+def test_write_build_stamp_uses_exact_given_minute(tmp_path: Path) -> None:
+    dest = tmp_path / "_build_stamp.py"
+    when = datetime(2026, 9, 10, 14, 51)
+    assert write_build_stamp(now=when, dest=dest) == "2026-09-10 14:51"
+    text = dest.read_text(encoding="utf-8")
+    assert "2026-09-10 14:51" in text
+    assert "BUILD_STAMP =" in text
 
 
 def test_program_title_appends_stamp(monkeypatch) -> None:
@@ -25,13 +49,24 @@ def test_program_title_appends_stamp(monkeypatch) -> None:
     )
 
 
-def test_build_stamp_prefers_baked_value(monkeypatch) -> None:
+def test_source_run_ignores_stale_baked_stamp(monkeypatch) -> None:
+    import config_scanner.app_brand as brand
+
+    class _Stamp:
+        BUILD_STAMP = "2026-09-10 13:30"
+
+    monkeypatch.setattr(brand, "sys", type("S", (), {"frozen": False, "executable": ""})())
+    monkeypatch.setitem(__import__("sys").modules, "config_scanner._build_stamp", _Stamp)
+    assert brand.build_stamp_text() == "dev"
+
+
+def test_build_stamp_prefers_baked_value_when_frozen(monkeypatch) -> None:
     import config_scanner.app_brand as brand
 
     class _Stamp:
         BUILD_STAMP = "2026-09-04 10:39"
 
-    monkeypatch.setattr(brand, "sys", type("S", (), {"frozen": False, "executable": ""})())
+    monkeypatch.setattr(brand, "sys", type("S", (), {"frozen": True, "executable": ""})())
     monkeypatch.setitem(__import__("sys").modules, "config_scanner._build_stamp", _Stamp)
     assert brand.build_stamp_text() == "2026-09-04 10:39"
 
