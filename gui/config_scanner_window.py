@@ -14,7 +14,6 @@ from PySide6.QtWidgets import (
     QPushButton,
     QStatusBar,
     QStackedWidget,
-    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -26,12 +25,11 @@ from gui.single_instance import (
 
 from gui.app_branding import apply_window_branding, status_bar_brand_pixmap
 from gui.app_logging import get_logger
-from gui.companion_pack_panel import CompanionApplyPanel, CompanionPackAuthorPanel
+from gui.companion_pack_panel import CompanionApplyPanel
 from gui.config_scanner_tab import ConfigScannerTabWidget
 from gui.country_pack_panel import CountryWizardPanel
-from gui.ship_panel import ShipPanel
 from gui.simple_home import SimpleShell
-from gui.slot_setup_panel import SlotApplyPanel, SlotSetupPanel
+from gui.slot_setup_panel import SlotApplyPanel
 from gui.theme_utils import apply_theme
 from config_manager import SettingsManager
 from config_scanner.app_brand import program_title
@@ -154,22 +152,16 @@ class ConfigScannerWindow(QMainWindow):
             top.clicked.connect(lambda: self._root_stack.setCurrentWidget(self._simple))
             lay.addWidget(top)
             hint = QLabel(
-                "Snapshots, EGM pack authoring, companions, ship "
-                "(country CS export is on home → Create client update)"
+                "Snapshots (country CS export is on home → Create client update)"
             )
             hint.setStyleSheet("color: #888; padding-left: 4px;")
             lay.addWidget(hint)
-            tabs = QTabWidget(wrap)
             try:
                 self._scanner = ConfigScannerTabWidget(self)
             except Exception:
                 logger.exception("ConfigScannerTabWidget failed during init")
                 raise
-            tabs.addTab(self._scanner, "Snapshots")
-            tabs.addTab(SlotSetupPanel(self), "EGM setup")
-            tabs.addTab(CompanionPackAuthorPanel(self), "Companion packs")
-            tabs.addTab(ShipPanel(self), "Ship")
-            lay.addWidget(tabs, stretch=1)
+            lay.addWidget(self._scanner, stretch=1)
             self._advanced = wrap
             self._root_stack.addWidget(self._advanced)
         self._root_stack.setCurrentWidget(self._advanced)
