@@ -56,6 +56,9 @@ def test_simple_home_wiring() -> None:
     assert "program_title" in window
     assert "program_title" in home
     assert "SimpleShell" in window
+    assert "save_config_scanner_window_geometry" in window
+    assert "showMaximized" in window
+    assert "_open_live_push" in window
     assert "Create client update" in home
     assert "full CS" in home.casefold() or "Country Selector" in home
     assert "CreateCountryPanel" not in home
@@ -70,6 +73,7 @@ def test_simple_home_wiring() -> None:
     assert "Advanced tools" in home
     assert "LivePushPanel" in home
     assert "_show_push" in home
+    assert "def show_push" in home
     assert "autoload=False" in home
     assert "ensure_started" in home
     # Must not construct Live Push at SimpleShell __init__ (freezes home).
