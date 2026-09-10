@@ -16,7 +16,7 @@ That is the **View raw** link. Or: **Code → Download ZIP**, then take `downloa
 
 The file on disk is **ConfigScanner.exe**. Windows Properties / Task Manager should show Product name **Config Scanner** (not a leftover browser Save-As name such as `CursorUserSetup-x64-…`).
 
-Stamp: **2026-09-10 13:00**. Keep repo `tools\` next to the exe.
+Stamp: **2026-09-10 13:15**. Keep repo `tools\` next to the exe.
 
 ## Run from source
 
