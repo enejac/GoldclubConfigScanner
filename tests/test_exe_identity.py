@@ -20,6 +20,8 @@ def test_spec_embeds_version_info_and_name() -> None:
     text = (ROOT / "ConfigScanner.spec").read_text(encoding="utf-8")
     assert 'name="ConfigScanner"' in text
     assert 'version="file_version_info.txt"' in text
+    assert "_collect_pyside6_qt_plugins" in text
+    assert "qwindows.dll" in text
 
 
 def test_gitignore_allows_downloads_configscanner_exe() -> None:
@@ -39,3 +41,10 @@ def test_shipped_download_exe_is_named_configscanner() -> None:
     assert "OriginalFilename".encode("utf-16-le") in data
     assert b"CursorUserSetup" not in data
     assert "CursorUserSetup".encode("utf-16-le") not in data
+
+
+def test_shipped_exe_embeds_qt_windows_platform_plugin() -> None:
+    """Wine builds used to omit qwindows.dll → Qt fails on a real Windows box."""
+    data = (ROOT / "downloads" / "ConfigScanner.exe").read_bytes()
+    assert b"qwindows.dll" in data
+    assert b"qwindows" in data
