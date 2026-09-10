@@ -19,6 +19,8 @@ from PySide6.QtWidgets import (
 )
 
 from config_scanner.app_brand import program_title
+from config_scanner.cs_sources import share_browse_start
+from config_scanner.net_gate import remote_path_available, unc_host
 from config_scanner.pack_detect import PackKind, auto_detect_beside_exe, detect_update_path
 from gui.companion_pack_panel import CompanionApplyPanel
 from gui.country_pack_panel import CountryWizardPanel
@@ -276,7 +278,7 @@ class RestoreHubPanel(QWidget):
         self._open_detected(tool, detected)
 
     def _browse(self) -> None:
-        start = self._path.text().strip() or _SHARE_GS201
+        start = share_browse_start(self._path.text().strip() or _SHARE_GS201)
         path, _ = QFileDialog.getOpenFileName(
             self,
             "Select update (.b2u) or Cancel and pick folder",
@@ -291,6 +293,12 @@ class RestoreHubPanel(QWidget):
             self._path.setText(folder)
 
     def _browse_share(self) -> None:
+        if not remote_path_available(_SHARE_B2U):
+            self._status.setText(
+                f"Lab share \\\\{unc_host(_SHARE_B2U)} not reachable (SMB 445) — "
+                "use Browse… for a local .b2u / folder, or a built-in update above."
+            )
+            return
         start = _SHARE_B2U
         path, _ = QFileDialog.getOpenFileName(
             self,
@@ -313,6 +321,12 @@ class RestoreHubPanel(QWidget):
         self._open_update(Path(raw))
 
     def _open_update(self, path: Path) -> None:
+        if not remote_path_available(path):
+            self._status.setText(
+                f"\\\\{unc_host(path)} is not reachable (SMB port 445 did not answer). "
+                "The share host is off or this PC is not on the lab network."
+            )
+            return
         try:
             if path.suffix.casefold() == ".b2u":
                 self._status.setText(f"Decrypting {path.name}…")

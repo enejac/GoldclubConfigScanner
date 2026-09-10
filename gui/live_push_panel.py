@@ -132,6 +132,7 @@ from config_scanner.slotlog_review import (
     restore_live_push_backup,
     review_slot_logs,
 )
+from config_scanner.net_gate import remote_path_available, unc_host
 from config_scanner.slot_setup import (
     BILL_PROTOCOLS,
     BillToken,
@@ -2951,10 +2952,28 @@ class LivePushPanel(QWidget):
     def _on_progress(self, message: str) -> None:
         self._status.setText(message)
 
+    def _cabinet_offline_message(self, raw: str) -> str:
+        """Non-empty when *raw* is a UNC path whose host does not answer on SMB.
+
+        Checked before any GUI-thread ``is_dir()`` on the cabinet share so a
+        cabinet that went off after Load cannot freeze the window.
+        """
+        if remote_path_available(raw):
+            return ""
+        return (
+            f"\\\\{unc_host(raw)} is not reachable (SMB port 445 did not answer).\n"
+            "The cabinet is off or this PC is not on the lab network."
+        )
+
     def _export_full_cs_clicked(self) -> None:
         raw = self._path.text().strip()
         if not raw:
             QMessageBox.warning(self, "Export CS", "Load a live cabinet path first.")
+            return
+        offline = self._cabinet_offline_message(raw)
+        if offline:
+            self._status.setText(offline.splitlines()[0])
+            QMessageBox.warning(self, "Export CS", offline)
             return
         try:
             live_root = goldclub_root_from_target(raw)
@@ -3133,6 +3152,11 @@ class LivePushPanel(QWidget):
         raw = self._path.text().strip()
         if not raw:
             QMessageBox.warning(self, "SlotLog", "Load a cabinet path first.")
+            return
+        offline = self._cabinet_offline_message(raw)
+        if offline:
+            self._status.setText(offline.splitlines()[0])
+            QMessageBox.warning(self, "SlotLog", offline)
             return
         try:
             goldclub = goldclub_root_from_target(raw)
