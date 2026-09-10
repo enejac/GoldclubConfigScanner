@@ -73,10 +73,15 @@ from config_scanner.live_push import (
     LivePushResult,
     commit_live_push,
     currency_symbol_for,
+    THIS_PC_GOLDCLUB,
+    THIS_PC_MISSING_STATUS,
     detect_local_live_cabinet,
+    load_error_dialog_text,
     resolve_live_target_from_user,
+    this_pc_live_target,
     denom_combo_choices,
     goldclub_stack_kind,
+    is_default_remote_live_target,
     live_field_file_hover,
     live_field_highlight_state,
     live_field_matches,
@@ -139,6 +144,7 @@ from config_scanner.slotlog_review import (
     restore_live_push_backup,
     review_slot_logs,
 )
+from config_scanner.net_gate import remote_path_available, unc_host
 from config_scanner.slot_setup import (
     BILL_PROTOCOLS,
     BillToken,
@@ -528,7 +534,11 @@ class _LoadRunnable(QRunnable):
 
     def run(self) -> None:
         try:
-            self._emitter.finished.emit(load_live_cabinet(self._target))
+            # Default .111 / "This PC" resolve to a local Goldclub root first;
+            # explicit cabinet paths load as typed.
+            self._emitter.finished.emit(
+                load_live_cabinet(self._target, prefer_local=True)
+            )
         except Exception as exc:  # noqa: BLE001
             self._emitter.finished.emit(
                 LiveLoadOutcome(None, None, f"Cannot load cabinet: {exc}", "")
@@ -646,6 +656,7 @@ class LivePushPanel(QWidget):
         self._applying = False
         self._silent_load = False
         self._started = False
+        self._closing = False
         self._catalog = live_push_catalog()
         self._emitter = _PushEmitter()
         self._emitter.progress.connect(self._on_progress)
@@ -697,7 +708,8 @@ class LivePushPanel(QWidget):
             "font-size: 13px; font-weight: 600; color: #9ecbff; padding-left: 12px;"
         )
         self._onehand_build_label.setToolTip(
-            "OneHand.exe ProductVersion and Debug/Release detected from the loaded cabinet."
+            "OneHand.exe VERSIONINFO ProductVersion / FileVersion "
+            "(Debug SKU, not the PE VS_FF_DEBUG bit) from the loaded cabinet."
         )
         self._onehand_build_label.hide()
         head.addWidget(self._onehand_build_label)
@@ -724,6 +736,13 @@ class LivePushPanel(QWidget):
             "Use a cabinet IP only when you want to edit a remote EGM."
         )
         cab.addWidget(self._path, stretch=1)
+        this_pc = QPushButton("This PC")
+        this_pc.setToolTip(
+            "Load G: or C:\\Goldclub when this machine is a cabinet. "
+            "No popup if there is no local Goldclub tree."
+        )
+        this_pc.clicked.connect(self._pick_this_pc)
+        cab.addWidget(this_pc)
         browse = QPushButton("Browse…")
         browse.setToolTip("Pick a local Goldclub folder.")
         browse.clicked.connect(self._browse)
@@ -1625,9 +1644,26 @@ class LivePushPanel(QWidget):
         self._status.setText("Reading live cabinet…")
         self._load()
 
+    def _pick_this_pc(self) -> None:
+        """Load the local cabinet tree, or say so without an empty Load dialog."""
+        local = this_pc_live_target()
+        if not local:
+            self._path.setText(THIS_PC_GOLDCLUB)
+            self._status.setText(THIS_PC_MISSING_STATUS)
+            return
+        self._pick_cabinet(local)
+
     def _pick_cabinet(self, path: str) -> None:
         self._path.setText(path)
         self._load()
+
+    def _warn_load(self, text: str) -> None:
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Load")
+        box.setTextFormat(Qt.TextFormat.PlainText)
+        box.setText(load_error_dialog_text(text))
+        box.exec()
 
     def _browse(self) -> None:
         start = self._path.text().strip() or r"C:\Goldclub"
@@ -1646,10 +1682,8 @@ class LivePushPanel(QWidget):
             self._connect_remote_ip()
             return
         if not raw:
-            QMessageBox.warning(
-                self,
-                "Load",
-                "No local Goldclub found. Enter a cabinet IP or browse a folder.",
+            self._warn_load(
+                "No local Goldclub found. Enter a cabinet IP or browse a folder."
             )
             return
         self._set_busy(True)
@@ -1672,9 +1706,9 @@ class LivePushPanel(QWidget):
             self._set_onehand_build_label(None)
             return
         if outcome.error or outcome.recipe is None:
-            msg = outcome.error or "Cannot load cabinet."
+            msg = load_error_dialog_text(outcome.error)
             if not silent:
-                QMessageBox.warning(self, "Load", msg)
+                self._warn_load(msg)
             self._status.setText(msg)
             self._goldclub = None
             self._display_corruption = {}
@@ -1684,6 +1718,7 @@ class LivePushPanel(QWidget):
             return
         self._loaded = outcome.recipe
         self._goldclub = outcome.root
+        self._show_resolved_target(outcome.root)
         self._display_corruption = dict(outcome.display_corruption or {})
         self._set_onehand_build_label(outcome.onehand_build)
         if outcome.root is not None:
@@ -1694,6 +1729,20 @@ class LivePushPanel(QWidget):
         self._update_licence_ui(outcome.licence, goldclub=outcome.root)
         self._status.setText(outcome.status)
         self._refresh_changes()
+
+    def _show_resolved_target(self, root: Path | None) -> None:
+        """Reflect the local root the loader chose over the .111 / This PC default."""
+        if root is None:
+            return
+        current = self._path.text().strip()
+        is_this_pc = current.replace("/", "\\").rstrip("\\").casefold() == (
+            THIS_PC_GOLDCLUB.casefold()
+        )
+        if not (is_default_remote_live_target(current) or is_this_pc):
+            return
+        chosen = str(root)
+        if chosen.casefold().rstrip("\\") != current.casefold().rstrip("\\"):
+            self._path.setText(chosen)
 
     def _set_onehand_build_label(self, info) -> None:
         label = getattr(self, "_onehand_build_label", None)
@@ -1718,7 +1767,11 @@ class LivePushPanel(QWidget):
         label.setStyleSheet(
             f"font-size: 13px; font-weight: 600; color: {color}; padding-left: 12px;"
         )
-        tip = f"Detected from {getattr(info, 'exe_path', '') or 'OneHand.exe'}"
+        exe = getattr(info, "exe_path", "") or "OneHand.exe"
+        why = (getattr(info, "source", "") or "").strip()
+        tip = f"Detected from {exe}"
+        if why:
+            tip += f" ({why})"
         label.setToolTip(tip)
         label.setText(text)
         label.show()
@@ -3004,10 +3057,28 @@ class LivePushPanel(QWidget):
     def _on_progress(self, message: str) -> None:
         self._status.setText(message)
 
+    def _cabinet_offline_message(self, raw: str) -> str:
+        """Non-empty when *raw* is a UNC path whose host does not answer on SMB.
+
+        Checked before any GUI-thread ``is_dir()`` on the cabinet share so a
+        cabinet that went off after Load cannot freeze the window.
+        """
+        if remote_path_available(raw):
+            return ""
+        return (
+            f"\\\\{unc_host(raw)} is not reachable (SMB port 445 did not answer).\n"
+            "The cabinet is off or this PC is not on the lab network."
+        )
+
     def _export_full_cs_clicked(self) -> None:
         raw = self._path.text().strip()
         if not raw:
             QMessageBox.warning(self, "Export CS", "Load a live cabinet path first.")
+            return
+        offline = self._cabinet_offline_message(raw)
+        if offline:
+            self._status.setText(offline.splitlines()[0])
+            QMessageBox.warning(self, "Export CS", offline)
             return
         try:
             live_root = goldclub_root_from_target(raw)
@@ -3118,8 +3189,16 @@ class LivePushPanel(QWidget):
         )
         self._status.setText(result.note)
 
+    def mark_closing(self) -> None:
+        self._closing = True
+
+    def _ui_active(self) -> bool:
+        return (not self._closing) and self.isVisible()
+
     def _on_finished(self, result: object) -> None:
         self._set_busy(False)
+        if not self._ui_active():
+            return
         if not isinstance(result, LivePushResult):
             self._status.setText("Apply failed.")
             return
@@ -3178,6 +3257,11 @@ class LivePushPanel(QWidget):
         raw = self._path.text().strip()
         if not raw:
             QMessageBox.warning(self, "SlotLog", "Load a cabinet path first.")
+            return
+        offline = self._cabinet_offline_message(raw)
+        if offline:
+            self._status.setText(offline.splitlines()[0])
+            QMessageBox.warning(self, "SlotLog", offline)
             return
         try:
             goldclub = goldclub_root_from_target(raw)

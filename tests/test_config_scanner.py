@@ -92,6 +92,13 @@ def test_normalize_game_drive() -> None:
     assert normalize_game_drive("D:") == "D:\\"
     assert normalize_game_drive("D:\\.") == "D:\\"
     assert normalize_game_drive("D:\\") == "D:\\"
+    import os
+
+    posix = normalize_game_drive("/tmp/Goldclub")
+    if os.name != "nt":
+        assert posix == "/tmp/Goldclub"
+        assert not posix.endswith("\\")
+        assert Path(posix) == Path("/tmp/Goldclub")
 
 
 def test_normalize_scan_target_unc() -> None:
@@ -729,11 +736,14 @@ def test_compare_panel_file_slice_no_truncation() -> None:
     assert omitted == 0
 
 
-def test_smart_find_match_subsequence_case_insensitive() -> None:
+def test_smart_find_match_substring_case_insensitive() -> None:
     assert smart_find_match("swi", "switches.xml")
     assert smart_find_match("SWI", "Switches")
     assert smart_find_match("swi", "config/switches/futura.xml")
     assert not smart_find_match("swi", "language")
+    assert not smart_find_match("sas", "displays")
+    assert not smart_find_match("cfg", "config_scanner")
+    assert smart_find_match("cfg", "cfg.xml")
     assert smart_find_match("", "anything")
     assert smart_find_match("   ", "anything")
 
@@ -776,7 +786,7 @@ def test_filter_file_diffs_for_find_by_path_and_setting() -> None:
     filtered = filter_file_diffs_for_find(file_diffs, "swi")
     assert len(filtered) == 1
     assert filtered[0].relative_path == "config/switches.xml"
-    assert len(filtered[0].content_diff) == 2
+    assert [c.path for c in filtered[0].content_diff] == ["Switches/EnableBonus"]
 
     narrowed = filter_file_diffs_for_find(file_diffs, "bonus")
     assert len(narrowed) == 1
@@ -785,6 +795,9 @@ def test_filter_file_diffs_for_find_by_path_and_setting() -> None:
 
     assert filter_file_diffs_for_find(file_diffs, "zzz") == []
     assert filter_file_diffs_for_find(file_diffs, "") == file_diffs
+    path_only = filter_file_diffs_for_find(file_diffs, "removed_only")
+    assert len(path_only) == 1
+    assert path_only[0].relative_path == "config/removed_only.xml"
 
 
 def test_compare_panel_layout_metrics_single_change() -> None:

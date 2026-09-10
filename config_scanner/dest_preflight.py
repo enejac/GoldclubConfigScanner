@@ -141,7 +141,11 @@ def target_ok_for_snapshot_restore(
     *,
     snapshot_serial: str | None,
 ) -> bool:
-    """True when *target* is reachable, writable, and matches the snapshot serial."""
+    """True when *target* is reachable, writable, and matches the snapshot serial.
+
+    When the snapshot names a serial and the live tree cannot be read, this
+    is False (fail closed) so a workstation copy is not treated as the EGM.
+    """
     from config_scanner.build_version import read_machine_serial_from_target, scan_target_path
     from config_scanner.machine_identity import egm_serials_match
 
@@ -155,7 +159,7 @@ def target_ok_for_snapshot_restore(
         return True
     live = read_machine_serial_from_target(target)
     if not live:
-        return True
+        return False
     return egm_serials_match(live, snap)
 
 

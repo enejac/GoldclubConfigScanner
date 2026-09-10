@@ -690,3 +690,113 @@ def test_create_market_writes_user_sidecar(
     assert panel._preset.currentData() == "lab_cop_live"
     assert "Created market" in panel._status.text()
 
+
+def test_this_pc_no_local_tree_does_not_open_load_dialog(qt_app, monkeypatch) -> None:
+    from config_scanner.live_push import THIS_PC_GOLDCLUB, THIS_PC_MISSING_STATUS
+    from gui.live_push_panel import LivePushPanel
+
+    seen: list[str] = []
+    monkeypatch.setattr("gui.live_push_panel.this_pc_live_target", lambda: None)
+    monkeypatch.setattr(
+        "gui.live_push_panel.LivePushPanel._warn_load",
+        lambda self, text: seen.append(text),
+    )
+    monkeypatch.setattr(
+        "gui.live_push_panel.LivePushPanel._load",
+        lambda self: seen.append("load"),
+    )
+    panel = LivePushPanel(autoload=False)
+    panel.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    panel.show()
+    qt_app.processEvents()
+    panel._pick_this_pc()
+    assert seen == []
+    assert panel._path.text() == THIS_PC_GOLDCLUB
+    assert panel._status.text() == THIS_PC_MISSING_STATUS
+
+
+def test_this_pc_loads_when_local_goldclub_exists(qt_app, monkeypatch, tmp_path) -> None:
+    from gui.live_push_panel import LivePushPanel
+    from tests.test_slot_setup import _fake_goldclub
+
+    gold = _fake_goldclub(tmp_path)
+    loaded: list[str] = []
+    monkeypatch.setattr(
+        "gui.live_push_panel.this_pc_live_target", lambda: str(gold)
+    )
+    monkeypatch.setattr(
+        "gui.live_push_panel.LivePushPanel._load",
+        lambda self: loaded.append(self._path.text()),
+    )
+    panel = LivePushPanel(autoload=False)
+    panel.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    panel.show()
+    qt_app.processEvents()
+    panel._pick_this_pc()
+    assert loaded == [str(gold)]
+
+
+
+def test_default_111_autoload_uses_local_goldclub_and_shows_it(
+    qt_app, monkeypatch, tmp_path
+) -> None:
+    """Field defaults to .111; the loader must still pick a local tree first."""
+    from PySide6.QtCore import QThreadPool
+
+    from config_scanner import live_push
+    from config_scanner.live_push import DEFAULT_REMOTE_LIVE_TARGET
+    from gui.live_push_panel import LivePushPanel
+    from tests.test_slot_setup import _fake_goldclub
+
+    gold = _fake_goldclub(tmp_path / "gold")
+    warned: list[str] = []
+    monkeypatch.setattr(
+        "gui.live_push_panel.LivePushPanel._warn_load",
+        lambda self, text: warned.append(text),
+    )
+    panel = LivePushPanel(autoload=False)
+    panel.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    panel.show()
+    qt_app.processEvents()
+    # Simulate a workstation default, then a cabinet-like local tree appearing.
+    panel._path.setText(DEFAULT_REMOTE_LIVE_TARGET)
+    monkeypatch.setattr(live_push, "_LOCAL_LIVE_CANDIDATES", (str(gold),))
+
+    panel._load()
+    for _ in range(200):
+        qt_app.processEvents()
+        if not panel._busy and panel._goldclub is not None:
+            break
+        QThreadPool.globalInstance().waitForDone(50)
+
+    assert panel._goldclub == gold
+    assert Path(panel._path.text()) == gold
+    assert warned == []
+
+
+def test_explicit_cabinet_path_is_not_swapped_for_local(
+    qt_app, monkeypatch, tmp_path
+) -> None:
+    from PySide6.QtCore import QThreadPool
+
+    from config_scanner import live_push
+    from gui.live_push_panel import LivePushPanel
+    from tests.test_slot_setup import _fake_goldclub
+
+    local = _fake_goldclub(tmp_path / "local")
+    explicit = _fake_goldclub(tmp_path / "explicit")
+    monkeypatch.setattr(live_push, "_LOCAL_LIVE_CANDIDATES", (str(local),))
+    panel = LivePushPanel(autoload=False)
+    panel.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    panel.show()
+    qt_app.processEvents()
+
+    panel._pick_cabinet(str(explicit))
+    for _ in range(200):
+        qt_app.processEvents()
+        if not panel._busy and panel._goldclub is not None:
+            break
+        QThreadPool.globalInstance().waitForDone(50)
+
+    assert panel._goldclub == explicit
+    assert Path(panel._path.text()) == explicit

@@ -276,32 +276,31 @@ def _run_decryptor(exe: Path, src_copy: Path, dest_plain: Path) -> bytes | None:
     cmd = _decrypt_command(exe, src_copy, dest_plain)
     cwd = str(exe.parent)
     timeout = _decrypt_timeout_sec()
-    with _DECRYPT_LOCK:
-        try:
-            proc = subprocess.Popen(cmd, cwd=cwd, **_hidden_popen_kwargs())  # type: ignore[arg-type]
-        except OSError:
-            return None
-        stdout = b""
-        try:
-            stdout, _stderr = proc.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            _kill_process_tree(proc)
-            try:
-                stdout, _stderr = proc.communicate(timeout=3)
-            except (subprocess.TimeoutExpired, OSError, ValueError):
-                stdout = b""
-        except OSError:
-            _kill_process_tree(proc)
-            return None
-        plain = _read_if_plain(dest_plain)
-        if plain is not None:
-            return plain
-        inplace = _read_if_plain(src_copy)
-        if inplace is not None:
-            return inplace
-        if stdout and looks_like_plain_math_json(stdout):
-            return stdout
+    try:
+        proc = subprocess.Popen(cmd, cwd=cwd, **_hidden_popen_kwargs())  # type: ignore[arg-type]
+    except OSError:
         return None
+    stdout = b""
+    try:
+        stdout, _stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_process_tree(proc)
+        try:
+            stdout, _stderr = proc.communicate(timeout=3)
+        except (subprocess.TimeoutExpired, OSError, ValueError):
+            stdout = b""
+    except OSError:
+        _kill_process_tree(proc)
+        return None
+    plain = _read_if_plain(dest_plain)
+    if plain is not None:
+        return plain
+    inplace = _read_if_plain(src_copy)
+    if inplace is not None:
+        return inplace
+    if stdout and looks_like_plain_math_json(stdout):
+        return stdout
+    return None
 
 
 def _decrypt_uncached(src: Path, exe: Path) -> bytes | None:
@@ -343,26 +342,28 @@ def decrypt_math_file(
     except OSError:
         return None
     builtin_key = (digest, src_key, "gamestar")
-    if builtin_key in _DECRYPT_RESULTS:
-        return _DECRYPT_RESULTS[builtin_key]
-    from config_scanner.gamestar_crypt import decrypt_gamestar_bytes
+    with _DECRYPT_LOCK:
+        if builtin_key in _DECRYPT_RESULTS:
+            return _DECRYPT_RESULTS[builtin_key]
+        from config_scanner.gamestar_crypt import decrypt_gamestar_bytes
 
-    builtin = decrypt_gamestar_bytes(raw)
-    if builtin is not None and looks_like_plain_math_json(builtin):
-        _DECRYPT_RESULTS[builtin_key] = builtin
-        return builtin
-    exe = Path(decryptor) if decryptor is not None else find_math_decryptor()
-    if exe is None or not exe.is_file():
-        return None
-    key = (digest, src_key, str(exe.resolve()))
-    if key in _DECRYPT_RESULTS:
-        return _DECRYPT_RESULTS[key]
-    if not spawn:
-        return None
-    result = _decrypt_uncached(src, exe)
-    _DECRYPT_RESULTS[key] = result
-    return result
+        builtin = decrypt_gamestar_bytes(raw)
+        if builtin is not None and looks_like_plain_math_json(builtin):
+            _DECRYPT_RESULTS[builtin_key] = builtin
+            return builtin
+        exe = Path(decryptor) if decryptor is not None else find_math_decryptor()
+        if exe is None or not exe.is_file():
+            return None
+        key = (digest, src_key, str(exe.resolve()))
+        if key in _DECRYPT_RESULTS:
+            return _DECRYPT_RESULTS[key]
+        if not spawn:
+            return None
+        result = _decrypt_uncached(src, exe)
+        _DECRYPT_RESULTS[key] = result
+        return result
 
 
 def clear_math_decrypt_cache() -> None:
-    _DECRYPT_RESULTS.clear()
+    with _DECRYPT_LOCK:
+        _DECRYPT_RESULTS.clear()

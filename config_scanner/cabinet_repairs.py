@@ -280,16 +280,18 @@ def _is_licence_xml(name: str) -> bool:
 
 
 def _licence_search_dirs(root: Path) -> list[Path]:
-    dirs = [root, root / "slot"]
+    # slot\\ first so a working OneHand copy wins over a stale Goldclub-root leftover.
+    dirs = [root / "slot"]
     for name in _LICENCE_DIR_NAMES:
         dirs.append(root / name)
     dirs.append(root / "config" / "licences")
     dirs.append(root / "config" / "licenses")
+    dirs.append(root)
     return dirs
 
 
 def _collect_licence_xmls(root: Path) -> dict[str, Path]:
-    """Newest source for each licence XML file name found anywhere in the tree."""
+    """First source for each licence XML name (slot\\ before root leftovers)."""
     found: dict[str, Path] = {}
     for directory in _licence_search_dirs(root):
         try:

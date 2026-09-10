@@ -6,7 +6,7 @@ Forked from [GoldclubLogInvestigator](https://github.com/enejac/GoldclubLogInves
 
 ## Download Windows exe
 
-GitHub will not download a 62 MB file from the **blob** page (the floppy-disk icon is dead; it only says it cannot preview the file).
+GitHub will not download this large exe from the **blob** page (the floppy-disk icon is dead; it only says it cannot preview the file).
 
 While signed in, open:
 
@@ -16,7 +16,7 @@ That is the **View raw** link. Or: **Code → Download ZIP**, then take `downloa
 
 The file on disk is **ConfigScanner.exe**. Windows Properties / Task Manager should show Product name **Config Scanner** (not a leftover browser Save-As name such as `CursorUserSetup-x64-…`).
 
-Stamp: **2026-09-10 09:52**. Keep repo `tools\` next to the exe.
+Stamp: **2026-09-10 19:06**. Keep repo `tools\` next to the exe.
 
 ## Run from source
 

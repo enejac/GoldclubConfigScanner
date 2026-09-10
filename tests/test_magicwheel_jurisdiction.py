@@ -199,7 +199,7 @@ def test_slot_profiles_do_not_hardcode_lab_ips() -> None:
     ).read_text(encoding="utf-8")
     assert '("10.0.0.90"' not in panel
     assert '("10.0.0.98"' not in panel
-    assert "This PC" not in panel
+    assert '("10.0.0.111"' not in panel
     assert "Use a cabinet IP instead" in panel
     assert "_begin_detect" in panel
     assert "canonicalize_live_field_label" in panel

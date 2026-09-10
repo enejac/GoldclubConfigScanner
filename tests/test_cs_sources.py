@@ -233,3 +233,123 @@ def test_real_colombia_gameupdate_decrypt_meta_only() -> None:
     pkg = extract_game_update(path, reuse_cache=True)
     assert (pkg / "Meta" / "meta.xml").is_file()
     assert game_update_has_country_selector(pkg) is False
+
+
+# --- offline / no-EGM edge cases -------------------------------------------
+
+
+@pytest.fixture
+def _share_down(monkeypatch: pytest.MonkeyPatch):
+    """Every lab share host is unreachable; any Path I/O on a UNC root is a bug."""
+    from config_scanner import net_gate
+
+    net_gate.clear_reachability_cache()
+    probed: list[str] = []
+
+    def fake_probe(host: str, timeout_sec: float) -> bool:
+        probed.append(host)
+        return False
+
+    monkeypatch.setattr(net_gate, "_probe", fake_probe)
+
+    real_is_dir = Path.is_dir
+    real_is_file = Path.is_file
+    real_iterdir = Path.iterdir
+    real_exists = Path.exists
+
+    def _guard(name, real):
+        def wrapper(self, *args, **kwargs):
+            if str(self).startswith("//10.0.0.") or str(self).startswith("\\\\10.0.0."):
+                raise AssertionError(f"{name}() touched dead share path {self}")
+            return real(self, *args, **kwargs)
+
+        return wrapper
+
+    monkeypatch.setattr(Path, "is_dir", _guard("is_dir", real_is_dir))
+    monkeypatch.setattr(Path, "is_file", _guard("is_file", real_is_file))
+    monkeypatch.setattr(Path, "iterdir", _guard("iterdir", real_iterdir))
+    monkeypatch.setattr(Path, "exists", _guard("exists", real_exists))
+    clear_share_scan_cache()
+    yield probed
+    clear_share_scan_cache()
+    net_gate.clear_reachability_cache()
+
+
+def test_list_cs_sources_offline_skips_all_share_io(_share_down: list[str]) -> None:
+    from config_scanner.cs_sources import share_offline_note
+
+    found = list_cs_sources(include_share_scan=True, authoring_only=False)
+    assert found, "embedded catalog must still be listed offline"
+    assert all(s.kind == CsSourceKind.EMBEDDED for s in found)
+    # one TCP probe per host, cached — not one per curated path / scan root
+    assert sorted(set(_share_down)) == ["10.0.0.249", "10.0.0.91"]
+    assert len(_share_down) == 2
+    note = share_offline_note()
+    assert "10.0.0.249" in note and "built-in packs only" in note
+
+
+def test_materialize_cs_path_offline_share_fails_fast(_share_down: list[str]) -> None:
+    with pytest.raises(FileNotFoundError) as exc:
+        materialize_cs_path(Path("//10.0.0.249/WinSystems_SLOT/_B2U/CS-Gamestar-TRI-01.b2u"))
+    assert "not reachable" in str(exc.value)
+    assert "10.0.0.249" in str(exc.value)
+
+
+def test_share_browse_start_falls_back_when_host_down(
+    _share_down: list[str], tmp_path: Path
+) -> None:
+    from config_scanner.cs_sources import share_browse_start
+
+    assert share_browse_start(r"\\10.0.0.249\WinSystems_SLOT\_B2U", str(tmp_path)) == str(tmp_path)
+    assert share_browse_start(str(tmp_path)) == str(tmp_path)
+
+
+def _fake_catalog(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from config_scanner import embedded_updates as emb
+
+    root = tmp_path / "embedded_updates"
+    (root / "b2u").mkdir(parents=True)
+    (root / "b2u" / "CS-Gamestar-PR-03.b2u").write_bytes(b"x")
+    staged = root / "staged" / "CS-Gamestar-TT-00" / "CountrySelectorTool" / "data"
+    staged.mkdir(parents=True)
+    (root / "catalog.json").write_text(
+        """{"version": 1, "updates": [
+            {"id": "CS-Gamestar-PR-03", "label": "Puerto Rico PR-03", "country": "PuertoRico",
+             "gamestar_version": "2.0.1", "b2u_file": "CS-Gamestar-PR-03.b2u"},
+            {"id": "CS-Gamestar-PR-06", "label": "Puerto Rico PR-06", "country": "PuertoRico",
+             "gamestar_version": "2.0.1", "b2u_file": null, "staged_id": "CS-Gamestar-PR-06"},
+            {"id": "CS-Gamestar-TT-00", "label": "Trinidad TT-00", "country": "Trinidad",
+             "gamestar_version": "2.0.1", "b2u_file": null}
+        ]}""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(emb, "embedded_updates_root", lambda: root)
+
+
+def test_embedded_without_payload_is_listed_but_not_authoring(
+    _share_down: list[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from config_scanner.cs_sources import source_is_materializable, source_is_not_shipped
+
+    _fake_catalog(tmp_path, monkeypatch)
+    pr = list_cs_sources(profile_country="PuertoRico", authoring_only=False, include_share_scan=True)
+    by_id = {s.embedded_id: s for s in pr}
+    assert by_id["CS-Gamestar-PR-03"].authoring is True
+    pr06 = by_id["CS-Gamestar-PR-06"]
+    assert pr06.authoring is False
+    assert source_is_not_shipped(pr06)
+    assert "Not shipped in this build" in pr06.note
+    assert "CS-Gamestar-PR-06" in pr06.note
+    assert not source_is_materializable(pr06)
+    assert source_is_materializable(by_id["CS-Gamestar-PR-03"])
+
+    # newest-version scoring must not pick the entry that cannot be opened
+    picked = recommend_cs_source(pr, profile_id="puerto_rico_usd")
+    assert picked is not None and picked.embedded_id == "CS-Gamestar-PR-03"
+
+    # authoring_only view hides it entirely
+    only = list_cs_sources(profile_country="PuertoRico", authoring_only=True)
+    assert [s.embedded_id for s in only] == ["CS-Gamestar-PR-03"]
+
+    tt = list_cs_sources(profile_country="Trinidad", authoring_only=True)
+    assert [s.embedded_id for s in tt] == ["CS-Gamestar-TT-00"], "staged tree counts as payload"

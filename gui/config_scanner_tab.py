@@ -557,6 +557,7 @@ class ConfigScannerTabWidget(QFrame):
         self._last_scan_snapshot_name: str | None = None
         self._apply_buttons: list[tuple[QWidget, bool]] = []
         self._busy = False
+        self._closing = False
         self._busy_op: str | None = None
         self._target_valid = False
         self._validate_seq = 0
@@ -797,7 +798,8 @@ class ConfigScannerTabWidget(QFrame):
         self._changes_find_edit = QLineEdit()
         self._changes_find_edit.setPlaceholderText("Filter changes…")
         self._changes_find_edit.setToolTip(
-            "Filter changed files and settings (case-insensitive substring match)."
+            "Filter changed files and settings (case-insensitive substring). "
+            "Restore still writes the full snapshot, not only visible rows."
         )
         self._changes_find_edit.setClearButtonEnabled(True)
         self._changes_find_edit.setMinimumWidth(160)
@@ -1506,6 +1508,7 @@ class ConfigScannerTabWidget(QFrame):
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(8)
         note = QLabel(message)
+        note.setTextFormat(Qt.TextFormat.PlainText)
         note.setStyleSheet(self._compare_panel_styles()["legend"])
         note.setWordWrap(True)
         row.addWidget(note, stretch=1)
@@ -1519,6 +1522,7 @@ class ConfigScannerTabWidget(QFrame):
 
     def _add_changes_panel_note(self, text: str) -> None:
         note = QLabel(text)
+        note.setTextFormat(Qt.TextFormat.PlainText)
         note.setStyleSheet(self._compare_panel_styles()["legend"])
         note.setWordWrap(True)
         self._changes_layout.addWidget(note)
@@ -2919,8 +2923,20 @@ class ConfigScannerTabWidget(QFrame):
                 )
             prompt += (
                 "\nLive licence XML and serialport maps are never overwritten.\n"
-                "Continue?"
             )
+            find_edit = getattr(self, "_changes_find_edit", None)
+            needle = ""
+            if find_edit is not None:
+                try:
+                    needle = find_edit.text().strip()
+                except RuntimeError:
+                    needle = ""
+            if needle:
+                prompt += (
+                    f'\nFind filter "{needle}" is display-only. This restore '
+                    "writes the full snapshot, not only the visible rows.\n"
+                )
+            prompt += "Continue?"
 
         warnings = self._service.snapshot_apply_warnings(
             snapshot_name, scan_target, write_scope=scope.value
@@ -3221,6 +3237,9 @@ class ConfigScannerTabWidget(QFrame):
         )
 
     def _on_apply_finished(self, ok: bool, result: object, message: str) -> None:
+        if not self._ui_active():
+            self._set_busy(False)
+            return
         wrote = self._pending_write_snapshot
         wrote_scope = self._pending_write_scope
         presave = self._presave_snapshot_for_write
@@ -3872,16 +3891,27 @@ class ConfigScannerTabWidget(QFrame):
         self._validate_timer.stop()
         self._run_target_validation()
 
+    def mark_closing(self) -> None:
+        self._closing = True
+
+    def _ui_active(self) -> bool:
+        return (not self._closing) and self.isVisible()
+
     def _run_target_validation(self) -> None:
         text = self._drive_edit.text().strip()
         self._validate_seq += 1
         self._validate_pending = text
+        seq = self._validate_seq
         if not text:
-            self._on_target_validated("", False)
+            self._on_target_validated("", False, seq)
             return
-        schedule_validate_scan_target(self._pool, self._service, text, self._emitter)
+        schedule_validate_scan_target(
+            self._pool, self._service, text, self._emitter, seq=seq
+        )
 
-    def _on_target_validated(self, path: str, valid: bool) -> None:
+    def _on_target_validated(self, path: str, valid: bool, seq: int = -1) -> None:
+        if seq >= 0 and seq != self._validate_seq:
+            return
         current = self._drive_edit.text().strip()
         if path != current:
             return

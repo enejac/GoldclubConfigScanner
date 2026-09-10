@@ -109,7 +109,8 @@ def test_simple_home_wiring() -> None:
     assert "_B2U" in home
     assert "Live push" not in window or 'tabs.addTab(LivePushPanel' not in window
     assert "Country packs" not in window or 'tabs.addTab(CountryPackAuthorPanel' not in window
-    assert "Snapshots, EGM pack authoring" in window
+    assert "Snapshots, EGM pack authoring" not in window
+    assert "Snapshots (country CS export is on home" in window
     assert "--snapshots" in app
     assert "--restore-b2u" in app
     assert "snapshots_mode" in window or "_snapshots_mode" in window
@@ -176,3 +177,38 @@ def test_jurisdiction_wizard_constructs() -> None:
     assert _combo_code(panel._currency) == "TTD"
     panel._dallas.setCurrentIndex(0)
     assert _combo_code(panel._dallas) == ""
+
+
+def test_advanced_view_is_snapshots_only(monkeypatch) -> None:
+    """Advanced holds the Snapshots widget alone: no EGM setup / Companion / Ship tabs."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication, QTabWidget
+
+    from config_manager import SettingsManager
+    from gui.config_scanner_tab import ConfigScannerTabWidget
+    from gui.config_scanner_window import ConfigScannerWindow
+
+    app = QApplication.instance() or QApplication([])
+    monkeypatch.setattr(
+        SettingsManager, "restore_config_scanner_window_geometry", lambda _w: "normal"
+    )
+    win = ConfigScannerWindow()
+    win.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    win.show()
+    app.processEvents()
+    win._show_advanced()
+    app.processEvents()
+
+    advanced = win._advanced
+    assert advanced is not None
+    assert win._root_stack.currentWidget() is advanced
+    assert advanced.findChildren(QTabWidget) == []
+    assert isinstance(win._scanner, ConfigScannerTabWidget)
+    assert win._scanner.parentWidget() is advanced
+    from gui.slot_setup_panel import SlotSetupPanel
+    from gui.companion_pack_panel import CompanionPackAuthorPanel
+    from gui.ship_panel import ShipPanel
+
+    for cls in (SlotSetupPanel, CompanionPackAuthorPanel, ShipPanel):
+        assert advanced.findChildren(cls) == [], f"{cls.__name__} must not be in Advanced"
+    win.close()
