@@ -61,6 +61,7 @@ from config_scanner.stack_restart import (
     plan_stack_restart,
     run_stack_kill,
     run_stack_start,
+    running_on_egm,
     unc_host_from_target,
 )
 
@@ -760,6 +761,104 @@ _SLOT_KILL_SCRIPT = textwrap.dedent(
     # still alive, 'Unexpected game stop' / 'Unable to open the BiOS' reboot.
     # Stop-Process alone often fails under a UAC-filtered goldclub token;
     # taskkill /F /T matches Kill-All.ps1 and actually ends Bootstrap.
+    # Never /T a tree that contains ConfigScanner / this PowerShell: operators
+    # often launch the exe from Bootstrap or game-start, and /T then kills
+    # Apply before write+start (black cabinet).
+    $script:ToolNames = @(
+        'ConfigScanner','LogInvestigator','python','pythonw',
+        'powershell','pwsh','cmd','conhost'
+    )
+    function Get-ParentPid([int]$ProcessId) {
+        $cim = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $ProcessId) -ErrorAction SilentlyContinue
+        if ($cim) { return [int]$cim.ParentProcessId }
+        return 0
+    }
+    function Get-NameOfPid([int]$ProcessId) {
+        $p = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+        if ($p) { return [string]$p.Name }
+        return ''
+    }
+    function Test-IsToolName([string]$Name) {
+        $n = $Name -replace '\\.exe$',''
+        foreach ($t in $script:ToolNames) { if ($n -ieq $t) { return $true } }
+        return
+    }
+    function Get-ProtectedIds {
+        $set = @{}
+        function Add-Id([int]$Id) { if ($Id -gt 4) { $set[$Id] = $true } }
+        Add-Id ([int]$PID)
+        $cur = [int]$PID
+        for ($i = 0; $i -lt 16; $i++) {
+            $pp = Get-ParentPid $cur
+            if ($pp -le 4) { break }
+            if (-not (Test-IsToolName (Get-NameOfPid $pp))) { break }
+            Add-Id $pp
+            $cur = $pp
+        }
+        Get-Process -Name ConfigScanner,LogInvestigator -ErrorAction SilentlyContinue |
+            ForEach-Object { Add-Id ([int]$_.Id) }
+        Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.Name -match '^(python|pythonw)\\.exe$' -and
+                [string]$_.CommandLine -match '(?i)gui_app|config_scanner|ConfigScanner'
+            } |
+            ForEach-Object { Add-Id ([int]$_.ProcessId) }
+        $added = $true
+        while ($added) {
+            $added = $false
+            Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | ForEach-Object {
+                $id = [int]$_.ProcessId
+                $pp = [int]$_.ParentProcessId
+                if ($set.ContainsKey($pp) -and -not $set.ContainsKey($id)) {
+                    $set[$id] = $true
+                    $added = $true
+                }
+            }
+        }
+        return $set
+    }
+    $script:Protected = Get-ProtectedIds
+    function Test-Protected([int]$ProcessId) {
+        return [bool]$script:Protected.ContainsKey($ProcessId)
+    }
+    function Test-TreeHasProtected([int]$ProcessId) {
+        if (Test-Protected $ProcessId) { return $true }
+        $queue = New-Object System.Collections.Generic.Queue[int]
+        $queue.Enqueue($ProcessId)
+        $seen = @{$ProcessId = $true}
+        while ($queue.Count -gt 0) {
+            $id = $queue.Dequeue()
+            $kids = @(Get-CimInstance Win32_Process -Filter ("ParentProcessId={0}" -f $id) -ErrorAction SilentlyContinue)
+            foreach ($k in $kids) {
+                $cid = [int]$k.ProcessId
+                if ($seen.ContainsKey($cid)) { continue }
+                $seen[$cid] = $true
+                if (Test-Protected $cid) { return $true }
+                $queue.Enqueue($cid)
+            }
+        }
+        return
+    }
+    function Stop-OnePid([int]$ProcessId) {
+        if ($ProcessId -le 4) { return }
+        if (Test-Protected $ProcessId) { return }
+        if (-not (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)) { return }
+        if (Test-TreeHasProtected $ProcessId) {
+            $kids = @(Get-CimInstance Win32_Process -Filter ("ParentProcessId={0}" -f $ProcessId) -ErrorAction SilentlyContinue)
+            foreach ($k in $kids) { Stop-OnePid ([int]$k.ProcessId) }
+            if (Test-Protected $ProcessId) { return }
+            & cmd.exe /c ("taskkill /F /PID {0} 1>nul 2>nul" -f $ProcessId) | Out-Null
+        } else {
+            & cmd.exe /c ("taskkill /F /T /PID {0} 1>nul 2>nul" -f $ProcessId) | Out-Null
+        }
+        Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
+        if (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue) {
+            try {
+                $cim = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $ProcessId) -ErrorAction SilentlyContinue
+                if ($cim) { Invoke-CimMethod -InputObject $cim -MethodName Terminate | Out-Null }
+            } catch {}
+        }
+    }
     function Stop-SlotWatchers {
         $watchIds = @(
             Get-Process -Name Start-SlotGameWatch -ErrorAction SilentlyContinue |
@@ -772,26 +871,12 @@ _SLOT_KILL_SCRIPT = textwrap.dedent(
                     ($watchIds.Count -gt 0 -and ($watchIds -contains $_.ParentProcessId))
                 )
             } |
-            ForEach-Object {
-                & cmd.exe /c ("taskkill /F /T /PID {0} 1>nul 2>nul" -f $_.ProcessId) | Out-Null
-                Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
-            }
+            ForEach-Object { Stop-OnePid ([int]$_.ProcessId) }
     }
     function Stop-Named([string[]]$Names) {
         foreach ($n in $Names) {
-            $im = if ($n -match '\\.exe$') { $n } else { "$n.exe" }
-            & cmd.exe /c ("taskkill /F /T /IM {0} 1>nul 2>nul" -f $im) | Out-Null
             Get-Process -Name $n -ErrorAction SilentlyContinue | ForEach-Object {
-                try { Stop-Process -Id $_.Id -Force -ErrorAction Stop } catch {}
-                if (Get-Process -Id $_.Id -ErrorAction SilentlyContinue) {
-                    & cmd.exe /c ("taskkill /F /T /PID {0} 1>nul 2>nul" -f $_.Id) | Out-Null
-                }
-                if (Get-Process -Id $_.Id -ErrorAction SilentlyContinue) {
-                    try {
-                        $cim = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $_.Id) -ErrorAction SilentlyContinue
-                        if ($cim) { Invoke-CimMethod -InputObject $cim -MethodName Terminate | Out-Null }
-                    } catch {}
-                }
+                Stop-OnePid ([int]$_.Id)
             }
         }
     }
@@ -991,6 +1076,118 @@ def _slot_start_script(candidates: tuple[str, ...]) -> str:
     ).strip()
 
 
+_SLOT_WATCHDOG_MARKER = "GoldClub-LivePush-Watchdog"
+
+
+def _slot_bootstrap_watchdog_script(candidates: tuple[str, ...]) -> str:
+    """Detached starter: if Apply dies after kill, still launch Bootstrap."""
+    quoted = ", ".join("'" + c.replace("'", "''") + "'" for c in candidates)
+    return textwrap.dedent(
+        f"""
+        # {_SLOT_WATCHDOG_MARKER}
+        $ErrorActionPreference = 'SilentlyContinue'
+        $deadline = (Get-Date).AddMinutes(10)
+        while ((Get-Date) -lt $deadline) {{
+            $game = Get-Process -Name Bootstrap,OneHand -ErrorAction SilentlyContinue
+            if ($game) {{ exit 0 }}
+            $tool = @(Get-Process -Name ConfigScanner,LogInvestigator -ErrorAction SilentlyContinue)
+            $py = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {{
+                $_.Name -match '^(python|pythonw)\\.exe$' -and
+                [string]$_.CommandLine -match '(?i)gui_app|config_scanner|ConfigScanner'
+            }})
+            if ($tool.Count -gt 0 -or $py.Count -gt 0) {{ Start-Sleep -Seconds 5; continue }}
+            Start-Sleep -Seconds 8
+            $game = Get-Process -Name Bootstrap,OneHand -ErrorAction SilentlyContinue
+            if ($game) {{ exit 0 }}
+            $exe = $null
+            foreach ($c in @({quoted})) {{
+                if (Test-Path -LiteralPath $c) {{ $exe = $c; break }}
+            }}
+            if (-not $exe) {{ exit 1 }}
+            $dir = Split-Path -Parent $exe
+            try {{
+                $user = 'goldclub'
+                $cs = Get-CimInstance Win32_ComputerSystem
+                if ($cs.UserName) {{ $user = [string]$cs.UserName }}
+                $task = 'GoldClub-LivePush-Start'
+                Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue
+                $action = New-ScheduledTaskAction -Execute $exe -WorkingDirectory $dir
+                $prin = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Highest
+                $set = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+                Register-ScheduledTask -TaskName $task -Action $action -Principal $prin -Settings $set -Force | Out-Null
+                Start-ScheduledTask -TaskName $task
+            }} catch {{
+                Start-Process -FilePath $exe -WorkingDirectory $dir
+            }}
+            exit 0
+        }}
+        exit 0
+        """
+    ).strip()
+
+
+def _arm_slot_bootstrap_watchdog(
+    scan_target: str, dest: Path | str | None = None
+) -> None:
+    """Fire-and-forget Bootstrap start if ConfigScanner is killed mid-Apply."""
+    if os.name != "nt":
+        return
+    if not _slot_target_is_local(scan_target) or not running_on_egm():
+        return
+    script = _slot_bootstrap_watchdog_script(
+        bootstrap_exe_candidates(scan_target, dest)
+    )
+    path = Path(tempfile.gettempdir()) / "GoldClub-LivePush-Watchdog.ps1"
+    try:
+        path.write_text(script + "\n", encoding="utf-8", newline="\n")
+    except OSError as exc:
+        _lp_log(f"watchdog write failed: {exc}")
+        return
+    no_window = int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    creation = no_window
+    creation |= int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200))
+    creation |= 0x01000000  # CREATE_BREAKAWAY_FROM_JOB
+    try:
+        probe = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-Command",
+                "Get-CimInstance Win32_Process | "
+                "Where-Object { $_.CommandLine -match 'GoldClub-LivePush-Watchdog' } | "
+                "Select-Object -First 1 -ExpandProperty ProcessId",
+            ],
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=15,
+            creationflags=no_window,
+        )
+        if (probe.stdout or "").strip().isdigit():
+            return
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    try:
+        subprocess.Popen(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(path),
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=creation,
+            close_fds=True,
+        )
+        _lp_log(f"armed {_SLOT_WATCHDOG_MARKER}")
+    except OSError as exc:
+        _lp_log(f"watchdog arm failed: {exc}")
+
+
 # Snapshot labels -> build_config_pack sections (delta apply).
 _LABEL_SECTIONS: dict[str, frozenset[str]] = {
     "SAS enabled": frozenset({"sas"}),
@@ -1187,7 +1384,11 @@ def restart_slot_hwsubsys(scan_target: str) -> tuple[bool, str]:
         }
         $blob = ($notes -join '; ')
         if ($hw) { $blob = $blob + '; wait=' + [string]$hw.Status }
-        if ($hw -and $hw.Status -eq 'Running') {
+        if (-not $hw) {
+            Write-Output ($blob + '; hardware subsystem not installed')
+            exit 0
+        }
+        if ($hw.Status -eq 'Running') {
             Write-Output $blob
             exit 0
         }
@@ -2198,18 +2399,20 @@ def goldclub_stack_kind(root: Path | str) -> str:
     """``slot``, ``roulette``, or ``unknown`` from files on the Goldclub root."""
     path = Path(root)
     try:
-        has_slot = (path / "slot" / "OneHand.exe").is_file()
+        has_onehand = (path / "slot" / "OneHand.exe").is_file() or (
+            path / "OneHand.exe"
+        ).is_file()
         has_ruleta = (path / "ruleta" / "ruleta.exe").is_file() or (
             path / "ruleta" / "Ruleta.exe"
         ).is_file()
         has_bootstrap = (path / "Bootstrap.exe").is_file()
     except (OSError, TimeoutError, ValueError):
         return "unknown"
-    if has_slot and not has_ruleta:
+    if has_onehand and not has_ruleta:
         return "slot"
     if has_ruleta:
         return "roulette"
-    if has_bootstrap and has_slot:
+    if has_bootstrap and not has_ruleta:
         return "slot"
     return "unknown"
 
@@ -2451,6 +2654,8 @@ def run_slot_stack_kill(scan_target: str) -> tuple[bool, str]:
 
     local = _slot_target_is_local(scan_target)
     _lp_log(f"slot kill local={local} target={scan_target!r}")
+    if local:
+        _arm_slot_bootstrap_watchdog(scan_target)
     last_detail = ""
     for attempt in range(1, 4):
         if local:

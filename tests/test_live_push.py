@@ -1046,9 +1046,19 @@ def test_restart_slot_hwsubsys_script_uses_goldclub_service_name() -> None:
     assert "STILL:Bootstrap" in lp._SLOT_KILL_SCRIPT
     assert "Stop-Named @('Bootstrap')" in lp._SLOT_KILL_SCRIPT
     assert "taskkill /F /T" in lp._SLOT_KILL_SCRIPT
+    assert "taskkill /F /T /IM" not in lp._SLOT_KILL_SCRIPT
+    assert "ConfigScanner" in lp._SLOT_KILL_SCRIPT
+    assert "Test-TreeHasProtected" in lp._SLOT_KILL_SCRIPT
+    assert "Test-Protected" in lp._SLOT_KILL_SCRIPT
     assert "MethodName Terminate" in lp._SLOT_KILL_SCRIPT
     assert "pid=" in lp._SLOT_KILL_SCRIPT
     assert "return $false" not in lp._SLOT_KILL_SCRIPT
+    src_hw = inspect.getsource(lp.restart_slot_hwsubsys)
+    assert "hardware subsystem not installed" in src_hw
+    wd = lp._slot_bootstrap_watchdog_script((r"G:\Bootstrap.exe",))
+    assert lp._SLOT_WATCHDOG_MARKER in wd
+    assert "ConfigScanner" in wd
+    assert r"G:\Bootstrap.exe" in wd
     src_local = inspect.getsource(lp._run_local_powershell)
     assert "-EncodedCommand" in src_local
     assert '"-Command"' not in src_local
