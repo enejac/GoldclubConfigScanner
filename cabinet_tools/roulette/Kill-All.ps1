@@ -122,10 +122,32 @@ function Test-ProtectedProcess {
     param($CimProcess)
     if ($CimProcess.ProcessId -eq $PID) { return $true }
     $cmd = [string]$CimProcess.CommandLine
+    $name = [string]$CimProcess.Name
+    if ($name -match '^(ConfigScanner|LogInvestigator)\.exe$') { return $true }
+    if ($name -match '^(python|pythonw)\.exe$' -and $cmd -match '(?i)gui_app|config_scanner|ConfigScanner') { return $true }
     if ($cmd -match '(?i)Open-AdminShell\.ps1') { return $true }
     if ($cmd -match '(?i)GoldClub Admin Shell') { return $true }
     if ($cmd -match '(?i)[\\/]platform[\\/]user[\\/]shell\.ps1') { return $true }
-    if ($CimProcess.Name -match '^(powershell|pwsh)\.exe$' -and $cmd -match '(?i)Kill-All|Run-FullStack|Start-GoldClubProcesses') { return $true }
+    if ($CimProcess.Name -match '^(powershell|pwsh)\.exe$' -and $cmd -match '(?i)Kill-All|Run-FullStack|Start-GoldClubProcesses|GoldClub-LivePush-Watchdog') { return $true }
+    return $false
+}
+
+function Test-TreeHasProtectedPid {
+    param([int]$ProcessId)
+    $queue = New-Object System.Collections.Generic.Queue[int]
+    $queue.Enqueue($ProcessId)
+    $seen = @{$ProcessId = $true}
+    while ($queue.Count -gt 0) {
+        $id = $queue.Dequeue()
+        $kids = @(Get-CimInstance Win32_Process -Filter ("ParentProcessId={0}" -f $id) -ErrorAction SilentlyContinue)
+        foreach ($k in $kids) {
+            $cid = [int]$k.ProcessId
+            if ($seen.ContainsKey($cid)) { continue }
+            $seen[$cid] = $true
+            if (Test-ProtectedProcess -CimProcess $k) { return $true }
+            $queue.Enqueue($cid)
+        }
+    }
     return $false
 }
 
@@ -189,8 +211,18 @@ function Stop-OneProcess {
     } catch {
         if ($_.Exception.Message -match '(?i)cannot find a process|not found') { return 'gone' }
         if (Test-ProcessGone -ProcessId $ProcessId) { return 'gone' }
-        # Avoid PowerShell NativeCommandError noise from taskkill stderr
-        & cmd.exe /c "taskkill /F /T /PID $ProcessId 1>nul 2>nul" | Out-Null
+        # Avoid PowerShell NativeCommandError noise from taskkill stderr.
+        # /T would kill ConfigScanner when it was started under Bootstrap.
+        if (Test-TreeHasProtectedPid -ProcessId $ProcessId) {
+            $kids = @(Get-CimInstance Win32_Process -Filter ("ParentProcessId={0}" -f $ProcessId) -ErrorAction SilentlyContinue)
+            foreach ($k in $kids) {
+                if (Test-ProtectedProcess -CimProcess $k) { continue }
+                try { Stop-OneProcess -ProcessId $k.ProcessId -Name $k.Name | Out-Null } catch { }
+            }
+            & cmd.exe /c "taskkill /F /PID $ProcessId 1>nul 2>nul" | Out-Null
+        } else {
+            & cmd.exe /c "taskkill /F /T /PID $ProcessId 1>nul 2>nul" | Out-Null
+        }
         if ($LASTEXITCODE -eq 0) { return 'stopped' }
         if (Test-ProcessGone -ProcessId $ProcessId) { return 'gone' }
         throw ("stop failed PID {0} ({1}): {2}" -f $ProcessId, $Name, $_.Exception.Message)

@@ -67,6 +67,9 @@ class ConfigScannerWindow(QMainWindow):
         self._companion_pack = Path(companion_pack) if companion_pack else None
         self._restore_b2u = Path(restore_b2u) if restore_b2u else None
         self._snapshots_mode = bool(snapshots)
+        self._simple: SimpleShell | None = None
+        self._advanced: QWidget | None = None
+        self._applied_show_mode = False
 
         if self._companion_pack is not None:
             title = program_title("Restore companion")
@@ -97,15 +100,12 @@ class ConfigScannerWindow(QMainWindow):
         elif self._snapshots_mode:
             self._scanner = ConfigScannerTabWidget(self)
             self.setCentralWidget(self._scanner)
-            self._simple = None
-            self._advanced = None
             self._root_stack = None
         else:
             self._root_stack = QStackedWidget(self)
             self._simple = SimpleShell(self)
             self._simple.advanced_requested.connect(self._show_advanced)
             self._root_stack.addWidget(self._simple)
-            self._advanced: QWidget | None = None
             self._scanner = None
             self.setCentralWidget(self._root_stack)
             if self._restore_b2u is not None:
@@ -136,7 +136,10 @@ class ConfigScannerWindow(QMainWindow):
         app = QApplication.instance()
         if app is not None:
             apply_theme(app, SettingsManager.get_theme())
-        logger.info("ConfigScannerWindow.__init__ done")
+        self._cs_show_mode = SettingsManager.restore_config_scanner_window_geometry(self)
+        logger.info(
+            "ConfigScannerWindow.__init__ done show_mode=%s", self._cs_show_mode
+        )
 
     def _show_advanced(self) -> None:
         if self._advanced is None:
@@ -170,6 +173,34 @@ class ConfigScannerWindow(QMainWindow):
     def showEvent(self, event) -> None:  # noqa: ANN001, N802
         super().showEvent(event)
         logger.info("ConfigScannerWindow showEvent visible=%s", self.isVisible())
+        if self._applied_show_mode:
+            return
+        self._applied_show_mode = True
+        if self._cs_show_mode == "fullscreen":
+            self.showFullScreen()
+        elif self._cs_show_mode == "maximized":
+            self.showMaximized()
+        if self._should_open_live_push_on_launch():
+            QTimer.singleShot(0, self._open_live_push)
+
+    def _should_open_live_push_on_launch(self) -> bool:
+        return (
+            self._simple is not None
+            and self._restore_b2u is None
+            and not self._snapshots_mode
+            and self._apply_pack is None
+            and self._country_pack is None
+            and self._companion_pack is None
+        )
+
+    def _open_live_push(self) -> None:
+        if self._simple is None:
+            return
+        self._simple.show_push()
+
+    def closeEvent(self, event) -> None:  # noqa: ANN001, N802
+        SettingsManager.save_config_scanner_window_geometry(self)
+        super().closeEvent(event)
 
     def show_status(self, message: str) -> None:
         self._status.setText(message)

@@ -29,6 +29,35 @@ _KEY_AI_PROVIDER = "ai/provider"
 _KEY_CONFIG_SCANNER_GAME_DRIVE = "config_scanner/game_drive"
 _KEY_CONFIG_SCANNER_PROFILE = "config_scanner/profile_id"
 _KEY_CONFIG_SCANNER_AUTO_START_STACK = "config_scanner/auto_start_stack"
+_KEY_CS_WIN_GEOMETRY = "config_scanner/window/geometry"
+_KEY_CS_WIN_X = "config_scanner/window/x"
+_KEY_CS_WIN_Y = "config_scanner/window/y"
+_KEY_CS_WIN_W = "config_scanner/window/width"
+_KEY_CS_WIN_H = "config_scanner/window/height"
+_KEY_CS_WIN_MAXIMIZED = "config_scanner/window/maximized"
+_KEY_CS_WIN_FULLSCREEN = "config_scanner/window/fullscreen"
+
+SHOW_MODE_NORMAL = "normal"
+SHOW_MODE_MAXIMIZED = "maximized"
+SHOW_MODE_FULLSCREEN = "fullscreen"
+
+
+def config_scanner_show_mode(
+    *,
+    has_saved: bool,
+    maximized: bool = False,
+    fullscreen: bool = False,
+) -> str:
+    """How to show Config Scanner on launch.
+
+    First run (nothing saved) opens maximized so Live Push fields are visible.
+    Later runs restore the last size/position, including maximize/fullscreen.
+    """
+    if fullscreen:
+        return SHOW_MODE_FULLSCREEN
+    if maximized or not has_saved:
+        return SHOW_MODE_MAXIMIZED
+    return SHOW_MODE_NORMAL
 _KEY_AI_HELPER_MODEL_PATH = "ai_helper/model_path"
 _KEY_BOT_PROFILE = "automation/bot_profile"
 _KEY_BOT_CONFIG_PATH = "automation/bot_config_path"
@@ -402,6 +431,112 @@ class SettingsManager:
             return int(raw)  # type: ignore[arg-type]
         except (TypeError, ValueError):
             return None
+
+    @staticmethod
+    def _settings_bool(raw: object, default: bool = False) -> bool:
+        if raw is None:
+            return default
+        if isinstance(raw, bool):
+            return raw
+        if isinstance(raw, (int, float)):
+            return bool(raw)
+        text = str(raw).strip().casefold()
+        if text in {"1", "true", "yes", "on"}:
+            return True
+        if text in {"0", "false", "no", "off", ""}:
+            return False
+        return default
+
+    @staticmethod
+    def _window_display_flags(window: object) -> tuple[bool, bool]:
+        """Return (maximized, fullscreen), including when minimized from those states."""
+        from PySide6.QtCore import Qt
+
+        is_max = bool(getattr(window, "isMaximized", lambda: False)())
+        is_fs = bool(getattr(window, "isFullScreen", lambda: False)())
+        window_state = getattr(window, "windowState", None)
+        if not callable(window_state):
+            return is_max, is_fs
+        state = window_state()
+        max_flag = Qt.WindowState.WindowMaximized
+        fs_flag = Qt.WindowState.WindowFullScreen
+        max_bit = getattr(max_flag, "value", 0x00000002)
+        fs_bit = getattr(fs_flag, "value", 0x00000004)
+        try:
+            is_max = is_max or bool(state & max_flag)
+            is_fs = is_fs or bool(state & fs_flag)
+        except TypeError:
+            try:
+                bits = int(state)
+            except (TypeError, ValueError):
+                bits = 0
+            is_max = is_max or bool(bits & int(max_bit))
+            is_fs = is_fs or bool(bits & int(fs_bit))
+        return is_max, is_fs
+
+    @staticmethod
+    def save_config_scanner_window_geometry(window: object) -> None:
+        """Persist Config Scanner size, position, and maximize/fullscreen."""
+        s = SettingsManager._s()
+        save_geometry = getattr(window, "saveGeometry", None)
+        geometry = getattr(window, "geometry", None)
+        if callable(save_geometry):
+            s.setValue(_KEY_CS_WIN_GEOMETRY, save_geometry())
+        if callable(geometry):
+            geo = geometry()
+            s.setValue(_KEY_CS_WIN_X, int(geo.x()))
+            s.setValue(_KEY_CS_WIN_Y, int(geo.y()))
+            s.setValue(_KEY_CS_WIN_W, int(geo.width()))
+            s.setValue(_KEY_CS_WIN_H, int(geo.height()))
+        maximized, fullscreen = SettingsManager._window_display_flags(window)
+        s.setValue(_KEY_CS_WIN_MAXIMIZED, bool(maximized))
+        s.setValue(_KEY_CS_WIN_FULLSCREEN, bool(fullscreen))
+        s.sync()
+
+    @staticmethod
+    def restore_config_scanner_window_geometry(window: object) -> str:
+        """Restore last Config Scanner geometry. Returns startup show mode."""
+        s = SettingsManager._s()
+        restored = False
+        restore_geometry = getattr(window, "restoreGeometry", None)
+        g = SettingsManager._settings_qbytearray(s.value(_KEY_CS_WIN_GEOMETRY))
+        if g is not None and callable(restore_geometry):
+            restored = bool(restore_geometry(g)) or restored
+        if not restored:
+            x = SettingsManager._settings_int(s.value(_KEY_CS_WIN_X))
+            y = SettingsManager._settings_int(s.value(_KEY_CS_WIN_Y))
+            w = SettingsManager._settings_int(s.value(_KEY_CS_WIN_W))
+            h = SettingsManager._settings_int(s.value(_KEY_CS_WIN_H))
+            set_geometry = getattr(window, "setGeometry", None)
+            move = getattr(window, "move", None)
+            resize = getattr(window, "resize", None)
+            if (
+                x is not None
+                and y is not None
+                and w is not None
+                and h is not None
+                and w > 0
+                and h > 0
+                and callable(set_geometry)
+            ):
+                set_geometry(x, y, w, h)
+                restored = True
+            elif x is not None and y is not None and callable(move):
+                move(x, y)
+                restored = True
+            elif w is not None and h is not None and w > 0 and h > 0 and callable(resize):
+                resize(w, h)
+                restored = True
+        maximized = SettingsManager._settings_bool(s.value(_KEY_CS_WIN_MAXIMIZED), False)
+        fullscreen = SettingsManager._settings_bool(s.value(_KEY_CS_WIN_FULLSCREEN), False)
+        has_saved = restored or g is not None
+        if has_saved and not maximized and not fullscreen:
+            SettingsManager._ensure_window_on_screen(window)
+        return config_scanner_show_mode(
+            has_saved=has_saved,
+            maximized=maximized,
+            fullscreen=fullscreen,
+        )
 
     @staticmethod
     def save_main_window_geometry(window: object) -> None:

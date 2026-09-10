@@ -456,3 +456,7 @@ class SimpleShell(QWidget):
 
     def show_create(self) -> None:
         self._show_create()
+
+    def show_push(self) -> None:
+        """Open Tune live cabinet (startup default)."""
+        self._show_push()
