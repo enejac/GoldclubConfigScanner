@@ -14,6 +14,9 @@ ConfigScanner.exe
 ConfigScanner-*.zip
 dist/
 build/
+# Dated / portable copies of the Windows build (tools\ is the sidecar)
+downloads/*.zip
+downloads/ConfigScanner-*.exe
 
 # CS staged trees exceed Windows MAX_PATH; ship beside exe, not in git
 config_scanner/assets/embedded_updates/staged/
