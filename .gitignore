@@ -9,8 +9,8 @@ config-scanner/rollback.json
 snapshots/
 reports/
 
-# Built app
-ConfigScanner.exe
+# Built app (root copy only — downloads/ConfigScanner.exe is the shipped name)
+/ConfigScanner.exe
 ConfigScanner-*.zip
 dist/
 build/

@@ -180,4 +180,5 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon="assets/log_investigator.ico",
+    version="file_version_info.txt",
 )
