@@ -291,7 +291,7 @@ def _licence_search_dirs(root: Path) -> list[Path]:
 
 
 def _collect_licence_xmls(root: Path) -> dict[str, Path]:
-    """Newest source for each licence XML file name found anywhere in the tree."""
+    """First source for each licence XML name (slot\\ before root leftovers)."""
     found: dict[str, Path] = {}
     for directory in _licence_search_dirs(root):
         try:

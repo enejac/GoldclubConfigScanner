@@ -519,6 +519,12 @@ def _wait_for_stack_running(host: str | None, *, wait_seconds: int = 180) -> tup
     return False, last
 
 
+def _script_basename(script_path: str) -> str:
+    """Last path segment for a Windows or POSIX script path."""
+    text = (script_path or "").replace("\\", "/").rstrip("/")
+    return Path(text).name.casefold()
+
+
 def _run_remote_one(
     host: str,
     script_path: str,
@@ -528,7 +534,7 @@ def _run_remote_one(
     timeout: int,
     script_args: list[str] | None = None,
 ) -> tuple[bool, str]:
-    name = Path(script_path).name.casefold()
+    name = _script_basename(script_path)
     if name == "kill-all.ps1" or label == "Kill-All":
         from automation.cabinet_elevate import run_remote_kill_all_elevated
 
@@ -581,6 +587,12 @@ def _run_remote_one(
     if result is not None:
         detail = ((result.stdout or "") + (result.stderr or "")).strip()
         rc = result.returncode
+    else:
+        clean = meaningful_winrm_detail(
+            "",
+            fallback=winrm_error or "WinRM did not return a result",
+        )
+        return False, clean or f"Remote {label} failed (no result)"
 
     if is_llave_auto:
         if rc == 0:

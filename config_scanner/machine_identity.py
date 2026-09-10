@@ -33,7 +33,6 @@ _FOREIGN_LICENSEE_IDS = frozenset({"12327444"})
 _KNOWN_LIVE_LICENCE_STEMS = frozenset({"37A55022DCBEF351AE27471D181B1EF5"})
 _KNOWN_LIVE_LICENSEE_IDS = frozenset({"12262688"})
 _SERIAL_DIGITS_RE = re.compile(r"(\d{4,})")
-_LICENCE_HASH_NAME_RE = re.compile(r"^[0-9A-Fa-f]{16,}\.xml$")
 _LICENCE_XML_SERIAL_RE = re.compile(
     rb"<SerialNumber>\s*([^<]+)\s*</SerialNumber>",
     re.IGNORECASE,
@@ -168,16 +167,30 @@ def licensee_id_from_licence_bytes(raw: bytes) -> str | None:
     return canonical_licensee_id(text)
 
 
+_JUNK_LICENCE_NAMES = frozenset(
+    {
+        "desktop.ini",
+        "thumbs.db",
+        ".ds_store",
+        "readme.txt",
+        "readme.md",
+    }
+)
+
+
 def is_licence_filename(name: str) -> bool:
-    """True for licence XML / dll names (not desktop.ini leftovers)."""
+    """True for licence XML / dll names (not desktop.ini / readme leftovers).
+
+    Licence folders on cabinets use hash stems, ``Licence12-…xml``, and also
+    short names such as ``cab.xml`` / ``live.xml``. Any ``.xml`` in those
+    folders counts except well-known junk.
+    """
     lowered = (name or "").casefold()
+    if lowered in _JUNK_LICENCE_NAMES or lowered.startswith("readme"):
+        return False
     if lowered in {"licence.dll", "license.dll"}:
         return True
-    if not lowered.endswith(".xml"):
-        return False
-    if lowered.startswith("licence") or lowered.startswith("license"):
-        return True
-    return bool(_LICENCE_HASH_NAME_RE.match(name or ""))
+    return lowered.endswith(".xml")
 
 
 def live_licence_files(dest_root: Path) -> list[Path]:

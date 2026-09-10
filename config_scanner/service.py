@@ -1148,16 +1148,11 @@ class ConfigScannerService:
         snapshot_profile = (build_info.profile_id or "").strip()
         dest_profile = match_profile_for_target(resolved_target, profiles)
         if snapshot_profile and dest_profile and snapshot_profile != dest_profile.id:
-            from config_scanner.software_compat import restore_uses_slot_software
-
-            if not restore_uses_slot_software(
-                build_info, resolved_target, snapshot_dir=snapshot_dir
-            ):
-                left = build_info.profile_label or snapshot_profile
-                right = dest_profile.label or dest_profile.id
-                raise ValueError(
-                    f"Cannot write snapshot: profile mismatch ({left!r} snapshot vs {right!r} target)."
-                )
+            left = build_info.profile_label or snapshot_profile
+            right = dest_profile.label or dest_profile.id
+            raise ValueError(
+                f"Cannot write snapshot: profile mismatch ({left!r} snapshot vs {right!r} target)."
+            )
 
         try:
             scope = WriteScope(write_scope)

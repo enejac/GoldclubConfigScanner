@@ -110,6 +110,37 @@ def test_remote_process_probe_empty_host_is_error() -> None:
     assert result.names == ()
 
 
+def test_run_remote_one_fails_closed_on_winrm_error(monkeypatch) -> None:
+    from config_scanner.stack_restart import _run_remote_one
+
+    monkeypatch.setattr(
+        "network.lab_access.ensure_lab_smb_credential",
+        lambda _h: None,
+    )
+    monkeypatch.setattr(
+        "network.lab_access.require_lab_fleet_ip",
+        lambda h: h,
+    )
+
+    def _boom(**_kw):
+        raise OSError("winrm down")
+
+    monkeypatch.setattr(
+        "automation.remote_exec.winrm_run_elevated_script",
+        _boom,
+    )
+    ok, detail = _run_remote_one(
+        "10.0.0.111",
+        r"D:\usb_scripts\roulette\Fix-Error30Clock.ps1",
+        label="Fix-Error30Clock",
+        allow_exit_1=False,
+        timeout=60,
+        script_args=["-SkipKill"],
+    )
+    assert ok is False
+    assert "winrm down" in detail.casefold() or "no result" in detail.casefold()
+
+
 def test_winrm_script_wrapper_propagates_exit_code() -> None:
     from automation.remote_exec import winrm_run_script
     import inspect
@@ -129,7 +160,11 @@ def test_trial_prep_does_not_succeed_when_clock_fails(monkeypatch, tmp_path: Pat
         lambda _t: StackRestartPlan(mode="local", host=None, kill_ps1="k", run_ps1="r"),
     )
     monkeypatch.setattr(
-        "config_scanner.cabinet_trial_prep._run_powershell_file",
+        "config_scanner.cabinet_trial_prep._fix_error30_clock_script",
+        lambda _host: str(tmp_path / "Fix-Error30Clock.ps1"),
+    )
+    monkeypatch.setattr(
+        "config_scanner.stack_restart._run_powershell_file",
         lambda *_a, **_k: (False, "Set-Date access denied"),
     )
     monkeypatch.setattr(
@@ -232,8 +267,11 @@ def test_live_licence_ignores_junk_files(tmp_path: Path) -> None:
     (licenses / "readme.txt").write_text("no", encoding="utf-8")
     assert live_has_licence(tmp_path) is False
     assert is_licence_filename("desktop.ini") is False
+    assert is_licence_filename("readme.txt") is False
     assert is_licence_filename("Licence12-12262688.xml") is True
     assert is_licence_filename("37A55022DCBEF351AE27471D181B1EF5.xml") is True
+    assert is_licence_filename("cab.xml") is True
+    assert is_licence_filename("live.xml") is True
 
 
 def test_rollback_pre_write_restores_bytes(tmp_path: Path) -> None:

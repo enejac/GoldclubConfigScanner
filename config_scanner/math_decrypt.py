@@ -365,4 +365,5 @@ def decrypt_math_file(
 
 
 def clear_math_decrypt_cache() -> None:
-    _DECRYPT_RESULTS.clear()
+    with _DECRYPT_LOCK:
+        _DECRYPT_RESULTS.clear()
