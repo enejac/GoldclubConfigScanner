@@ -140,21 +140,29 @@ def test_jurisdiction_wizard_module_imports() -> None:
     assert "recommend_cs_source" in wiz
 
 
-def test_jurisdiction_wizard_constructs() -> None:
+def test_jurisdiction_wizard_constructs(monkeypatch) -> None:
     from PySide6.QtWidgets import QApplication, QGroupBox
 
     from gui.jurisdiction_wizard import JurisdictionWizard
     from gui.live_push_panel import LivePushPanel
+
+    monkeypatch.setattr(
+        "gui.live_push_panel.SettingsManager.get_live_push_target", lambda: ""
+    )
+    monkeypatch.setattr(
+        "gui.live_push_panel.SettingsManager.get_live_push_recent", lambda: []
+    )
+    monkeypatch.setattr("gui.live_push_panel.this_pc_live_target", lambda: None)
 
     QApplication.instance() or QApplication([])
     wizard = JurisdictionWizard()
     assert wizard._status is not None
     assert wizard._stack.count() == 4
     panel = LivePushPanel(autoload=False)
-    from config_scanner.live_push import default_live_cabinet_target
     from gui.live_push_panel import _combo_code
 
-    assert panel._path.text() == default_live_cabinet_target()
+    assert panel._path.text() == ""
+    assert panel._cabinet.isEditable()
     assert panel._commit.text() == "Apply & restart game"
     assert panel._commit.isEnabled()
     panel._restart.setChecked(False)

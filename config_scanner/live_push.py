@@ -1835,7 +1835,7 @@ def this_pc_live_target(
 ) -> str | None:
     """Local Goldclub if this machine is a cabinet, else ``None``.
 
-    Does not fall back to a lab UNC share — that is what the IP buttons are for.
+    Does not fall back to a lab UNC share — type or recall a cabinet path instead.
     """
     from config_scanner.build_version import prefer_local_scan_target
 
@@ -1884,17 +1884,62 @@ def resolve_live_load_target(
     return local, f"Local Goldclub found at {local}; using it instead of {text}."
 
 
+def initial_live_cabinet_target(
+    *,
+    saved: str | None = None,
+    local: str | None = None,
+) -> str:
+    """Path for the Live Push cabinet field on launch.
+
+    A remembered UNC wins so a workstation does not auto-scan This PC.
+    Else the local Goldclub tree when this machine is a cabinet.
+    Else empty — never a hardcoded lab IP.
+    """
+    text = (saved or "").strip()
+    if text:
+        return text
+    local_text = (local or "").strip()
+    if local_text:
+        return local_text
+    return ""
+
+
+def merge_live_target_history(
+    newest: str,
+    recent: list[str] | tuple[str, ...] | None = None,
+    *,
+    limit: int = 8,
+) -> list[str]:
+    """Newest first, de-duped (slash/case-insensitive), capped. Empty newest is skipped."""
+    cap = max(1, int(limit))
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in (newest, *(recent or ())):
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        key = text.replace("/", "\\").rstrip("\\").casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(text)
+        if len(out) >= cap:
+            break
+    return out
+
+
 def default_live_cabinet_target(
     *,
     local_candidates: tuple[str, ...] | None = None,
     remote: str = DEFAULT_REMOTE_LIVE_TARGET,
 ) -> str:
-    """Pick the Goldclub tree this machine can see without a drive-letter sweep.
+    """Pick a Goldclub tree this machine can see without a drive-letter sweep.
 
     On a cabinet the exe prefers unlocked ``G:`` then ``C:\\Goldclub``. On a
-    workstation those folders are absent, so the path stays the lab share
-    ``\\\\10.0.0.111\\slot``. ``prefer_local_scan_target`` still folds a
-    loopback admin share back to a drive letter when this PC *is* the host.
+    workstation those folders are absent, so callers that still want a lab
+    share get ``remote`` (shipped ``\\\\10.0.0.111\\slot``). Live Push itself
+    uses :func:`initial_live_cabinet_target` instead — empty until the user
+    types a path or This PC finds a local tree.
     """
     from config_scanner.build_version import prefer_local_scan_target
 

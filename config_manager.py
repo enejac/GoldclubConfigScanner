@@ -29,6 +29,9 @@ _KEY_AI_PROVIDER = "ai/provider"
 _KEY_CONFIG_SCANNER_GAME_DRIVE = "config_scanner/game_drive"
 _KEY_CONFIG_SCANNER_PROFILE = "config_scanner/profile_id"
 _KEY_CONFIG_SCANNER_AUTO_START_STACK = "config_scanner/auto_start_stack"
+_KEY_LIVE_PUSH_TARGET = "config_scanner/live_push_target"
+_KEY_LIVE_PUSH_RECENT = "config_scanner/live_push_recent_json"
+LIVE_PUSH_RECENT_LIMIT = 8
 _KEY_CS_WIN_GEOMETRY = "config_scanner/window/geometry"
 _KEY_CS_WIN_X = "config_scanner/window/x"
 _KEY_CS_WIN_Y = "config_scanner/window/y"
@@ -221,6 +224,52 @@ class SettingsManager:
         s = SettingsManager._s()
         s.setValue(_KEY_CONFIG_SCANNER_AUTO_START_STACK, bool(enabled))
         s.sync()
+
+    @staticmethod
+    def get_live_push_target() -> str:
+        """Last cabinet path that Live Push loaded successfully."""
+        v = SettingsManager._s().value(_KEY_LIVE_PUSH_TARGET, "")
+        return str(v).strip() if v is not None else ""
+
+    @staticmethod
+    def set_live_push_target(target: str) -> None:
+        s = SettingsManager._s()
+        s.setValue(_KEY_LIVE_PUSH_TARGET, str(target).strip())
+        s.sync()
+
+    @staticmethod
+    def get_live_push_recent() -> list[str]:
+        """Recent Live Push cabinet paths, newest first."""
+        from config_scanner.live_push import merge_live_target_history
+
+        v = SettingsManager._s().value(_KEY_LIVE_PUSH_RECENT, "[]")
+        raw = str(v).strip() if v is not None else "[]"
+        try:
+            data = json.loads(raw) if raw else []
+        except json.JSONDecodeError:
+            data = []
+        if not isinstance(data, list):
+            return []
+        return merge_live_target_history("", data, limit=LIVE_PUSH_RECENT_LIMIT)
+
+    @staticmethod
+    def remember_live_push_target(
+        target: str, *, limit: int = LIVE_PUSH_RECENT_LIMIT
+    ) -> list[str]:
+        """Persist *target* as last-used and at the front of the recent list."""
+        from config_scanner.live_push import merge_live_target_history
+
+        newest = str(target).strip()
+        if not newest:
+            return SettingsManager.get_live_push_recent()
+        merged = merge_live_target_history(
+            newest, SettingsManager.get_live_push_recent(), limit=limit
+        )
+        s = SettingsManager._s()
+        s.setValue(_KEY_LIVE_PUSH_TARGET, newest)
+        s.setValue(_KEY_LIVE_PUSH_RECENT, json.dumps(merged))
+        s.sync()
+        return merged
 
     @staticmethod
     def get_ai_helper_model_path() -> str:

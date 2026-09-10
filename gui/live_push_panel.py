@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtGui import QBrush, QColor, QPalette
 
+from config_manager import SettingsManager
 from gui.busy_spinner import BusySpinner
 from config_scanner.bill_tokens_view import (
     apply_bill_token_accept,
@@ -49,7 +50,6 @@ from config_scanner.live_push import (
     CURRENCY_SYMBOL_CHOICES,
     DALLAS_CHOICES,
     DEFAULT_BETS,
-    DEFAULT_REMOTE_LIVE_TARGET,
     INACTIVITY_CHOICES,
     JACKPOT_COUNTERS,
     JACKPOT_LAYOUTS,
@@ -64,8 +64,9 @@ from config_scanner.live_push import (
     currency_symbol_for,
     THIS_PC_GOLDCLUB,
     THIS_PC_MISSING_STATUS,
-    default_live_cabinet_target,
+    initial_live_cabinet_target,
     load_error_dialog_text,
+    merge_live_target_history,
     this_pc_live_target,
     denom_combo_choices,
     goldclub_stack_kind,
@@ -716,13 +717,39 @@ class LivePushPanel(QWidget):
 
         cab = QHBoxLayout()
         cab.addWidget(QLabel("Cabinet:"))
-        self._path = QLineEdit(default_live_cabinet_target())
-        self._path.setPlaceholderText(r"\\10.0.0.111\slot  or  C:\Goldclub")
-        self._path.setToolTip(
-            "Goldclub root on the EGM: UNC share (e.g. \\\\10.0.0.111\\slot) "
-            "or a local path (C:\\Goldclub / G:\\ when unlocked)."
+        self._cabinet = QComboBox()
+        self._cabinet.setEditable(True)
+        self._cabinet.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self._cabinet.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
         )
-        cab.addWidget(self._path, stretch=1)
+        self._cabinet.setToolTip(
+            "Goldclub root on the EGM: type a UNC share (\\\\host\\slot) or a "
+            "local path (C:\\Goldclub / G:\\ when unlocked). Last successful "
+            "Load is remembered; the dropdown lists recent cabinets."
+        )
+        saved = SettingsManager.get_live_push_target()
+        recent = SettingsManager.get_live_push_recent()
+        initial = initial_live_cabinet_target(
+            saved=saved,
+            local=this_pc_live_target(),
+        )
+        self._fill_cabinet_history(recent, current=initial)
+        self._path = self._cabinet.lineEdit()
+        if self._path is None:
+            raise RuntimeError("cabinet combo must be editable")
+        self._path.setPlaceholderText(r"\\host\slot  or  C:\Goldclub")
+        self._path.setClearButtonEnabled(True)
+        self._path.setToolTip(self._cabinet.toolTip())
+        cab.addWidget(self._cabinet, stretch=1)
+        this_pc = QPushButton("This PC")
+        this_pc.setToolTip(
+            "Load G: or C:\\Goldclub when this machine is a cabinet. "
+            "No popup if there is no local Goldclub tree."
+        )
+        this_pc.clicked.connect(self._pick_this_pc)
+        self._shortcut_btns.append(this_pc)
+        cab.addWidget(this_pc)
         browse = QPushButton("Browse…")
         browse.setToolTip("Pick a local Goldclub folder.")
         browse.clicked.connect(self._browse)
@@ -731,7 +758,7 @@ class LivePushPanel(QWidget):
         load.setObjectName("primary")
         load.setToolTip(
             "Read the cabinet configs into this form. Fields turn green when they "
-            "match the live values."
+            "match the live values. A successful Load is remembered next launch."
         )
         load.clicked.connect(self._load)
         self._load_btn = load
@@ -739,28 +766,10 @@ class LivePushPanel(QWidget):
         self._load_spinner = BusySpinner(load, diameter=16, color=QColor(255, 255, 255))
         self._load_spinner.mount_on(load)
         self._load_spinner.setToolTip("Loading cabinet…")
+        self._cabinet.activated.connect(self._load)
         outer.addLayout(cab)
 
         quick = QHBoxLayout()
-        for label, path in (
-            ("This PC", THIS_PC_GOLDCLUB),
-            ("10.0.0.90", r"\\10.0.0.90\c$\Goldclub"),
-            ("10.0.0.98", r"\\10.0.0.98\c$\Goldclub"),
-            ("10.0.0.111", DEFAULT_REMOTE_LIVE_TARGET),
-        ):
-            btn = QPushButton(label)
-            if label == "This PC":
-                btn.setToolTip(
-                    "Load G: or C:\\Goldclub when this machine is a cabinet. "
-                    "No popup if there is no local Goldclub tree."
-                )
-                btn.clicked.connect(self._pick_this_pc)
-            else:
-                btn.setToolTip(f"Load cabinet at {path}")
-                btn.clicked.connect(lambda _=False, p=path: self._pick_cabinet(p))
-            self._shortcut_btns.append(btn)
-            quick.addWidget(btn)
-        quick.addSpacing(18)
         quick.addWidget(QLabel("Market:"))
         self._preset = QComboBox()
         self._preset.setToolTip(
@@ -1538,8 +1547,36 @@ class LivePushPanel(QWidget):
             self._paint_live_highlights()
             self._paint_licence_status()
 
+    def _fill_cabinet_history(
+        self, recent: list[str] | tuple[str, ...] | None, *, current: str = ""
+    ) -> None:
+        combo = getattr(self, "_cabinet", None)
+        if combo is None:
+            return
+        items = merge_live_target_history(current, recent)
+        combo.blockSignals(True)
+        combo.clear()
+        for item in items:
+            combo.addItem(item)
+        combo.setEditText(current.strip())
+        combo.blockSignals(False)
+
+    def _remember_cabinet(self, target: str) -> None:
+        text = (target or "").strip()
+        if not text:
+            return
+        recent = SettingsManager.remember_live_push_target(text)
+        self._fill_cabinet_history(recent, current=text)
+
     def _autoload(self) -> None:
         if self._busy:
+            return
+        target = self._path.text().strip()
+        if not target:
+            self._status.setText(
+                "Type a cabinet path (or This PC) and Load. "
+                "Last successful Load is remembered."
+            )
             return
         self._silent_load = True
         self._status.setText("Reading live cabinet…")
@@ -1615,6 +1652,7 @@ class LivePushPanel(QWidget):
         self._loaded = outcome.recipe
         self._goldclub = outcome.root
         self._show_resolved_target(outcome.root)
+        self._remember_cabinet(self._path.text().strip())
         self._display_corruption = dict(outcome.display_corruption or {})
         self._set_onehand_build_label(outcome.onehand_build)
         if outcome.root is not None:
@@ -2940,6 +2978,9 @@ class LivePushPanel(QWidget):
         self._dallas_read.setEnabled(not busy and not self._dallas_busy)
         for btn in self._shortcut_btns:
             btn.setEnabled(not busy)
+        cabinet = getattr(self, "_cabinet", None)
+        if cabinet is not None:
+            cabinet.setEnabled(not busy)
         spinner = getattr(self, "_load_spinner", None)
         if spinner is not None:
             spinner.set_active(busy)
