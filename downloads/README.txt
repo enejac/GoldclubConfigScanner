@@ -8,7 +8,7 @@ Use View raw (you must be signed in):
 
 Or: Code → Download ZIP, then downloads\Launch-ConfigScanner.exe
 
-Stamp:  2026-09-10 06:18
-SHA256: 2885103313db4679b9251beff8f8e2f53235815f6313ae5173d60fc66b436ea6
+Stamp:  2026-09-10 09:42
+SHA256: 408c85cedff0adbe68a92b5bbbb0ab2faf29d536ae29f557518519c52dd6cb46
 
 Put the repo tools\ folder next to the exe.
