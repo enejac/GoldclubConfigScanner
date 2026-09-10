@@ -1,0 +1,39 @@
+---
+description: "build exe" means build from fully merged, freshly fetched master only
+alwaysApply: true
+---
+
+# "build exe" = merged + fresh code only
+
+When the user says **build exe**, never build from the working branch as-is.
+An exe built from a branch that is missing merged fixes, or that predates the
+current branch head, is an **old build** and is not acceptable.
+
+## Required order (no shortcuts)
+
+1. **Everything pending must be merged first.** Check every open PR from this
+   work (`gh pr list --state open`). If any of them is still open, stop and tell
+   the user which PRs must be merged before the exe can be built. Do not build
+   in the meantime. Never merge PRs yourself.
+2. **Fetch fresh master**: `git fetch origin master`. Confirm the local branch
+   contains `origin/master` (`git merge-base --is-ancestor origin/master HEAD`)
+   and has **no unpushed or uncommitted code**. If the branch is behind master,
+   rebase or merge master in first and push.
+3. **Confirm the tree is what will ship**: `git status --short` must be empty
+   (apart from the build stamp) and `git diff origin/master --stat` must show
+   only intended, already-pushed work. Print the HEAD SHA that is being built.
+4. Only then run the build (Wine + PyInstaller on Linux, `build_exe.ps1` on
+   Windows), stamp with the current minute, stage `downloads/ConfigScanner.exe`,
+   update `downloads/README.txt` + `README.md` stamp/SHA256 lines.
+5. After the build, verify the PYZ inside the exe actually contains the newest
+   modules (grep the decompressed module bytes for a symbol added in the latest
+   commit) before pushing.
+6. In the summary, state the **HEAD SHA**, **stamp**, **SHA256**, and which
+   commits are included. If any fix is *not* in the exe, say so in the first
+   sentence.
+
+## Never
+
+- Build while a PR of this work is still open or the branch is behind master.
+- Ship a build and describe a later fix as "not yet in the exe" as a footnote.
+- Build the same stamp twice; every build gets the current minute.
