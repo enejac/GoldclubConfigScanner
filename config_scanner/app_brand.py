@@ -19,8 +19,9 @@ def _baked_stamp() -> str:
 def build_stamp_text() -> str:
     """Date and clock of this exe build (local), or ``dev`` from source.
 
-    A committed leftover in ``_build_stamp.py`` must not show up when running
-    ``python gui_app.py``. Only the frozen exe uses the baked minute.
+    The git copy of ``_build_stamp.py`` stays empty. Source runs show ``dev``.
+    The frozen exe uses the minute baked from ``datetime.now()`` at that build,
+    or the exe file time if the bake file was empty.
     """
     if not getattr(sys, "frozen", False):
         return "dev"

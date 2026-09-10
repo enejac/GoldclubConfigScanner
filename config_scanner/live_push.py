@@ -3,8 +3,9 @@
 Does not rewrite serialport layout/locations or Windows boot.
 Licences are never overwritten; missing licence XML / licence.dll may be
 copied next to OneHand when the operator enables that Live Push section.
-Slot cabinets: stop OneHand/Bootstrap, write, start Bootstrap.exe.
-Roulette cabinets: Kill-All then Run-FullStack. No EGM reboot either way.
+Slot cabinets: stop OneHand/Bootstrap, write, then start game-start
+(Release) or Bootstrap (Debug / unknown). Roulette: Kill-All then
+Run-FullStack. No EGM reboot either way.
 """
 
 from __future__ import annotations
@@ -1070,9 +1071,10 @@ def slot_start_launcher(
     except (OSError, TypeError, ValueError):
         info = None
     cfg = ((info.configuration if info else "") or "").strip().casefold()
-    if cfg == "debug":
-        return "bootstrap"
-    return "game-start"
+    if cfg == "release":
+        return "game-start"
+    # Debug, Unknown, or detect failed — Bootstrap (do not assume Release).
+    return "bootstrap"
 
 
 def slot_start_candidates(

@@ -732,6 +732,16 @@ def test_slot_start_launcher_release_vs_debug(monkeypatch, tmp_path: Path) -> No
         lambda _r: OneHandBuildInfo(version="2.0.1", configuration="Debug"),
     )
     assert slot_start_launcher(str(gold)) == "bootstrap"
+    monkeypatch.setattr(
+        "config_scanner.live_push.detect_onehand_build",
+        lambda _r: None,
+    )
+    assert slot_start_launcher(str(gold)) == "bootstrap"
+    monkeypatch.setattr(
+        "config_scanner.live_push.detect_onehand_build",
+        lambda _r: (_ for _ in ()).throw(OSError("smb down")),
+    )
+    assert slot_start_launcher(str(gold)) == "bootstrap"
 
 
 def test_watchdog_release_starts_game_start() -> None:

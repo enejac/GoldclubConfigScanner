@@ -31,9 +31,6 @@ LAB_FLEET_IPS: frozenset[str] = frozenset(
     }
 )
 
-# Roulette-only lab cabinets (no ``ruleta`` in a generic ``…\\var`` scan path).
-LAB_ROULETTE_IPS: frozenset[str] = frozenset({"10.0.0.111"})
-
 LAB_USERNAME_HINT = r"GOLD-CLUB\test"
 
 # Workgroup cabinets have no GOLD-CLUB domain account. WinRM/SMB must use

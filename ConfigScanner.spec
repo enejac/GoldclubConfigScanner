@@ -6,6 +6,14 @@ from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_all
 
+# Each PyInstaller run bakes this process's local clock (not a committed time).
+try:
+    from config_scanner.build_stamp_write import write_build_stamp
+
+    print("[ConfigScanner.spec] Build stamp:", write_build_stamp())
+except Exception as exc:  # noqa: BLE001
+    print("[ConfigScanner.spec] WARN: could not bake build stamp:", exc)
+
 _spec_dir = Path(SPEC).resolve().parent
 _embed = _spec_dir / "config_scanner" / "assets" / "embedded_updates"
 # Staged CountrySelector trees have 250+ char paths — PyInstaller bootloader

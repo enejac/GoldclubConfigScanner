@@ -1541,7 +1541,7 @@ def is_debug_onehand_version(text: str | None) -> bool:
     folded = (text or "").strip().casefold()
     if not folded:
         return False
-    if folded == "debug" or folded.startswith("debug"):
+    if folded == "debug" or folded.startswith("debug ") or folded.startswith("debug-"):
         return True
     return bool(_DEBUG_VERSION_TOKEN.search(folded))
 

@@ -798,7 +798,8 @@ class ConfigScannerTabWidget(QFrame):
         self._changes_find_edit = QLineEdit()
         self._changes_find_edit.setPlaceholderText("Filter changes…")
         self._changes_find_edit.setToolTip(
-            "Filter changed files and settings (case-insensitive substring match)."
+            "Filter changed files and settings (case-insensitive substring). "
+            "Restore still writes the full snapshot, not only visible rows."
         )
         self._changes_find_edit.setClearButtonEnabled(True)
         self._changes_find_edit.setMinimumWidth(160)
@@ -1507,6 +1508,7 @@ class ConfigScannerTabWidget(QFrame):
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(8)
         note = QLabel(message)
+        note.setTextFormat(Qt.TextFormat.PlainText)
         note.setStyleSheet(self._compare_panel_styles()["legend"])
         note.setWordWrap(True)
         row.addWidget(note, stretch=1)
@@ -1520,6 +1522,7 @@ class ConfigScannerTabWidget(QFrame):
 
     def _add_changes_panel_note(self, text: str) -> None:
         note = QLabel(text)
+        note.setTextFormat(Qt.TextFormat.PlainText)
         note.setStyleSheet(self._compare_panel_styles()["legend"])
         note.setWordWrap(True)
         self._changes_layout.addWidget(note)
@@ -2920,8 +2923,20 @@ class ConfigScannerTabWidget(QFrame):
                 )
             prompt += (
                 "\nLive licence XML and serialport maps are never overwritten.\n"
-                "Continue?"
             )
+            find_edit = getattr(self, "_changes_find_edit", None)
+            needle = ""
+            if find_edit is not None:
+                try:
+                    needle = find_edit.text().strip()
+                except RuntimeError:
+                    needle = ""
+            if needle:
+                prompt += (
+                    f'\nFind filter "{needle}" is display-only. This restore '
+                    "writes the full snapshot, not only the visible rows.\n"
+                )
+            prompt += "Continue?"
 
         warnings = self._service.snapshot_apply_warnings(
             snapshot_name, scan_target, write_scope=scope.value

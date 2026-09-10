@@ -1117,6 +1117,8 @@ def test_is_debug_onehand_version_token() -> None:
     assert is_debug_onehand_version("Debug")
     assert is_debug_onehand_version("DEBUG")
     assert is_debug_onehand_version("2.0.1 Debug")
+    assert is_debug_onehand_version("debug-sku")
+    assert not is_debug_onehand_version("debugger")
     assert not is_debug_onehand_version("2.0.1")
     assert not is_debug_onehand_version("")
     assert not is_debug_onehand_version(None)
