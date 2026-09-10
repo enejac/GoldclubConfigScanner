@@ -32,6 +32,17 @@ python gui_app.py
 
 Output: `dist\ConfigScanner.exe` (copied to repo root). Writable data lives in `config-scanner\` beside the exe.
 
+## Changelog
+
+[CHANGELOG.md](CHANGELOG.md) — one line per merged PR, newest first.
+
+It updates itself when a PR is merged to `master` (`.github/workflows/changelog.yml`).
+The PR title is the line. Rebuild from GitHub:
+
+```powershell
+gh pr list --state merged --limit 100 --json number,title,mergedAt,url | python scripts/update_changelog.py --rebuild
+```
+
 ## Tests
 
 ```powershell
