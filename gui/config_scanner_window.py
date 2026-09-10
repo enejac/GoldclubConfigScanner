@@ -126,9 +126,9 @@ class ConfigScannerWindow(QMainWindow):
         sb.addWidget(self._status, stretch=1)
         self._screenshot_btn = QPushButton("Screenshot")
         self._screenshot_btn.setToolTip(
-            "Save a PNG of the app and any warning on top, next to "
-            "ConfigScanner.exe. Works while a dialog is open "
-            "(Ctrl+Shift+S or F12)."
+            "Save a PNG of the app next to ConfigScanner.exe. "
+            "Stays in this bottom-right corner over popups "
+            "(also Ctrl+Shift+S or F12)."
         )
         self._screenshot_btn.clicked.connect(self._screenshot_ui)
         sb.addPermanentWidget(self._screenshot_btn)
