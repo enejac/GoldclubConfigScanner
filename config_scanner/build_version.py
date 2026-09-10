@@ -734,6 +734,215 @@ def _read_pe_rsrc_bytes(path: Path) -> bytes | None:
         return None
 
 
+def _pe_rva_to_offset(
+    sections: list[tuple[int, int, int, int]], rva: int
+) -> tuple[int, int] | None:
+    """Map RVA to (file_offset, max_readable) using PE section table."""
+    for virt_addr, virt_size, ptr_raw, size_raw in sections:
+        span = max(virt_size, size_raw)
+        if virt_addr <= rva < virt_addr + span:
+            delta = rva - virt_addr
+            remain = size_raw - delta if size_raw > delta else 0
+            if remain <= 0:
+                return None
+            return ptr_raw + delta, remain
+    return None
+
+
+def _read_pe_layout(
+    handle,
+) -> tuple[list[tuple[int, int, int, int]], bytes] | None:
+    """Return (sections, optional_header) or None."""
+    handle.seek(0)
+    hdr = handle.read(4096)
+    if len(hdr) < 64 or hdr[:2] != b"MZ":
+        return None
+    e_lfanew = int.from_bytes(hdr[0x3C:0x40], "little")
+    if e_lfanew < 64 or e_lfanew > 1_000_000:
+        return None
+    handle.seek(e_lfanew)
+    pe = handle.read(24)
+    if pe[:4] != b"PE\x00\x00":
+        return None
+    num_sections = int.from_bytes(pe[6:8], "little")
+    opt_size = int.from_bytes(pe[20:22], "little")
+    if opt_size < 96 or not (1 <= num_sections <= 96):
+        return None
+    handle.seek(e_lfanew)
+    pe = handle.read(24 + opt_size + num_sections * 40)
+    if len(pe) < 24 + opt_size + 40:
+        return None
+    opt = pe[24 : 24 + opt_size]
+    sect = pe[24 + opt_size :]
+    sections: list[tuple[int, int, int, int]] = []
+    for i in range(num_sections):
+        block = sect[i * 40 : (i + 1) * 40]
+        if len(block) < 40:
+            break
+        virt_size = int.from_bytes(block[8:12], "little")
+        virt_addr = int.from_bytes(block[12:16], "little")
+        size_raw = int.from_bytes(block[16:20], "little")
+        ptr_raw = int.from_bytes(block[20:24], "little")
+        sections.append((virt_addr, virt_size, ptr_raw, size_raw))
+    return sections, opt
+
+
+def _read_clr_metadata_bytes(path: Path) -> bytes:
+    """Read the .NET CLI metadata root (DebuggableAttribute lives here, not .rsrc)."""
+    try:
+        with path.open("rb") as handle:
+            layout = _read_pe_layout(handle)
+            if layout is None:
+                return b""
+            sections, opt = layout
+            magic = int.from_bytes(opt[0:2], "little")
+            if magic == 0x10B:
+                dd = 96
+            elif magic == 0x20B:
+                dd = 112
+            else:
+                return b""
+            # IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR = 14
+            clr_off = dd + 14 * 8
+            if clr_off + 8 > len(opt):
+                return b""
+            clr_rva = int.from_bytes(opt[clr_off : clr_off + 4], "little")
+            clr_size = int.from_bytes(opt[clr_off + 4 : clr_off + 8], "little")
+            if not clr_rva or clr_size < 16:
+                return b""
+            mapped = _pe_rva_to_offset(sections, clr_rva)
+            if mapped is None:
+                return b""
+            file_off, remain = mapped
+            handle.seek(int(file_off))
+            cor20 = handle.read(min(72, remain))
+            if len(cor20) < 16:
+                return b""
+            meta_rva = int.from_bytes(cor20[8:12], "little")
+            meta_size = int.from_bytes(cor20[12:16], "little")
+            if not meta_rva or meta_size < 16:
+                return b""
+            meta_map = _pe_rva_to_offset(sections, meta_rva)
+            if meta_map is None:
+                return b""
+            meta_off, meta_remain = meta_map
+            handle.seek(int(meta_off))
+            return handle.read(min(int(meta_size), int(meta_remain), 4 * 1024 * 1024))
+    except OSError:
+        return b""
+
+
+# Custom-attribute blobs for System.Diagnostics.DebuggableAttribute.
+# 0x0107 / 0x010B = Debug (DisableOptimizations). 0x0002 = typical Release.
+_DOTNET_DEBUG_ATTR = b"DebuggableAttribute"
+_DOTNET_DEBUG_BLOBS = (
+    bytes([0x06, 0x01, 0x00, 0x07, 0x01, 0x00, 0x00]),
+    bytes([0x06, 0x01, 0x00, 0x0B, 0x01, 0x00, 0x00]),
+    bytes([0x06, 0x01, 0x00, 0x03, 0x01, 0x00, 0x00]),
+    bytes([0x04, 0x01, 0x00, 0x01, 0x01]),
+)
+_DOTNET_RELEASE_BLOBS = (
+    bytes([0x06, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00]),
+    bytes([0x04, 0x01, 0x00, 0x00, 0x00]),
+)
+def _dotnet_assembly_is_debug(path: Path) -> bool | None:
+    """True when CLI metadata has a Debug DebuggableAttribute blob.
+
+    Only the CLR metadata root is scanned — not the first megabytes of the
+    exe. A head/tail search false-positives on every .NET OneHand.
+    """
+    data = _read_clr_metadata_bytes(path)
+    if not data:
+        return None
+    if _DOTNET_DEBUG_ATTR not in data and _DOTNET_DEBUG_ATTR.decode().encode(
+        "utf-16le"
+    ) not in data:
+        return None
+    if any(blob in data for blob in _DOTNET_DEBUG_BLOBS):
+        return True
+    if any(blob in data for blob in _DOTNET_RELEASE_BLOBS):
+        return False
+    return None
+
+
+def _pdb_path_is_debug_output(pdb_path: str) -> bool:
+    """True when the CodeView path has a ``Debug`` folder (not the word in a filename)."""
+    parts = [p for p in re.split(r"[\\/]+", (pdb_path or "").strip()) if p]
+    return any(part.casefold() == "debug" for part in parts[:-1])
+
+
+def _decode_rsds_pdb_path(blob: bytes, offset: int) -> str:
+    if offset + 24 > len(blob) or blob[offset : offset + 4] != b"RSDS":
+        return ""
+    rest = blob[offset + 24 : offset + 24 + 512]
+    end = rest.find(b"\x00")
+    raw = rest if end < 0 else rest[:end]
+    try:
+        text = raw.decode("ascii")
+    except UnicodeDecodeError:
+        return ""
+    if not text.lower().endswith(".pdb"):
+        return ""
+    if not all(ch.isprintable() for ch in text):
+        return ""
+    return text
+
+
+def _iter_pe_codeview_pdb_paths(path: Path) -> list[str]:
+    """PDB paths from IMAGE_DEBUG_DIRECTORY (CodeView / RSDS)."""
+    found: list[str] = []
+    try:
+        with path.open("rb") as handle:
+            layout = _read_pe_layout(handle)
+            if layout is None:
+                return found
+            sections, opt = layout
+            magic = int.from_bytes(opt[0:2], "little")
+            if magic == 0x10B:
+                dd = 96
+            elif magic == 0x20B:
+                dd = 112
+            else:
+                return found
+            # IMAGE_DIRECTORY_ENTRY_DEBUG = 6
+            dbg_off = dd + 6 * 8
+            if dbg_off + 8 > len(opt):
+                return found
+            rva = int.from_bytes(opt[dbg_off : dbg_off + 4], "little")
+            size = int.from_bytes(opt[dbg_off + 4 : dbg_off + 8], "little")
+            if not rva or size < 28:
+                return found
+            mapped = _pe_rva_to_offset(sections, rva)
+            if mapped is None:
+                return found
+            file_off, remain = mapped
+            handle.seek(int(file_off))
+            table = handle.read(min(int(size), int(remain), 4096))
+            for i in range(0, len(table) - 27, 28):
+                entry = table[i : i + 28]
+                dtype = int.from_bytes(entry[12:16], "little")
+                data_size = int.from_bytes(entry[16:20], "little")
+                raw_ptr = int.from_bytes(entry[24:28], "little")
+                if dtype != 2 or data_size < 25 or raw_ptr <= 0:
+                    continue
+                handle.seek(raw_ptr)
+                cv = handle.read(min(data_size, 1024))
+                pdb = _decode_rsds_pdb_path(cv, 0)
+                if pdb:
+                    found.append(pdb)
+    except OSError:
+        return found
+    return found
+
+
+def _pe_codeview_is_debug_build(path: Path) -> bool:
+    """True when this exe's own CodeView path was produced from a Debug folder."""
+    for pdb in _iter_pe_codeview_pdb_paths(path):
+        if _pdb_path_is_debug_output(pdb):
+            return True
+    return False
+
+
 def _read_head_tail_bytes(path: Path, *, head: int, tail: int) -> bytes:
     with path.open("rb") as handle:
         handle.seek(0, os.SEEK_END)
@@ -822,13 +1031,28 @@ def _pick_display_product_version(values: list[str] | tuple[str, ...]) -> str:
 
 
 def onehand_exe_is_debug_sku(exe_path: Path | str) -> bool:
-    """True when this OneHand.exe is the lab Debug SKU (VERSIONINFO, not VS_FF_DEBUG)."""
+    """True when this OneHand.exe is a Debug compile / Debug VERSIONINFO SKU.
+
+    Version numbers (3.0.0.0, +RC2+hex), SlotLog banners, and
+    AssemblyConfiguration=Release do **not** decide this — those appear on
+    Release binaries too.
+    """
     path = Path(exe_path)
     try:
         if "debug" in path.name.casefold():
             return True
     except OSError:
         return False
+    try:
+        if _pe_codeview_is_debug_build(path):
+            return True
+    except OSError:
+        pass
+    try:
+        if _dotnet_assembly_is_debug(path) is True:
+            return True
+    except OSError:
+        pass
     try:
         res = _read_version_resource(path)
     except OSError:
@@ -900,7 +1124,7 @@ def _preferred_onehand_version_text(info: _ExeVersionInfo) -> str:
 def _onehand_configuration(
     info: _ExeVersionInfo, exe_path: Path, goldclub: Path
 ) -> tuple[str, str]:
-    """Debug wins over an unset VS_FF_DEBUG bit (OneHand Debug SKUs leave it 0)."""
+    """Debug only from compile/VERSIONINFO signals, not from the version number."""
     if info.is_debug is True:
         return "Debug", "VERSIONINFO"
     labels = (
@@ -914,23 +1138,24 @@ def _onehand_configuration(
     if _configuration_from_strings(*(p or "" for p in labels)) == "Debug":
         return "Debug", "VERSIONINFO string"
     try:
+        if _pe_codeview_is_debug_build(exe_path):
+            return "Debug", "CodeView PDB path (Debug folder)"
+    except OSError:
+        pass
+    try:
+        if _dotnet_assembly_is_debug(exe_path) is True:
+            return "Debug", "DebuggableAttribute"
+    except OSError:
+        pass
+    try:
         if onehand_exe_is_debug_sku(exe_path):
             return "Debug", "VERSIONINFO ProductVersion/FileVersion"
     except OSError:
         pass
-    try:
-        from config_scanner.slot_setup import is_onehand_debug_build
-
-        if is_onehand_debug_build(goldclub):
-            return "Debug", "slot OneHand Debug SKU"
-    except Exception:
-        pass
-    sniffed = _sniff_build_configuration(exe_path)
-    if sniffed == "Debug":
-        return "Debug", "AssemblyConfiguration"
-    if info.is_debug is False or sniffed == "Release":
-        why = "VERSIONINFO" if info.is_debug is False else "AssemblyConfiguration"
-        return "Release", why
+    # AssemblyConfiguration is not a compile signal: Debug SKUs often say
+    # Release, and Release binaries contain Debug from other assemblies.
+    if info.is_debug is False:
+        return "Release", "VERSIONINFO"
     return "Release", "default"
 
 
@@ -1151,12 +1376,18 @@ def _extract_version_from_exe(exe_path: Path, *, slot_style: bool = False) -> _E
                 is_debug = True
             if _version_resource_is_debug(res):
                 is_debug = True
-        if not pv:
-            sniff_pv, sniff_pn = _sniff_exe_version_strings(exe_path)
-            if sniff_pv:
-                pv = sniff_pv.strip()
-            if sniff_pn and not product_name:
-                product_name = sniff_pn
+        sniff_pv, sniff_pn = _sniff_exe_version_strings(exe_path)
+        if sniff_pv:
+            rich = sniff_pv.strip()
+            # Display only, and only when VERSIONINFO has no real version.
+            # A 32 MB sniff otherwise picks a dependency 3.0.0.0+RC2+… and
+            # poisons a Release 2.x ProductVersion.
+            if rich and (
+                not pv or _configuration_from_strings(pv) == "Debug"
+            ) and _configuration_from_strings(rich) != "Debug":
+                pv = rich
+        if sniff_pn and not product_name:
+            product_name = sniff_pn
         if not file_version and win32api is not None:
             file_version = _read_pe_file_version(win32api, exe_str)
 

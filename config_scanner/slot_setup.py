@@ -1566,7 +1566,19 @@ def _utf16_string_after(blob: bytes, key: str) -> str:
 
 
 def is_onehand_debug_build(goldclub: Path) -> bool:
-    """True when live ``OneHand.exe`` is the Debug SKU (no production licence)."""
+    """True when live ``OneHand.exe`` is the Debug SKU (no production licence).
+
+    Uses the exe on disk only — SlotLog is not required (cabinet may never
+    have been started).
+    """
+    try:
+        from config_scanner.build_version import detect_onehand_build
+
+        info = detect_onehand_build(goldclub)
+    except Exception:
+        info = None
+    if info is not None:
+        return (info.configuration or "").strip().casefold() == "debug"
     path = onehand_exe_path(goldclub)
     if path is None:
         return False
@@ -1578,49 +1590,9 @@ def is_onehand_debug_build(goldclub: Path) -> bool:
     try:
         from config_scanner.build_version import onehand_exe_is_debug_sku
 
-        if onehand_exe_is_debug_sku(path):
-            return True
+        return bool(onehand_exe_is_debug_sku(path))
     except Exception:
-        pass
-    try:
-        from config_scanner.build_version import _extract_version_from_onehand_exe
-
-        info = _extract_version_from_onehand_exe(path)
-    except Exception:
-        info = None
-    if info is not None:
-        if getattr(info, "is_debug", None) is True:
-            return True
-        for label in (
-            info.product_version,
-            info.file_version,
-            getattr(info, "file_version_string", None),
-            info.product_name,
-            info.display_version,
-        ):
-            if is_debug_onehand_version(label):
-                return True
-    try:
-        from config_scanner.build_version import (
-            _all_utf16_values_after,
-            _read_version_scan_bytes,
-        )
-
-        blob = _read_version_scan_bytes(path)
-        for key in ("ProductVersion", "FileVersion", "ProductName", "FileDescription"):
-            if any(is_debug_onehand_version(value) for value in _all_utf16_values_after(blob, key)):
-                return True
         return False
-    except Exception:
-        pass
-    try:
-        blob = path.read_bytes()[: 4 * 1024 * 1024]
-    except OSError:
-        return False
-    for key in ("ProductVersion", "FileVersion", "ProductName", "FileDescription"):
-        if is_debug_onehand_version(_utf16_string_after(blob, key)):
-            return True
-    return False
 
 
 def licence_push_default_checked(

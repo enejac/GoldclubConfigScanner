@@ -10,6 +10,7 @@ from config_scanner.build_version import (
     _all_utf16_values_after,
     _configuration_from_strings,
     _find_onehand_exe,
+    _pdb_path_is_debug_output,
     _read_pe_debug_flag,
     _read_version_resource,
     _sniff_build_configuration,
@@ -125,7 +126,8 @@ def test_detect_onehand_build_uses_sniff_and_version(tmp_path: Path, monkeypatch
     info = detect_onehand_build(gold)
     assert info is not None
     assert info.version == "2.0.1+RC2"
-    assert info.configuration == "Debug"
+    # AssemblyConfiguration alone is not a compile signal (Release SKUs contain it).
+    assert info.configuration == "Release"
     assert "OneHand" in info.label
 
 
@@ -271,6 +273,84 @@ def test_read_version_resource_finds_debug_sku(tmp_path: Path) -> None:
     res = _read_version_resource(exe)
     assert res is not None
     assert "Debug" in res.fields.get("ProductVersion", ())
+
+
+def test_version_number_and_slotlog_strings_are_not_debug(tmp_path: Path) -> None:
+    """3.0.0.0+RC2+hex and SlotLog banners appear on Release OneHand too."""
+    from config_scanner.live_push import slot_start_launcher
+    from config_scanner.slot_setup import is_onehand_debug_build
+
+    gold = tmp_path / "Goldclub"
+    slot = gold / "slot"
+    slot.mkdir(parents=True)
+    (slot / "OneHand.exe").write_bytes(
+        b"MZ"
+        + "AssemblyConfiguration".encode("utf-16le")
+        + b"\x00\x00"
+        + "Release".encode("utf-16le")
+        + "SlotMachine v3.0.0.0".encode("utf-16le")
+        + "Static initialization (i0)".encode("ascii")
+        + _version_info_blob(
+            ProductVersion="3.0.0.0+RC2+2667F2",
+            FileVersion="3.0.0.0",
+            FileDescription="OneHand",
+        )
+    )
+    info = detect_onehand_build(gold)
+    assert info is not None
+    assert info.configuration == "Release"
+    assert "3.0.0.0+RC2+2667F2" in (info.version or "")
+    assert info.label.endswith("Release")
+    assert is_onehand_debug_build(gold) is False
+    assert slot_start_launcher(str(gold), dest=gold) == "game-start"
+
+
+def test_release_exe_ignores_dependency_debug_version_bytes(tmp_path: Path) -> None:
+    gold = tmp_path / "Goldclub"
+    slot = gold / "slot"
+    slot.mkdir(parents=True)
+    (slot / "OneHand.exe").write_bytes(
+        b"MZ"
+        + "3.0.0.0+RC2+DEADBE".encode("utf-16le")
+        + "DebuggableAttribute".encode("ascii")
+        + bytes([0x06, 0x01, 0x00, 0x07, 0x01, 0x00, 0x00])
+        + "AssemblyConfiguration".encode("utf-16le")
+        + b"\x00\x00"
+        + "Release".encode("utf-16le")
+        + _version_info_blob(ProductVersion="2.1.0", FileDescription="OneHand")
+    )
+    info = detect_onehand_build(gold)
+    assert info is not None
+    assert info.configuration == "Release"
+    assert info.version == "2.1.0"
+
+
+def test_pdb_path_debug_folder_is_debug(tmp_path: Path, monkeypatch) -> None:
+    gold = tmp_path / "Goldclub"
+    slot = gold / "slot"
+    slot.mkdir(parents=True)
+    exe = slot / "OneHand.exe"
+    exe.write_bytes(
+        b"MZ"
+        + "AssemblyConfiguration".encode("utf-16le")
+        + b"\x00\x00"
+        + "Release".encode("utf-16le")
+        + _version_info_blob(ProductVersion="3.0.0.0+RC2+2667F2", FileDescription="OneHand")
+    )
+    monkeypatch.setattr(
+        "config_scanner.build_version._pe_codeview_is_debug_build",
+        lambda _p: True,
+    )
+    info = detect_onehand_build(gold)
+    assert info is not None
+    assert info.configuration == "Debug"
+
+
+def test_pdb_path_is_debug_output_uses_folder_not_filename() -> None:
+    assert _pdb_path_is_debug_output(r"C:\src\bin\Debug\OneHand.pdb") is True
+    assert _pdb_path_is_debug_output(r"C:\src\bin\Release\OneHand.pdb") is False
+    assert _pdb_path_is_debug_output(r"C:\src\OneHand-Debug.pdb") is False
+    assert _pdb_path_is_debug_output("OneHand.pdb") is False
 
 
 def test_slot_start_launcher_uses_bootstrap_for_rc_debug_sku(tmp_path: Path) -> None:
