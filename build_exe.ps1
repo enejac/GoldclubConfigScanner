@@ -22,8 +22,8 @@ if ($InstallDeps) {
 }
 
 $exe = Join-Path $PSScriptRoot "dist\ConfigScanner.exe"
-# Bake date+clock into the window title so lab builds are easy to tell apart.
-python -c "from datetime import datetime; from pathlib import Path; stamp = datetime.now().strftime('%Y-%m-%d %H:%M'); Path('config_scanner/_build_stamp.py').write_text('BUILD_STAMP = %r\n' % stamp, encoding='utf-8'); print('Build stamp: ' + stamp)"
+# Bake the current local minute. Never pass a made-up time.
+python -m config_scanner.build_stamp_write
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 python scripts/generate_link2win_hashes.py
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
