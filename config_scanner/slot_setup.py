@@ -1575,12 +1575,21 @@ def is_onehand_debug_build(goldclub: Path) -> bool:
     except OSError:
         return False
     try:
+        from config_scanner.build_version import onehand_exe_is_debug_sku
+
+        if onehand_exe_is_debug_sku(path):
+            return True
+    except Exception:
+        pass
+    try:
         from config_scanner.build_version import _extract_version_from_onehand_exe
 
         info = _extract_version_from_onehand_exe(path)
     except Exception:
         info = None
     if info is not None:
+        if getattr(info, "is_debug", None) is True:
+            return True
         for label in (
             info.product_version,
             info.file_version,
@@ -1589,6 +1598,19 @@ def is_onehand_debug_build(goldclub: Path) -> bool:
         ):
             if is_debug_onehand_version(label):
                 return True
+    try:
+        from config_scanner.build_version import (
+            _all_utf16_values_after,
+            _read_version_scan_bytes,
+        )
+
+        blob = _read_version_scan_bytes(path)
+        for key in ("ProductVersion", "FileVersion", "ProductName", "FileDescription"):
+            if any(is_debug_onehand_version(value) for value in _all_utf16_values_after(blob, key)):
+                return True
+        return False
+    except Exception:
+        pass
     try:
         blob = path.read_bytes()[: 4 * 1024 * 1024]
     except OSError:
