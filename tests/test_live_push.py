@@ -747,7 +747,10 @@ def test_live_push_chrome_has_tooltips() -> None:
     assert '("10.0.0.98"' not in src
     assert '("10.0.0.111"' not in src
     assert "initial_live_cabinet_target" in src
-    assert "remember_live_push_target" in src
+    # Remembering goes through the helper shared with Snapshots, so both
+    # screens open on the cabinet used last on either of them.
+    assert "remember_shared_cabinet_target(" in src
+    assert "def sync_cabinet_from_settings" in src
     assert "discover_active_lab_fleet" in src
     assert "_start_fleet_scan" in src
 

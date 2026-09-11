@@ -54,6 +54,7 @@ from PySide6.QtWidgets import (
 )
 from config_manager import SettingsManager
 from gui.app_logging import get_logger
+from gui.cabinet_target_row import CabinetTargetRow, shared_cabinet_target
 from config_scanner.html_open import open_html_file
 from config_scanner.profiles import display_profile_label
 from config_scanner.scanner import snapshot_content_root
@@ -597,14 +598,30 @@ class ConfigScannerTabWidget(QFrame):
         root.setContentsMargins(10, 10, 10, 8)
         root.setSpacing(6)
 
+        # --- Cabinet row: identical to Live Push, shares its remembered target ---
+        self._target_row = CabinetTargetRow(
+            self,
+            load_tooltip=(
+                "Use this cabinet for Snapshots. A valid Goldclub root is "
+                "remembered and Live Push opens on the same cabinet."
+            ),
+            initial=shared_cabinet_target(
+                fallback=SettingsManager.get_config_scanner_game_drive()
+            ),
+        )
+        self._drive_edit = self._target_row.line_edit()
+        self._drive_edit.textChanged.connect(self._on_drive_text_changed)
+        self._drive_edit.editingFinished.connect(self._on_drive_editing_finished)
+        self._target_row.load_requested.connect(self._on_target_load_requested)
+        self._target_row.this_pc_missing.connect(
+            lambda msg: self._append_status(msg, force=True)
+        )
+        self._load_requested_pending = False
+        root.addWidget(self._target_row)
+
         # --- Slim toolbar ---
         toolbar = QHBoxLayout()
         toolbar.setSpacing(6)
-        self._drive_edit = QLineEdit(SettingsManager.get_config_scanner_game_drive())
-        self._drive_edit.setPlaceholderText("Scan target: local drive or \\\\10.0.0.90\\c$\\Goldclub")
-        self._drive_edit.textChanged.connect(self._on_drive_text_changed)
-        self._drive_edit.editingFinished.connect(self._on_drive_editing_finished)
-        toolbar.addWidget(self._drive_edit, stretch=1)
         self._detect_btn = QPushButton("Auto-detect")
         self._detect_btn.setToolTip(detect_target_tooltip(self._game_kind()))
         self._detect_btn.clicked.connect(self._on_detect_drive)
@@ -2571,6 +2588,7 @@ class ConfigScannerTabWidget(QFrame):
         self._persist_drive()
         self._target_valid = True
         self._validate_pending = cleaned
+        self._remember_valid_target()
         self._update_scan_status_ui()
         self._refresh_action_enabled()
         self._refresh_egm_ui_strings()
@@ -3598,10 +3616,42 @@ class ConfigScannerTabWidget(QFrame):
         self._ensure_initial_snapshot_load()
         if not self._startup_detect_done:
             self._startup_detect_done = True
+            self._target_row.start_fleet_scan()
             QTimer.singleShot(0, self._schedule_startup_auto_detect)
+            return
+        self.sync_cabinet_from_settings()
+
+    def sync_cabinet_from_settings(self) -> bool:
+        """Adopt the cabinet Live Push used last. True when the field changed."""
+        if self._busy or not self._target_row.sync_from_settings():
+            return False
+        target = self._drive_edit.text().strip()
+        self._append_status(f"Using last cabinet — {target}", force=True)
+        self._persist_drive()
+        self._validate_timer.stop()
+        self._run_target_validation()
+        return True
+
+    def _on_target_load_requested(self, target: str) -> None:
+        """Load button / Enter / dropdown / This PC / Browse — same as Live Push."""
+        if self._busy:
+            return
+        self._persist_drive()
+        self._validate_timer.stop()
+        self._load_requested_pending = True
+        self._append_status(f"Checking cabinet — {target}", force=True)
+        self._run_target_validation()
+
+    def _remember_valid_target(self) -> None:
+        """Share a proven Goldclub root with Live Push (and the legacy drive key)."""
+        text = self._drive_edit.text().strip()
+        if text:
+            self._target_row.remember(text)
 
     def _schedule_startup_auto_detect(self) -> None:
-        saved_target = SettingsManager.get_config_scanner_game_drive().strip()
+        saved_target = self._drive_edit.text().strip() or shared_cabinet_target(
+            fallback=SettingsManager.get_config_scanner_game_drive()
+        )
         schedule_startup_auto_detect(self._pool, self._service, saved_target, self._emitter)
 
     def _run_auto_detect(self, *, silent: bool) -> None:
@@ -3646,6 +3696,7 @@ class ConfigScannerTabWidget(QFrame):
         self._persist_drive()
         self._target_valid = True
         self._validate_pending = cleaned
+        self._remember_valid_target()
         self._refresh_live_ruleta_version()
         if self._pending_write_snapshot and self._pending_stack_plan is not None:
             self._pending_stack_phase = "kill"
@@ -3798,6 +3849,7 @@ class ConfigScannerTabWidget(QFrame):
         self._baseline_combo.setEnabled(not busy)
         self._target_combo.setEnabled(not busy)
         self._drive_edit.setEnabled(not busy)
+        self._target_row.set_busy(busy)
         # Keep rows clickable during scan/restore — only the actions go idle.
         self._snapshot_table.setEnabled(True)
         if self._widget_is_alive(getattr(self, "_write_scope_combo", None)):
@@ -3921,6 +3973,16 @@ class ConfigScannerTabWidget(QFrame):
         # pass, so roulette-only actions are hidden before they are re-enabled.
         self._refresh_egm_ui_strings()
         self._refresh_action_enabled()
+        if self._target_valid:
+            self._remember_valid_target()
+        if self._load_requested_pending:
+            self._load_requested_pending = False
+            if self._target_valid:
+                self._append_status(f"Loaded cabinet — {current}", force=True)
+            else:
+                # Same as Live Push: an IP / share that is not a Goldclub root
+                # itself is resolved (c$\Goldclub, slot, ...) instead of failing.
+                self._run_auto_detect(silent=False)
 
     def _on_progress(self, message: str) -> None:
         self._append_status(message, force=True)
