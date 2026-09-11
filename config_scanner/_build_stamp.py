@@ -1,3 +1,3 @@
-# Written by build_stamp_write.py at exe build time from datetime.now().
-# Do not commit a real minute — run: python -m config_scanner.build_stamp_write --clear
-BUILD_STAMP = '2026-09-10 20:26'
+# Placeholder only. build_stamp_write.py fills this with datetime.now()
+# at exe build time, then build_exe.ps1 clears it again so git stays empty.
+BUILD_STAMP = ""
