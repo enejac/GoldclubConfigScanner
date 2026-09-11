@@ -7,6 +7,7 @@ Updated automatically when a PR is merged.
 
 - Auto-update a short changelog on every merged PR ([#22](https://github.com/enejac/GoldclubConfigScanner/pull/22))
 - Rebuild ConfigScanner.exe and portable zip (2026-09-10 11:48) ([#20](https://github.com/enejac/GoldclubConfigScanner/pull/20))
+- Fix OneHand Debug SKU showing as Release in Live Push ([#18](https://github.com/enejac/GoldclubConfigScanner/pull/18))
 
 ## 2026-09-10
 
