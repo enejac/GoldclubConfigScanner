@@ -5,7 +5,18 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, QRunnable, QSize, QThreadPool, QTimer, Qt, Signal
+from PySide6.QtCore import (
+    QEasingCurve,
+    QEvent,
+    QObject,
+    QPropertyAnimation,
+    QRunnable,
+    QSize,
+    QThreadPool,
+    QTimer,
+    Qt,
+    Signal,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -14,6 +25,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QFrame,
+    QGraphicsOpacityEffect,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -32,6 +44,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtGui import QBrush, QColor, QPalette
 
+from config_manager import SettingsManager
 from gui.busy_spinner import BusySpinner
 from config_scanner.bill_tokens_view import (
     apply_bill_token_accept,
@@ -61,9 +74,18 @@ from config_scanner.live_push import (
     LivePushResult,
     commit_live_push,
     currency_symbol_for,
-    default_live_cabinet_target,
+    THIS_PC_GOLDCLUB,
+    THIS_PC_MISSING_STATUS,
+    cabinet_ip_prefill,
+    detect_local_live_cabinet,
+    initial_live_cabinet_target,
+    load_error_dialog_text,
+    merge_live_target_history,
+    resolve_live_target_from_user,
+    this_pc_live_target,
     denom_combo_choices,
     goldclub_stack_kind,
+    is_default_remote_live_target,
     live_field_file_hover,
     live_field_highlight_state,
     live_field_matches,
@@ -126,6 +148,8 @@ from config_scanner.slotlog_review import (
     restore_live_push_backup,
     review_slot_logs,
 )
+from config_scanner.net_gate import remote_path_available, unc_host
+from network.lab_access import discover_active_lab_fleet, priority_lab_scan_ips
 from config_scanner.slot_setup import (
     BILL_PROTOCOLS,
     BillToken,
@@ -506,6 +530,31 @@ class _PushEmitter(QObject):
     finished = Signal(object)
 
 
+class _FleetScanEmitter(QObject):
+    found = Signal(str)
+    finished = Signal(object)
+
+
+class _FleetScanRunnable(QRunnable):
+    """Probe 10.0.0.0/24 SMB so the IP dropdown lists cabinets that are up."""
+
+    def __init__(self, recent: list[str] | tuple[str, ...], emitter: _FleetScanEmitter) -> None:
+        super().__init__()
+        self.setAutoDelete(True)
+        self._recent = tuple(recent or ())
+        self._emitter = emitter
+
+    def run(self) -> None:
+        try:
+            live = discover_active_lab_fleet(
+                priority_hosts=priority_lab_scan_ips(self._recent),
+                on_found=self._emitter.found.emit,
+            )
+            self._emitter.finished.emit(live)
+        except Exception:
+            self._emitter.finished.emit([])
+
+
 class _LoadRunnable(QRunnable):
     def __init__(self, target: str, emitter: _PushEmitter) -> None:
         super().__init__()
@@ -515,7 +564,11 @@ class _LoadRunnable(QRunnable):
 
     def run(self) -> None:
         try:
-            self._emitter.finished.emit(load_live_cabinet(self._target))
+            # Default .111 / "This PC" resolve to a local Goldclub root first;
+            # explicit cabinet paths load as typed.
+            self._emitter.finished.emit(
+                load_live_cabinet(self._target, prefer_local=True)
+            )
         except Exception as exc:  # noqa: BLE001
             self._emitter.finished.emit(
                 LiveLoadOutcome(None, None, f"Cannot load cabinet: {exc}", "")
@@ -633,6 +686,7 @@ class LivePushPanel(QWidget):
         self._applying = False
         self._silent_load = False
         self._started = False
+        self._closing = False
         self._catalog = live_push_catalog()
         self._emitter = _PushEmitter()
         self._emitter.progress.connect(self._on_progress)
@@ -642,6 +696,7 @@ class LivePushPanel(QWidget):
         self._dallas_emitter = _PushEmitter()
         self._dallas_emitter.progress.connect(self._on_progress)
         self._dallas_emitter.finished.connect(self._on_dallas_finished)
+        self._detect_anim: QPropertyAnimation | None = None
         self._shortcut_btns: list[QPushButton] = []
         self._licence_status: LiveLicenceStatus | None = None
         self._licence_goldclub: Path | None = None
@@ -649,6 +704,11 @@ class LivePushPanel(QWidget):
         self._onehand_markets: frozenset[str] | None = None
         self._dallas_busy = False
         self._slotlog_findings: list[SlotLogFinding] = []
+        self._fleet_scanning = False
+        self._fleet_ips: list[str] = []
+        self._fleet_emitter = _FleetScanEmitter()
+        self._fleet_emitter.found.connect(self._on_fleet_found)
+        self._fleet_emitter.finished.connect(self._on_fleet_finished)
         self._goldclub: Path | None = None
         self._display_corruption: dict[str, str] = {}
         self._last_backup_dir = ""
@@ -705,13 +765,39 @@ class LivePushPanel(QWidget):
 
         cab = QHBoxLayout()
         cab.addWidget(QLabel("Cabinet:"))
-        self._path = QLineEdit(default_live_cabinet_target())
-        self._path.setPlaceholderText(r"\\10.0.0.111\slot  or  C:\Goldclub")
-        self._path.setToolTip(
-            "Goldclub root on the EGM: UNC share (e.g. \\\\10.0.0.111\\slot) "
-            "or a local path (C:\\Goldclub / G:\\ when unlocked)."
+        self._cabinet = QComboBox()
+        self._cabinet.setEditable(True)
+        self._cabinet.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self._cabinet.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
         )
-        cab.addWidget(self._path, stretch=1)
+        self._cabinet.setToolTip(
+            "Goldclub root on the EGM: type a UNC share (\\\\host\\slot), an IP, "
+            "or a local path (C:\\Goldclub / G:\\ when unlocked). The dropdown "
+            "lists cabinets that are up on the lab network (SMB) plus recent Loads."
+        )
+        saved = SettingsManager.get_live_push_target()
+        recent = SettingsManager.get_live_push_recent()
+        initial = initial_live_cabinet_target(
+            saved=saved,
+            local=this_pc_live_target(),
+        )
+        self._fill_cabinet_history(recent, current=initial)
+        self._path = self._cabinet.lineEdit()
+        if self._path is None:
+            raise RuntimeError("cabinet combo must be editable")
+        self._path.setPlaceholderText(r"\\host\slot  or  C:\Goldclub")
+        self._path.setClearButtonEnabled(True)
+        self._path.setToolTip(self._cabinet.toolTip())
+        cab.addWidget(self._cabinet, stretch=1)
+        this_pc = QPushButton("This PC")
+        this_pc.setToolTip(
+            "Load G: or C:\\Goldclub when this machine is a cabinet. "
+            "No popup if there is no local Goldclub tree."
+        )
+        this_pc.clicked.connect(self._pick_this_pc)
+        self._shortcut_btns.append(this_pc)
+        cab.addWidget(this_pc)
         browse = QPushButton("Browse…")
         browse.setToolTip("Pick a local Goldclub folder.")
         browse.clicked.connect(self._browse)
@@ -720,7 +806,7 @@ class LivePushPanel(QWidget):
         load.setObjectName("primary")
         load.setToolTip(
             "Read the cabinet configs into this form. Fields turn green when they "
-            "match the live values."
+            "match the live values. A successful Load is remembered next launch."
         )
         load.clicked.connect(self._load)
         self._load_btn = load
@@ -728,21 +814,16 @@ class LivePushPanel(QWidget):
         self._load_spinner = BusySpinner(load, diameter=16, color=QColor(255, 255, 255))
         self._load_spinner.mount_on(load)
         self._load_spinner.setToolTip("Loading cabinet…")
+        self._cabinet.activated.connect(self._load)
         outer.addLayout(cab)
 
+        self._detect_status = QLabel("Looking for Goldclub on this PC…")
+        self._detect_status.setObjectName("liveDetectStatus")
+        self._detect_status.setWordWrap(True)
+        self._detect_status.setStyleSheet("color: #9ecbff; font-weight: 600;")
+        outer.addWidget(self._detect_status)
+
         quick = QHBoxLayout()
-        for label, path in (
-            ("This PC", r"C:\Goldclub"),
-            ("10.0.0.90", r"\\10.0.0.90\c$\Goldclub"),
-            ("10.0.0.98", r"\\10.0.0.98\c$\Goldclub"),
-            ("10.0.0.111", r"\\10.0.0.111\slot"),
-        ):
-            btn = QPushButton(label)
-            btn.setToolTip(f"Load cabinet at {path}")
-            btn.clicked.connect(lambda _=False, p=path: self._pick_cabinet(p))
-            self._shortcut_btns.append(btn)
-            quick.addWidget(btn)
-        quick.addSpacing(18)
         quick.addWidget(QLabel("Market:"))
         self._preset = QComboBox()
         self._preset.setToolTip(
@@ -1250,11 +1331,144 @@ class LivePushPanel(QWidget):
             QTimer.singleShot(0, self.ensure_started)
 
     def ensure_started(self) -> None:
-        """Start the first cabinet load once (safe to call from rapid navigation)."""
+        """Detect local Goldclub, then load or ask for a cabinet IP."""
         if self._started:
             return
         self._started = True
-        QTimer.singleShot(0, self._autoload)
+        QTimer.singleShot(0, self._begin_detect)
+
+    def _fade_detect_status(self, text: str, *, kind: str = "info") -> None:
+        colors = {
+            "info": "#9ecbff",
+            "ok": "#7dcea0",
+            "ask": "#f0c674",
+        }
+        self._detect_status.setText(text)
+        self._detect_status.setStyleSheet(
+            f"color: {colors.get(kind, colors['info'])}; font-weight: 600;"
+        )
+        effect = QGraphicsOpacityEffect(self._detect_status)
+        self._detect_status.setGraphicsEffect(effect)
+        anim = QPropertyAnimation(effect, b"opacity", self)
+        anim.setDuration(240)
+        anim.setStartValue(0.15)
+        anim.setEndValue(1.0)
+        anim.setEasingCurve(QEasingCurve.Type.InOutQuad)
+        anim.start()
+        self._detect_anim = anim
+
+    def _begin_detect(self) -> None:
+        self._fade_detect_status("Looking for Goldclub on C: and G:…", kind="info")
+        self._start_fleet_scan()
+        QTimer.singleShot(160, self._finish_detect)
+
+    def _start_fleet_scan(self) -> None:
+        if self._fleet_scanning:
+            return
+        self._fleet_scanning = True
+        recent = SettingsManager.get_live_push_recent()
+        QThreadPool.globalInstance().start(
+            _FleetScanRunnable(recent, self._fleet_emitter)
+        )
+
+    def _on_fleet_found(self, ip: object) -> None:
+        text = str(ip or "").strip()
+        if text:
+            self._apply_fleet_ips([text])
+
+    def _on_fleet_finished(self, ips: object) -> None:
+        self._fleet_scanning = False
+        found: list[str] = []
+        if isinstance(ips, (list, tuple)):
+            found = [str(item).strip() for item in ips if str(item).strip()]
+        self._apply_fleet_ips(found)
+        if not found:
+            return
+        status = self._detect_status.text()
+        if "No Goldclub" in status:
+            self._fade_detect_status(
+                f"No Goldclub on this PC — {len(found)} cabinet(s) online. "
+                "Pick an IP from the dropdown or type the last digits and press Load.",
+                kind="ask",
+            )
+
+    def _apply_fleet_ips(self, ips: list[str]) -> None:
+        """Add live 10.0.0.x hosts to the Cabinet dropdown; keep the typed value."""
+        incoming = [ip.strip() for ip in ips if str(ip).strip()]
+        have = set(self._fleet_ips)
+        for ip in incoming:
+            if ip not in have:
+                self._fleet_ips.append(ip)
+                have.add(ip)
+        def _ip_key(item: str) -> tuple[int, ...]:
+            try:
+                return tuple(int(part) for part in item.split("."))
+            except ValueError:
+                return (999, 999, 999, 999)
+
+        self._fleet_ips.sort(key=_ip_key)
+        combo = getattr(self, "_cabinet", None)
+        if combo is None:
+            return
+        typed = combo.currentText()
+        edit = combo.lineEdit()
+        sel_start = edit.selectionStart() if edit is not None else -1
+        sel_len = len(edit.selectedText()) if edit is not None else 0
+        existing = {combo.itemText(i) for i in range(combo.count())}
+        combo.blockSignals(True)
+        try:
+            for ip in self._fleet_ips:
+                if ip not in existing:
+                    combo.addItem(ip)
+                    existing.add(ip)
+            combo.setEditText(typed)
+            if edit is not None and sel_len > 0 and sel_start >= 0:
+                edit.setSelection(sel_start, sel_len)
+        finally:
+            combo.blockSignals(False)
+
+    def _finish_detect(self) -> None:
+        saved = SettingsManager.get_live_push_target()
+        local = detect_local_live_cabinet()
+        initial = initial_live_cabinet_target(saved=saved, local=local)
+        if initial:
+            self._path.setText(initial)
+            if saved:
+                self._fade_detect_status(
+                    f"Using last cabinet — {initial}", kind="ok"
+                )
+            else:
+                self._fade_detect_status(
+                    f"Using local Goldclub — {initial}. To edit another EGM, "
+                    "type its IP in the Cabinet field and Load.",
+                    kind="ok",
+                )
+            self._autoload()
+            return
+        self._prefill_cabinet_ip()
+
+    def _prefill_cabinet_ip(self) -> None:
+        """No local tree and nothing remembered: one field, lab prefix typed for you.
+
+        The Cabinet field gets ``10.0.0.111`` with the last octet selected, so
+        the operator only types the digits that differ and presses Enter/Load.
+        """
+        text, start, length = cabinet_ip_prefill()
+        self._path.setText(text)
+        self._path.setFocus()
+        if length:
+            self._path.setSelection(start, length)
+        if self._fleet_ips:
+            self._fade_detect_status(
+                f"No Goldclub on this PC — {len(self._fleet_ips)} cabinet(s) online. "
+                "Pick an IP from the dropdown or type the last digits and press Load.",
+                kind="ask",
+            )
+            return
+        self._fade_detect_status(
+            "No Goldclub on this PC — type the cabinet's last IP digits and press Load.",
+            kind="ask",
+        )
 
     def _live_field_widgets(self) -> list[tuple[str, QWidget]]:
         return [
@@ -1520,16 +1734,63 @@ class LivePushPanel(QWidget):
             self._paint_live_highlights()
             self._paint_licence_status()
 
+    def _fill_cabinet_history(
+        self, recent: list[str] | tuple[str, ...] | None, *, current: str = ""
+    ) -> None:
+        combo = getattr(self, "_cabinet", None)
+        if combo is None:
+            return
+        items = merge_live_target_history(current, recent)
+        combo.blockSignals(True)
+        combo.clear()
+        for item in items:
+            combo.addItem(item)
+        combo.setEditText(current.strip())
+        combo.blockSignals(False)
+        if self._fleet_ips:
+            self._apply_fleet_ips([])
+
+    def _remember_cabinet(self, target: str) -> None:
+        text = (target or "").strip()
+        if not text:
+            return
+        recent = SettingsManager.remember_live_push_target(text)
+        self._fill_cabinet_history(recent, current=text)
+
     def _autoload(self) -> None:
         if self._busy:
+            return
+        target = self._path.text().strip()
+        if not target:
+            self._status.setText(
+                "Type a cabinet path (or This PC) and Load. "
+                "Last successful Load is remembered."
+            )
             return
         self._silent_load = True
         self._status.setText("Reading live cabinet…")
         self._load()
 
+    def _pick_this_pc(self) -> None:
+        """Load the local cabinet tree, or say so without an empty Load dialog."""
+        local = this_pc_live_target()
+        if not local:
+            self._path.setText(THIS_PC_GOLDCLUB)
+            self._status.setText(THIS_PC_MISSING_STATUS)
+            return
+        self._pick_cabinet(local)
+
     def _pick_cabinet(self, path: str) -> None:
         self._path.setText(path)
         self._load()
+
+    def _warn_load(self, text: str) -> None:
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Load")
+        box.setTextFormat(Qt.TextFormat.PlainText)
+        box.setText(load_error_dialog_text(text))
+        box.exec()
 
     def _browse(self) -> None:
         start = self._path.text().strip() or r"C:\Goldclub"
@@ -1545,8 +1806,14 @@ class LivePushPanel(QWidget):
             return
         raw = self._path.text().strip()
         if not raw:
-            QMessageBox.warning(self, "Load", "Enter a cabinet Goldclub path.")
+            self._warn_load(
+                "No local Goldclub found. Type a cabinet IP (10.0.0.x) or browse a folder."
+            )
             return
+        resolved = resolve_live_target_from_user(raw, probe=False)
+        if resolved and resolved != raw:
+            raw = resolved
+            self._path.setText(raw)
         self._set_busy(True)
         self._status.setText("Connecting to cabinet…")
         # Defer the worker so the spinner / wait cursor paint before SMB work
@@ -1567,9 +1834,9 @@ class LivePushPanel(QWidget):
             self._set_onehand_build_label(None)
             return
         if outcome.error or outcome.recipe is None:
-            msg = outcome.error or "Cannot load cabinet."
+            msg = load_error_dialog_text(outcome.error)
             if not silent:
-                QMessageBox.warning(self, "Load", msg)
+                self._warn_load(msg)
             self._status.setText(msg)
             self._goldclub = None
             self._display_corruption = {}
@@ -1579,6 +1846,8 @@ class LivePushPanel(QWidget):
             return
         self._loaded = outcome.recipe
         self._goldclub = outcome.root
+        self._show_resolved_target(outcome.root)
+        self._remember_cabinet(self._path.text().strip())
         self._display_corruption = dict(outcome.display_corruption or {})
         self._set_onehand_build_label(outcome.onehand_build)
         if outcome.root is not None:
@@ -1589,6 +1858,20 @@ class LivePushPanel(QWidget):
         self._update_licence_ui(outcome.licence, goldclub=outcome.root)
         self._status.setText(outcome.status)
         self._refresh_changes()
+
+    def _show_resolved_target(self, root: Path | None) -> None:
+        """Reflect the local root the loader chose over the .111 / This PC default."""
+        if root is None:
+            return
+        current = self._path.text().strip()
+        is_this_pc = current.replace("/", "\\").rstrip("\\").casefold() == (
+            THIS_PC_GOLDCLUB.casefold()
+        )
+        if not (is_default_remote_live_target(current) or is_this_pc):
+            return
+        chosen = str(root)
+        if chosen.casefold().rstrip("\\") != current.casefold().rstrip("\\"):
+            self._path.setText(chosen)
 
     def _set_onehand_build_label(self, info) -> None:
         label = getattr(self, "_onehand_build_label", None)
@@ -2711,7 +2994,7 @@ class LivePushPanel(QWidget):
         if self._loaded is None:
             self._update_math_fix_row(())
             self._changes.setText(
-                "Waiting for the live cabinet (local Goldclub, or \\\\10.0.0.111\\slot). "
+                "Waiting for a Goldclub tree (local C:\\ / G:\\, or a cabinet IP). "
                 "Green = matches; orange = pending edit; red = invalid."
             )
             self._changes.setStyleSheet("color: #999;")
@@ -2888,8 +3171,11 @@ class LivePushPanel(QWidget):
         self._commit.setEnabled(not busy)
         self._load_btn.setEnabled(not busy)
         self._dallas_read.setEnabled(not busy and not self._dallas_busy)
-        for btn in self._shortcut_btns:
+        for btn in getattr(self, "_shortcut_btns", []):
             btn.setEnabled(not busy)
+        cabinet = getattr(self, "_cabinet", None)
+        if cabinet is not None:
+            cabinet.setEnabled(not busy)
         spinner = getattr(self, "_load_spinner", None)
         if spinner is not None:
             spinner.set_active(busy)
@@ -2901,10 +3187,28 @@ class LivePushPanel(QWidget):
     def _on_progress(self, message: str) -> None:
         self._status.setText(message)
 
+    def _cabinet_offline_message(self, raw: str) -> str:
+        """Non-empty when *raw* is a UNC path whose host does not answer on SMB.
+
+        Checked before any GUI-thread ``is_dir()`` on the cabinet share so a
+        cabinet that went off after Load cannot freeze the window.
+        """
+        if remote_path_available(raw):
+            return ""
+        return (
+            f"\\\\{unc_host(raw)} is not reachable (SMB port 445 did not answer).\n"
+            "The cabinet is off or this PC is not on the lab network."
+        )
+
     def _export_full_cs_clicked(self) -> None:
         raw = self._path.text().strip()
         if not raw:
             QMessageBox.warning(self, "Export CS", "Load a live cabinet path first.")
+            return
+        offline = self._cabinet_offline_message(raw)
+        if offline:
+            self._status.setText(offline.splitlines()[0])
+            QMessageBox.warning(self, "Export CS", offline)
             return
         try:
             live_root = goldclub_root_from_target(raw)
@@ -3015,8 +3319,16 @@ class LivePushPanel(QWidget):
         )
         self._status.setText(result.note)
 
+    def mark_closing(self) -> None:
+        self._closing = True
+
+    def _ui_active(self) -> bool:
+        return (not self._closing) and self.isVisible()
+
     def _on_finished(self, result: object) -> None:
         self._set_busy(False)
+        if not self._ui_active():
+            return
         if not isinstance(result, LivePushResult):
             self._status.setText("Apply failed.")
             return
@@ -3075,6 +3387,11 @@ class LivePushPanel(QWidget):
         raw = self._path.text().strip()
         if not raw:
             QMessageBox.warning(self, "SlotLog", "Load a cabinet path first.")
+            return
+        offline = self._cabinet_offline_message(raw)
+        if offline:
+            self._status.setText(offline.splitlines()[0])
+            QMessageBox.warning(self, "SlotLog", offline)
             return
         try:
             goldclub = goldclub_root_from_target(raw)

@@ -70,6 +70,7 @@ class CabinetRepairDialog(QDialog):
         self._pool = QThreadPool.globalInstance()
         self._emitter = ConfigScannerEmitter(self)
         self._busy = False
+        self._closing = False
 
         self.setObjectName("cabinetRepairDialog")
         self.setWindowTitle("Diagnose & repair cabinet")
@@ -245,8 +246,14 @@ class CabinetRepairDialog(QDialog):
             self._pool, self._service, self._scan_target, selected, self._emitter
         )
 
+    def closeEvent(self, event) -> None:  # noqa: ANN001, N802
+        self._closing = True
+        super().closeEvent(event)
+
     def _on_repaired(self, ok: bool, outcomes, error: str) -> None:
         self._set_busy(False)
+        if self._closing or not self.isVisible():
+            return
         if not ok or outcomes is None:
             self._append_log(f"Repair failed: {error}")
             QMessageBox.warning(self, "Repair failed", error or "Unknown error.")

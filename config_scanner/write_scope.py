@@ -203,12 +203,15 @@ def is_software_path(relative_path: str) -> bool:
     return False
 
 
+def _coerce_write_scope(scope: WriteScope | str) -> WriteScope:
+    if isinstance(scope, WriteScope):
+        return scope
+    return WriteScope(scope)
+
+
 def path_matches_write_scope(relative_path: str, scope: WriteScope | str) -> bool:
     """Return True when ``relative_path`` belongs in the selected write scope."""
-    try:
-        scope_e = WriteScope(scope) if not isinstance(scope, WriteScope) else scope
-    except ValueError:
-        scope_e = WriteScope.FULL
+    scope_e = _coerce_write_scope(scope)
     if is_protected_write_path(relative_path):
         return False
     if scope_e is WriteScope.BINARIES_ONLY:
@@ -239,10 +242,7 @@ def filter_file_diffs_for_write_scope(
     separately so per-setting Write stays reachable). Kept for callers that
     want a scoped file list.
     """
-    try:
-        scope_e = WriteScope(scope) if not isinstance(scope, WriteScope) else scope
-    except ValueError:
-        scope_e = WriteScope.FULL
+    scope_e = _coerce_write_scope(scope)
     if scope_e is WriteScope.BINARIES_ONLY:
         return []
     if scope_e is WriteScope.FULL or scope_e is WriteScope.FULL_SOFTWARE:

@@ -167,6 +167,32 @@ def licensee_id_from_licence_bytes(raw: bytes) -> str | None:
     return canonical_licensee_id(text)
 
 
+_JUNK_LICENCE_NAMES = frozenset(
+    {
+        "desktop.ini",
+        "thumbs.db",
+        ".ds_store",
+        "readme.txt",
+        "readme.md",
+    }
+)
+
+
+def is_licence_filename(name: str) -> bool:
+    """True for licence XML / dll names (not desktop.ini / readme leftovers).
+
+    Licence folders on cabinets use hash stems, ``Licence12-…xml``, and also
+    short names such as ``cab.xml`` / ``live.xml``. Any ``.xml`` in those
+    folders counts except well-known junk.
+    """
+    lowered = (name or "").casefold()
+    if lowered in _JUNK_LICENCE_NAMES or lowered.startswith("readme"):
+        return False
+    if lowered in {"licence.dll", "license.dll"}:
+        return True
+    return lowered.endswith(".xml")
+
+
 def live_licence_files(dest_root: Path) -> list[Path]:
     """Licence files present on the live EGM (any spelling / slot|config tree)."""
     found: list[Path] = []
@@ -177,6 +203,8 @@ def live_licence_files(dest_root: Path) -> list[Path]:
             if not path.is_file():
                 return
         except OSError:
+            return
+        if not is_licence_filename(path.name):
             return
         key = str(path).casefold()
         if key in seen:

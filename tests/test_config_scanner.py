@@ -92,6 +92,13 @@ def test_normalize_game_drive() -> None:
     assert normalize_game_drive("D:") == "D:\\"
     assert normalize_game_drive("D:\\.") == "D:\\"
     assert normalize_game_drive("D:\\") == "D:\\"
+    import os
+
+    posix = normalize_game_drive("/tmp/Goldclub")
+    if os.name != "nt":
+        assert posix == "/tmp/Goldclub"
+        assert not posix.endswith("\\")
+        assert Path(posix) == Path("/tmp/Goldclub")
 
 
 def test_normalize_scan_target_unc() -> None:
@@ -729,11 +736,14 @@ def test_compare_panel_file_slice_no_truncation() -> None:
     assert omitted == 0
 
 
-def test_smart_find_match_subsequence_case_insensitive() -> None:
+def test_smart_find_match_substring_case_insensitive() -> None:
     assert smart_find_match("swi", "switches.xml")
     assert smart_find_match("SWI", "Switches")
     assert smart_find_match("swi", "config/switches/futura.xml")
     assert not smart_find_match("swi", "language")
+    assert not smart_find_match("sas", "displays")
+    assert not smart_find_match("cfg", "config_scanner")
+    assert smart_find_match("cfg", "cfg.xml")
     assert smart_find_match("", "anything")
     assert smart_find_match("   ", "anything")
 
@@ -776,7 +786,7 @@ def test_filter_file_diffs_for_find_by_path_and_setting() -> None:
     filtered = filter_file_diffs_for_find(file_diffs, "swi")
     assert len(filtered) == 1
     assert filtered[0].relative_path == "config/switches.xml"
-    assert len(filtered[0].content_diff) == 2
+    assert [c.path for c in filtered[0].content_diff] == ["Switches/EnableBonus"]
 
     narrowed = filter_file_diffs_for_find(file_diffs, "bonus")
     assert len(narrowed) == 1
@@ -785,6 +795,9 @@ def test_filter_file_diffs_for_find_by_path_and_setting() -> None:
 
     assert filter_file_diffs_for_find(file_diffs, "zzz") == []
     assert filter_file_diffs_for_find(file_diffs, "") == file_diffs
+    path_only = filter_file_diffs_for_find(file_diffs, "removed_only")
+    assert len(path_only) == 1
+    assert path_only[0].relative_path == "config/removed_only.xml"
 
 
 def test_compare_panel_layout_metrics_single_change() -> None:
@@ -2959,15 +2972,15 @@ def test_apply_content_change_to_target_writes_live_file(tmp_path: Path) -> None
     assert result.relative_path == "themes/mgconfig.xml"
     assert "Handpay" in mgconfig.read_text(encoding="utf-8")
 
-def test_unified_candidates_include_lab_unc_before_late_drives() -> None:
+def test_unified_candidates_do_not_hardcode_lab_ips() -> None:
     from config_scanner.build_version import unified_scan_candidates
 
     cands = unified_scan_candidates(load_profiles())
-    unc = [c for c in cands if "10.0.0.90" in c and c.rstrip("\\").endswith("Goldclub")]
-    assert unc, "lab roulette UNC missing"
-    i_idx = next((i for i, c in enumerate(cands) if c.rstrip("\\") == "I:"), len(cands))
-    unc_idx = min(cands.index(u) for u in unc)
-    assert unc_idx < i_idx
+    assert not any("10.0.0." in item for item in cands)
+    typed = unified_scan_candidates(
+        load_profiles(), preferred=r"\\10.0.0.76\c$\Goldclub"
+    )
+    assert any(item.startswith(r"\\10.0.0.76") for item in typed)
 
 
 _DRIVERS_WITH_TITO = """<?xml version="1.0" encoding="utf-8"?>

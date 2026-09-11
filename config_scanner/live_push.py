@@ -3,8 +3,9 @@
 Does not rewrite serialport layout/locations or Windows boot.
 Licences are never overwritten; missing licence XML / licence.dll may be
 copied next to OneHand when the operator enables that Live Push section.
-Slot cabinets: stop OneHand/Bootstrap, write, start Bootstrap.exe.
-Roulette cabinets: Kill-All then Run-FullStack. No EGM reboot either way.
+Slot cabinets: stop OneHand/Bootstrap, write, then start game-start
+(Release) or Bootstrap (Debug / unknown). Roulette: Kill-All then
+Run-FullStack. No EGM reboot either way.
 """
 
 from __future__ import annotations
@@ -1070,9 +1071,10 @@ def slot_start_launcher(
     except (OSError, TypeError, ValueError):
         info = None
     cfg = ((info.configuration if info else "") or "").strip().casefold()
-    if cfg == "debug":
-        return "bootstrap"
-    return "game-start"
+    if cfg == "release":
+        return "game-start"
+    # Debug, Unknown, or detect failed — Bootstrap (do not assume Release).
+    return "bootstrap"
 
 
 def slot_start_candidates(
@@ -1548,11 +1550,36 @@ def backup_live_push_files(
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, target)
             copied += 1
-        except OSError:
-            continue
+        except OSError as exc:
+            raise OSError(f"Could not backup {norm}: {exc}") from exc
     if copied == 0:
         return None
     return bak
+
+
+def restore_live_push_backup(
+    dest_goldclub: Path | str,
+    backup_dir: Path,
+) -> list[str]:
+    """Copy a Live Push backup folder back onto the live Goldclub root."""
+    from network.lab_access import safe_join_under
+
+    dest = goldclub_root_from_target(dest_goldclub)
+    root = Path(backup_dir)
+    errors: list[str] = []
+    if not root.is_dir():
+        return [f"backup folder missing: {root}"]
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(root).as_posix()
+        try:
+            target = safe_join_under(dest, rel)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, target)
+        except (OSError, ValueError) as exc:
+            errors.append(f"{rel}: {exc}")
+    return errors
 
 
 def _short_fail(detail: str) -> str:
@@ -1722,15 +1749,32 @@ def cabinet_host_reachable(target: str, *, timeout_sec: float = 2.0) -> tuple[bo
     )
 
 
-# Local Goldclub roots first (cabinet running the exe). Prefer unlocked G: before C:,
-# but never block the UI on a locked BitLocker G: (probe with a short timeout).
-_LOCAL_LIVE_CANDIDATES: tuple[str, ...] = (
-    r"G:",
-    r"C:\Goldclub",
-    r"C:\goldclub",
-    r"C:\Goldclub\slot",
-)
+def _local_live_candidates() -> tuple[str, ...]:
+    """Local Goldclub roots: cabinet volume first, then the same image drives
+    the Config Scanner tab sweeps for a slot repo (no full alphabet sweep).
+
+    Order: unlocked ``G:`` (BitLocker game volume), ``C:\\Goldclub`` and its
+    ``slot`` child, then ``D:``..``H:`` USB/image roots and their ``Goldclub``
+    folders. Bare drive roots are probed with a short timeout so a locked or
+    sleeping volume never blocks the UI. Lab UNCs are never listed here —
+    the operator types an IP only when no local tree exists.
+    """
+    out: list[str] = [r"G:", r"C:\Goldclub", r"C:\goldclub", r"C:\Goldclub\slot"]
+    for drive in ("D:", "E:", "F:", "H:"):
+        out.append(drive)
+        out.append(rf"{drive}\Goldclub")
+        out.append(rf"{drive}\Goldclub\slot")
+    return tuple(out)
+
+
+_LOCAL_LIVE_CANDIDATES: tuple[str, ...] = _local_live_candidates()
 DEFAULT_REMOTE_LIVE_TARGET = r"\\10.0.0.111\slot"
+THIS_PC_GOLDCLUB = r"C:\Goldclub"
+THIS_PC_MISSING_STATUS = (
+    "This PC has no Goldclub tree (G:, C:\\Goldclub, D:-H: Goldclub). "
+    "Type a cabinet IP or Browse."
+)
+_IPV4_HOST_RE = re.compile(r"^(?:\d{1,3}\.){3}\d{1,3}$")
 
 
 def _exists_quick(path: Path, *, timeout_sec: float = 0.3) -> bool:
@@ -1753,15 +1797,29 @@ def _exists_quick(path: Path, *, timeout_sec: float = 0.3) -> bool:
     return box["ok"]
 
 
+def _is_bare_drive(text: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z]:?", text))
+
+
+def _local_candidate_path(raw: str) -> str:
+    """``G:`` -> ``G:\\`` so Path never treats it as drive-relative to the cwd."""
+    text = str(raw).strip()
+    if _is_bare_drive(text):
+        return text.rstrip(":") + ":\\"
+    return text
+
+
 def _local_goldclub_ready(raw: str) -> bool:
     """True when the path looks like a usable unlocked Goldclub tree."""
     try:
         text = str(raw).replace("/", "\\").rstrip("\\")
-        # Locked BitLocker G: can hang Path.exists for minutes — bail fast.
-        if text.upper() in {"G:", "G"}:
-            if not _exists_quick(Path(r"G:\Bootstrap.exe"), timeout_sec=0.25):
-                return False
-        root = goldclub_root_from_target(raw)
+        # Locked BitLocker / sleeping removable drives can hang Path.exists for
+        # minutes — bail fast on bare drive roots.
+        if _is_bare_drive(text) and not _exists_quick(
+            Path(_local_candidate_path(text)), timeout_sec=0.25
+        ):
+            return False
+        root = goldclub_root_from_target(_local_candidate_path(raw))
         if not looks_like_goldclub_root(root):
             return False
         if text.upper() in {"G:", "G"}:
@@ -1773,17 +1831,13 @@ def _local_goldclub_ready(raw: str) -> bool:
         return False
 
 
-def default_live_cabinet_target(
+def this_pc_live_target(
     *,
     local_candidates: tuple[str, ...] | None = None,
-    remote: str = DEFAULT_REMOTE_LIVE_TARGET,
-) -> str:
-    """Pick the Goldclub tree this machine can see without a drive-letter sweep.
+) -> str | None:
+    """Local Goldclub if this machine is a cabinet, else ``None``.
 
-    On a cabinet the exe prefers unlocked ``G:`` then ``C:\\Goldclub``. On a
-    workstation those folders are absent, so the path stays the lab share
-    ``\\\\10.0.0.111\\slot``. ``prefer_local_scan_target`` still folds a
-    loopback admin share back to a drive letter when this PC *is* the host.
+    Does not fall back to a lab UNC share — type or recall a cabinet path instead.
     """
     from config_scanner.build_version import prefer_local_scan_target
 
@@ -1791,12 +1845,188 @@ def default_live_cabinet_target(
         if not _local_goldclub_ready(raw):
             continue
         try:
-            root = goldclub_root_from_target(raw)
+            root = goldclub_root_from_target(_local_candidate_path(raw))
         except (OSError, TimeoutError, ValueError):
             continue
         if looks_like_goldclub_root(root):
             return prefer_local_scan_target(str(root))
-    return prefer_local_scan_target(remote)
+    return None
+
+
+def detect_local_live_cabinet(
+    *,
+    local_candidates: tuple[str, ...] | None = None,
+) -> str:
+    """Local Goldclub path, or empty when this PC has no tree."""
+    return this_pc_live_target(local_candidates=local_candidates) or ""
+
+
+def is_default_remote_live_target(raw: str) -> bool:
+    """True when *raw* is the shipped ``\\\\10.0.0.111\\slot`` default (any case/slashes)."""
+    norm = (raw or "").strip().replace("/", "\\").rstrip("\\").casefold()
+    return norm == DEFAULT_REMOTE_LIVE_TARGET.casefold()
+
+
+def resolve_live_load_target(
+    raw: str,
+    *,
+    prefer_local: bool,
+    local_candidates: tuple[str, ...] | None = None,
+) -> tuple[str, str]:
+    """Target to actually load, plus a note when it was swapped for a local root.
+
+    The shipped default stays ``\\\\10.0.0.111\\slot``. With *prefer_local*,
+    that default (and the ``This PC`` path) is first resolved against local
+    Goldclub roots so a cabinet running the exe reads its own tree, never
+    another EGM's share. Explicit cabinet paths are returned unchanged.
+    """
+    text = (raw or "").strip()
+    if not prefer_local or not text:
+        return text, ""
+    is_this_pc = text.replace("/", "\\").rstrip("\\").casefold() == (
+        THIS_PC_GOLDCLUB.casefold()
+    )
+    if not (is_default_remote_live_target(text) or is_this_pc):
+        return text, ""
+    local = this_pc_live_target(local_candidates=local_candidates)
+    if not local or local.casefold().rstrip("\\") == text.casefold().rstrip("\\"):
+        return text, ""
+    return local, f"Local Goldclub found at {local}; using it instead of {text}."
+
+
+def initial_live_cabinet_target(
+    *,
+    saved: str | None = None,
+    local: str | None = None,
+) -> str:
+    """Path for the Live Push cabinet field on launch.
+
+    A remembered UNC wins so a workstation does not auto-scan This PC.
+    Else the local Goldclub tree when this machine is a cabinet.
+    Else empty — never a hardcoded lab IP.
+    """
+    text = (saved or "").strip()
+    if text:
+        return text
+    local_text = (local or "").strip()
+    if local_text:
+        return local_text
+    return ""
+
+
+DEFAULT_CABINET_IP = "10.0.0.111"
+
+
+def cabinet_ip_prefill(default_ip: str = DEFAULT_CABINET_IP) -> tuple[str, int, int]:
+    """Text to pre-fill the Cabinet field with when nothing else is known, plus
+    the (start, length) of its last octet so the caller can select it.
+
+    The operator then only types the last digits (``111`` -> ``98``) instead
+    of the whole address. Lab EGMs all sit on ``10.0.0.x``.
+    """
+    text = (default_ip or "").strip()
+    if not text or "." not in text:
+        return text, len(text), 0
+    start = text.rfind(".") + 1
+    return text, start, len(text) - start
+
+
+def merge_live_target_history(
+    newest: str,
+    recent: list[str] | tuple[str, ...] | None = None,
+    *,
+    limit: int = 8,
+) -> list[str]:
+    """Newest first, de-duped (slash/case-insensitive), capped. Empty newest is skipped."""
+    cap = max(1, int(limit))
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in (newest, *(recent or ())):
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        key = text.replace("/", "\\").rstrip("\\").casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(text)
+        if len(out) >= cap:
+            break
+    return out
+
+
+def live_targets_for_ip(raw: str) -> tuple[str, ...]:
+    """UNC Goldclub roots for a typed cabinet IP or pasted share."""
+    from config_scanner.build_version import normalize_scan_target
+
+    text = (raw or "").strip().strip('"')
+    if not text:
+        return ()
+    if text.startswith("\\\\"):
+        return (normalize_scan_target(text),)
+    first, sep, rest = text.partition("\\")
+    if _IPV4_HOST_RE.fullmatch(first) and sep and rest.strip():
+        return (normalize_scan_target(rf"\\{first}\{rest.strip()}"),)
+    host = first.strip()
+    if not _IPV4_HOST_RE.fullmatch(host):
+        return ()
+    return (
+        rf"\\{host}\c$\Goldclub",
+        rf"\\{host}\slot",
+        rf"\\{host}\c$\Goldclub\slot",
+    )
+
+
+def resolve_live_target_from_user(
+    raw: str,
+    *,
+    probe: bool = True,
+) -> str:
+    """Local path, pasted UNC, or first reachable share for a typed IP."""
+    text = (raw or "").strip().strip('"')
+    if not text:
+        return ""
+    if not text.startswith("\\\\") and not _IPV4_HOST_RE.fullmatch(text.split("\\", 1)[0]):
+        return text
+    candidates = live_targets_for_ip(text)
+    if not candidates:
+        return text
+    if not probe:
+        return candidates[0]
+    for cand in candidates:
+        try:
+            if _exists_quick(Path(cand), timeout_sec=1.2) and _local_goldclub_ready(cand):
+                return cand
+        except (OSError, TimeoutError, ValueError):
+            continue
+    return candidates[0]
+
+
+def default_live_cabinet_target(
+    *,
+    local_candidates: tuple[str, ...] | None = None,
+    remote: str = "",
+) -> str:
+    """Pick a local Goldclub tree. Empty when none — do not guess a lab IP.
+
+    ``prefer_local_scan_target`` still folds a loopback admin share back to a
+    drive letter when this PC *is* the host. Pass *remote* only when the
+    caller already has an operator-typed share. Live Push uses
+    :func:`initial_live_cabinet_target` so a remembered UNC wins over This PC.
+    """
+    from config_scanner.build_version import prefer_local_scan_target
+
+    local = this_pc_live_target(local_candidates=local_candidates)
+    if local:
+        return local
+    text = (remote or "").strip()
+    return prefer_local_scan_target(text) if text else ""
+
+
+def load_error_dialog_text(error: str | None) -> str:
+    """Body for the Load warning. Never return blank (empty QMessageBox)."""
+    text = str(error or "").strip()
+    return text or "Cannot load cabinet."
 
 
 def live_field_matches(live: SlotSetupRecipe, form: SlotSetupRecipe) -> dict[str, bool]:
@@ -2670,6 +2900,12 @@ def _probe_live_goldclub(
             return None, (
                 f"Folder exists but is not a Goldclub root (need slot\\themes):\n{root}"
             )
+        if not host:
+            return None, (
+                f"No Goldclub tree at {raw} on this PC "
+                "(need slot\\themes or slot\\OneHand.exe).\n"
+                "Use Browse… to pick the Goldclub folder, or a cabinet button for a lab EGM."
+            )
         return None, (
             f"Cannot reach {raw}. Store the lab login (cmdkey) and check the cabinet is on."
         )
@@ -2699,9 +2935,16 @@ class LiveLoadOutcome:
     onehand_build: OneHandBuildInfo | None = None
 
 
-def load_live_cabinet(target: str) -> LiveLoadOutcome:
-    """Load a cabinet recipe. Never raises — dead shares return an error string."""
+def load_live_cabinet(target: str, *, prefer_local: bool = False) -> LiveLoadOutcome:
+    """Load a cabinet recipe. Never raises — dead shares return an error string.
+
+    With *prefer_local*, the shipped ``\\\\10.0.0.111\\slot`` default and the
+    ``This PC`` path are first resolved against local Goldclub roots.
+    """
     try:
+        target, swapped = resolve_live_load_target(target, prefer_local=prefer_local)
+        if swapped:
+            _lp_log(swapped)
         root, err = prepare_live_goldclub(target)
         if root is None:
             return LiveLoadOutcome(None, None, err, "")
@@ -3363,12 +3606,22 @@ def commit_live_push(
         written = applied.written
         skipped = applied.skipped
         errors = applied.errors
+        if errors and backup_dir:
+            rb = restore_live_push_backup(dest, Path(backup_dir))
+            if rb:
+                errors = errors + tuple(f"backup restore: {item}" for item in rb)
+            else:
+                errors = errors + ("Reverted live files from backup.",)
         _lp_log(
             f"write done files={len(written)} skipped={len(skipped)} "
             f"errors={errors} sections={sorted(sections) if sections else 'full'}"
         )
     except (OSError, ValueError, FileNotFoundError) as exc:
         errors = (str(exc),)
+        if backup_dir:
+            rb = restore_live_push_backup(dest, Path(backup_dir))
+            if not rb:
+                errors = errors + ("Reverted live files from backup.",)
     finally:
         if work_parent is None:
             shutil.rmtree(parent, ignore_errors=True)

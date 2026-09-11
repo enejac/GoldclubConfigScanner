@@ -211,7 +211,9 @@ def winrm_run_script(
                     -Authentication ([string]$p.authentication) -SessionOption $sessionOption -ScriptBlock {
                         param($Path, $ArgList)
                         & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Path @ArgList
+                        exit $LASTEXITCODE
                     } -ArgumentList ([string]$p.remotePath), $argList
+                if ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE }
                 """
             ).strip()
             + "\n",
@@ -225,19 +227,24 @@ def winrm_run_script(
         }
         if os.name == "nt":
             run_kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        r = subprocess.run(
-            [
-                "powershell.exe",
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                str(wrapper_path),
-                "-ParamsPath",
-                str(params_path),
-            ],
-            **run_kw,
-        )
+        try:
+            r = subprocess.run(
+                [
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    str(wrapper_path),
+                    "-ParamsPath",
+                    str(params_path),
+                ],
+                **run_kw,
+            )
+        except subprocess.TimeoutExpired:
+            return RemoteRunResult(
+                returncode=-1, stdout="", stderr="winrm script timed out"
+            )
         return RemoteRunResult(returncode=r.returncode, stdout=r.stdout or "", stderr=r.stderr or "")
 
 

@@ -664,28 +664,22 @@ COMPARE_PANEL_MAX_CHANGES_PER_FILE = 12
 
 
 def smart_find_match(needle: str, haystack: str) -> bool:
-    """Case-insensitive subsequence match (``swi`` matches ``switches``)."""
+    """Case-insensitive substring match (``swi`` matches ``switches``)."""
     n = needle.strip()
     if not n:
         return True
-    n_fold = n.casefold()
-    h_fold = haystack.casefold()
-    pos = 0
-    for ch in h_fold:
-        if pos < len(n_fold) and ch == n_fold[pos]:
-            pos += 1
-    return pos == len(n_fold)
+    return n.casefold() in (haystack or "").casefold()
 
 
 def filter_file_diff_for_find(file_diff: FileDiff, needle: str) -> FileDiff | None:
-    """Return a copy of ``file_diff`` narrowed to find matches, or None."""
+    """Return a copy of ``file_diff`` narrowed to find matches, or None.
+
+    Setting hits win: a path match does not keep unmatched setting rows.
+    Path-only hits (no setting text) still keep the file.
+    """
     n = needle.strip()
     if not n:
         return file_diff
-    if smart_find_match(n, file_diff.relative_path):
-        return file_diff
-    if not file_diff.content_diff:
-        return None
     matching = [
         change
         for change in file_diff.content_diff
@@ -693,9 +687,11 @@ def filter_file_diff_for_find(file_diff: FileDiff, needle: str) -> FileDiff | No
         or smart_find_match(n, setting_display_name(change.path))
         or smart_find_match(n, format_setting_change_description(change))
     ]
-    if not matching:
-        return None
-    return replace(file_diff, content_diff=matching)
+    if matching:
+        return replace(file_diff, content_diff=matching)
+    if smart_find_match(n, file_diff.relative_path):
+        return file_diff
+    return None
 
 
 def filter_file_diffs_for_find(file_diffs: list[FileDiff], needle: str) -> list[FileDiff]:

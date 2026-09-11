@@ -78,6 +78,17 @@ def test_licence_dll_is_not_wanted_at_the_game_root(tmp_path):
     assert cr._diagnose_slot_licence(_ctx(root)).status == cr.STATUS_OK
 
 
+def test_licence_repair_prefers_slot_over_stale_root(tmp_path):
+    root = _slot_tree(tmp_path)
+    name = "Licence12-12262688_447_24234.xml"
+    (root / name).write_text("<Licence>stale-root</Licence>", encoding="utf-8")
+    (root / "slot" / name).write_text("<Licence>slot-good</Licence>", encoding="utf-8")
+    outcome = cr._repair_slot_licence(_ctx(root))
+    assert outcome.ok, outcome.detail
+    assert (root / "slot" / name).read_text(encoding="utf-8") == "<Licence>slot-good</Licence>"
+    assert (root / name).read_text(encoding="utf-8") == "<Licence>slot-good</Licence>"
+
+
 def test_licence_repair_never_deletes_the_original(tmp_path):
     root = _slot_tree(tmp_path)
     src = root / "Licenses" / "Licence12-12262688_447_24234.xml"

@@ -55,14 +55,15 @@ def _find_by_locator(doc: ET.Element, locator: str) -> ET.Element | None:
     # First segment: prefer descendant (tags may nest under wrappers).
     cur = _find_desc(doc, parts[0])
     if cur is None:
-        return None
+        return _find_desc(doc, parts[-1]) if len(parts) > 1 else None
     for part in parts[1:]:
         nxt = _find_child(cur, part)
         if nxt is None:
             # Some tags like AFT.anyAftEnabled are flat descendants.
             nxt = _find_desc(cur, part)
         if nxt is None:
-            return None
+            # Nested wrapper missing (flat TargetMarket / CultureName).
+            return _find_desc(doc, parts[-1])
         cur = nxt
     return cur
 

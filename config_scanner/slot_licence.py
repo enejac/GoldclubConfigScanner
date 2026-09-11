@@ -980,7 +980,7 @@ def push_missing_licences(
     """
     dest = goldclub_root_from_target(dest_goldclub)
     status = inspect_live_licences(dest)
-    if status.playable and (dest / "slot" / "licence.dll").is_file():
+    if status.playable and _find_licence_dll(dest / "slot") is not None:
         return (), ("licences already present next to OneHand",), ()
     src_root = Path(source) if source is not None else dest
     try:

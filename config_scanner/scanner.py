@@ -50,6 +50,15 @@ def _needs_live_settings_decrypt(path: Path) -> bool:
     return needs_live_settings_decrypt(path)
 
 
+def _looks_like_plain_xml(raw: bytes) -> bool:
+    return raw.lstrip().startswith(b"<")
+
+
+def _looks_like_live_ruleta_setup(dest: Path) -> bool:
+    norm = str(dest).replace("\\", "/").casefold()
+    return dest.name.casefold() == "setup.xml" and "ruleta" in norm
+
+
 def _restore_archived_bytes(dest: Path, raw: bytes) -> bool:
     """Write archived bytes to live path; re-encrypt plain live ruleta setup.xml."""
     try:
@@ -59,6 +68,9 @@ def _restore_archived_bytes(dest: Path, raw: bytes) -> bool:
             looks_like_gcxml_plain,
         )
     except ImportError:
+        # Cannot re-encrypt. Never write plaintext onto live ruleta setup.xml.
+        if _looks_like_plain_xml(raw) and _looks_like_live_ruleta_setup(dest):
+            return False
         dest.write_bytes(raw)
         return True
 
@@ -546,7 +558,9 @@ def build_manifest(
 
 def save_json(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    tmp.replace(path)
 
 
 def build_info_version_fields_missing(info: BuildInfo) -> bool:
