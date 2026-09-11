@@ -228,6 +228,27 @@ def live_changed_field_stylesheet(palette: QPalette) -> str:
     )
 
 
+def live_advisory_field_stylesheet(palette: QPalette) -> str:
+    """Amber, dashed border: scanner doubt about a value the cabinet already runs.
+
+    Distinct from orange (pending edit) and red (blocking). Never blocks Apply.
+    """
+    light = surface_is_light(palette)
+    accent = text_warning(palette)
+    if light:
+        bg = QColor(255, 250, 214)
+        fg = QColor(110, 80, 0)
+    else:
+        bg = blend_colors(palette.color(QPalette.ColorRole.Base), accent, 0.25)
+        fg = palette.color(QPalette.ColorRole.Text)
+    return (
+        f"background-color: {bg.name()}; "
+        f"color: {fg.name()}; "
+        f"border: 1px dashed {accent.name()}; "
+        "border-radius: 4px;"
+    )
+
+
 def live_invalid_field_stylesheet(palette: QPalette) -> str:
     """Red tint for a proposed value that fails Live Push validation."""
     light = surface_is_light(palette)

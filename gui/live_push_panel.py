@@ -91,7 +91,11 @@ from config_scanner.live_push import (
     live_field_matches,
     live_field_tooltip,
     live_field_validation_errors,
+    live_baseline_validation_errors,
+    normalize_effective_denoms,
     recipe_display_corruption_errors,
+    split_display_corruption,
+    validate_live_push_blocking,
     canonicalize_live_field_label,
     resolve_live_field_config_files,
     live_push_catalog,
@@ -105,7 +109,6 @@ from config_scanner.live_push import (
     prepare_live_goldclub,
     recipe_change_lines,
     recipe_from_market_id,
-    validate_live_push_recipe,
     wait_for_dallas_from_hardware,
     LIVE_OPTION_HELP,
     _lp_log,
@@ -181,6 +184,7 @@ from gui.click_tip_label import (
 )
 from gui.notepad_pp import open_with_notepad
 from gui.palette_adapt import (
+    live_advisory_field_stylesheet,
     live_changed_field_stylesheet,
     live_invalid_field_stylesheet,
     live_match_field_stylesheet,
@@ -711,6 +715,8 @@ class LivePushPanel(QWidget):
         self._fleet_emitter.finished.connect(self._on_fleet_finished)
         self._goldclub: Path | None = None
         self._display_corruption: dict[str, str] = {}
+        self._live_baseline: list[str] = []
+        self._live_baseline_key: tuple[int, str] | None = None
         self._last_backup_dir = ""
         self._last_apply_since: datetime | None = None
         self._review_emitter = _PushEmitter()
@@ -1531,26 +1537,37 @@ class LivePushPanel(QWidget):
     def _paint_live_highlights(self) -> None:
         matches: dict[str, bool] = {}
         invalid: dict[str, str] = {}
+        advisory: dict[str, str] = {}
         form_corrupt: dict[str, str] = {}
         after = None
         if self._loaded is not None and not self._applying:
             try:
                 after = self._recipe_from_form()
                 matches = live_field_matches(self._loaded, after)
-                invalid = live_field_validation_errors(
-                    self._validation_errors(self._loaded, after)
+                blocking, advisories = self._validation_split(
+                    self._loaded, after
                 )
+                invalid = live_field_validation_errors(blocking)
+                advisory = live_field_validation_errors(advisories)
                 form_corrupt = recipe_display_corruption_errors(after)
             except ValueError:
                 matches = {}
                 invalid = {}
+                advisory = {}
                 form_corrupt = {}
                 after = None
-        corrupt = {**self._display_corruption, **form_corrupt}
+        # Live-file findings describe the cabinet as it runs -> advisory only.
+        # Form findings are red only for a field the operator changed.
+        corrupt, corrupt_advisory = split_display_corruption(
+            self._display_corruption, form_corrupt, matches=matches
+        )
+        for label, reason in corrupt_advisory.items():
+            advisory.setdefault(label, reason)
         palette = self.palette()
         match_sheet = live_match_field_stylesheet(palette)
         changed_sheet = live_changed_field_stylesheet(palette)
         invalid_sheet = live_invalid_field_stylesheet(palette)
+        advisory_sheet = live_advisory_field_stylesheet(palette)
         cabinet_loaded = self._loaded is not None
         log_errs = finding_field_errors(self._slotlog_findings)
         leftover_single = None
@@ -1569,11 +1586,13 @@ class LivePushPanel(QWidget):
                 validation_error=invalid.get(label, "") or corrupt_reason,
                 log_error=log_errs.get(label, ""),
             )
+            adv = "" if inv else advisory.get(label, "")
             state = live_field_highlight_state(
                 matches_live=matches_live,
                 editable=editable,
                 cabinet_loaded=cabinet_loaded,
                 invalid_reason=inv,
+                advisory_reason=adv,
             )
             help_text = LIVE_OPTION_HELP.get(label, "")
             if label == "Denoms (cents)" and leftover_single is not None:
@@ -1603,7 +1622,7 @@ class LivePushPanel(QWidget):
             )
             tip = live_field_tooltip(
                 state,
-                detail=inv,
+                detail=inv or adv,
                 help_text=help_text,
                 invalid_kind=kind,
                 file_note=file_note,
@@ -1614,6 +1633,9 @@ class LivePushPanel(QWidget):
                 continue
             if state == "invalid":
                 widget.setStyleSheet(invalid_sheet)
+                widget.setToolTip(tip)
+            elif state == "advisory":
+                widget.setStyleSheet(advisory_sheet)
                 widget.setToolTip(tip)
             elif state == "match":
                 widget.setStyleSheet(match_sheet)
@@ -2459,12 +2481,6 @@ class LivePushPanel(QWidget):
         if denoms:
             recipe.denomination_list = denoms
             recipe.credit_rate_values = list(denoms)
-            if len(denoms) == 1 and self._loaded is not None:
-                live_denoms = list(self._loaded.denomination_list or [])
-                if live_denoms != denoms:
-                    bet, average = expected_magic_wheel_for_denom(denoms[0])
-                    recipe.play_limits.magic_wheel_bet = bet
-                    recipe.play_limits.magic_wheel_average = average
         bets = self._parse_int_list(self._bets)
         if bets:
             recipe.play_limits.bet_multipliers = bets
@@ -2474,6 +2490,16 @@ class LivePushPanel(QWidget):
         show_denom = _optional_bool(self._show_denom)
         if show_denom is not None:
             recipe.play_limits.show_denom_selector = show_denom
+        if denoms and self._loaded is not None:
+            # Typing the denom the cabinet already plays is not a change:
+            # keep its catalog and do not re-derive the magic wheel.
+            normalize_effective_denoms(self._loaded, recipe)
+            if len(denoms) == 1 and list(recipe.denomination_list) == denoms:
+                live_denoms = list(self._loaded.denomination_list or [])
+                if live_denoms != denoms:
+                    bet, average = expected_magic_wheel_for_denom(denoms[0])
+                    recipe.play_limits.magic_wheel_bet = bet
+                    recipe.play_limits.magic_wheel_average = average
         mw_limit = _optional_int(self._mw_limit)
         if mw_limit is not None:
             recipe.jurisdiction.magic_wheel_money_limit = mw_limit
@@ -2884,12 +2910,32 @@ class LivePushPanel(QWidget):
                 "(allowed by this OneHand)."
             )
 
-    def _validation_errors(self, live, after) -> list[str]:
+    def _validation_split(self, live, after) -> tuple[list[str], list[str]]:
+        """``(blocking, advisory)`` — advisory = rules the live cabinet already fails.
+
+        The live baseline (``validate(live, live)``) is cached per loaded
+        cabinet so repaints do not re-parse Link2Win math on every keystroke.
+        """
         raw = self._path.text().strip()
         if not raw:
-            return ["Enter a cabinet Goldclub path."]
+            return ["Enter a cabinet Goldclub path."], []
         root = goldclub_root_from_target(raw)
-        return validate_live_push_recipe(live, after, root)
+        key = (id(live), str(root))
+        if self._live_baseline_key != key:
+            self._live_baseline = live_baseline_validation_errors(live, root)
+            self._live_baseline_key = key
+            if self._live_baseline:
+                _lp_log(
+                    "live baseline (cabinet runs with these; advisory only): "
+                    + " | ".join(self._live_baseline)
+                )
+        return validate_live_push_blocking(
+            live, after, root, baseline=self._live_baseline
+        )
+
+    def _validation_errors(self, live, after) -> list[str]:
+        """Blocking errors only. Advisories never stop Apply."""
+        return self._validation_split(live, after)[0]
 
     def _clear_math_fix_buttons(self) -> None:
         while self._math_fix_buttons.count():
@@ -3135,6 +3181,12 @@ class LivePushPanel(QWidget):
         warns = validate_live_push_warnings(live, after, root)
         if warns:
             extra += "\n\nNote:\n• " + "\n• ".join(warns[:4])
+        _blocking, advisories = self._validation_split(live, after)
+        if advisories:
+            extra += (
+                "\n\nScanner doubts (the cabinet already runs with these; "
+                "not blocking):\n• " + "\n• ".join(advisories[:4])
+            )
         if ramclear_why and kind == "slot":
             extra += (
                 "\n\nRAM clear will run after write (required for: "
