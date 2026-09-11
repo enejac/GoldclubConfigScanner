@@ -852,3 +852,51 @@ def test_autoload_skips_when_cabinet_path_empty(qt_app, monkeypatch) -> None:
     panel._autoload()
     assert loaded == []
     assert "remembered" in panel._status.text().casefold()
+
+
+def test_single_cabinet_field_no_duplicate_ip_row(qt_app) -> None:
+    """One Cabinet field. No second 'Cabinet IP' row, no Connect, no flat link."""
+    from PySide6.QtWidgets import QLabel, QLineEdit, QPushButton
+
+    from gui.live_push_panel import LivePushPanel
+
+    panel = LivePushPanel(autoload=False)
+    panel.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    panel.show()
+    qt_app.processEvents()
+    labels = {lbl.text() for lbl in panel.findChildren(QLabel)}
+    assert "Cabinet:" in labels
+    assert "Cabinet IP:" not in labels
+    buttons = {btn.text() for btn in panel.findChildren(QPushButton)}
+    assert "Connect" not in buttons
+    assert "Use a cabinet IP instead" not in buttons
+    edits = [e for e in panel.findChildren(QLineEdit) if e.placeholderText() == "10.0.0.x"]
+    assert edits == []
+    for attr in ("_ip", "_ip_row", "_ip_connect", "_use_remote_btn"):
+        assert not hasattr(panel, attr)
+
+
+def test_no_local_no_saved_prefills_lab_ip_with_last_octet_selected(
+    qt_app, monkeypatch
+) -> None:
+    from gui.live_push_panel import LivePushPanel
+
+    monkeypatch.setattr("gui.live_push_panel.detect_local_live_cabinet", lambda: "")
+    monkeypatch.setattr("gui.live_push_panel.this_pc_live_target", lambda: None)
+    loaded: list[str] = []
+    monkeypatch.setattr(
+        "gui.live_push_panel.LivePushPanel._load", lambda self: loaded.append("load")
+    )
+    panel = LivePushPanel(autoload=False)
+    panel.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    panel.show()
+    qt_app.processEvents()
+
+    panel._finish_detect()
+    qt_app.processEvents()
+
+    assert panel._path.text() == "10.0.0.111"
+    assert panel._path.selectedText() == "111", "only the last octet should be selected"
+    assert panel._path.selectionStart() == len("10.0.0.")
+    assert loaded == [], "prefill must not auto-load a guessed cabinet"
+    assert "last IP digits" in panel._detect_status.text()
