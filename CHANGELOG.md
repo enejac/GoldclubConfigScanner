@@ -3,6 +3,10 @@
 What landed on `master`. One line per merged pull request, newest first.
 Updated automatically when a PR is merged.
 
+## 2026-09-11
+
+- Auto-update a short changelog on every merged PR ([#22](https://github.com/enejac/GoldclubConfigScanner/pull/22))
+
 ## 2026-09-10
 
 - Write magic-wheel knobs to jurisdiction_config; fix Live Push right-click ([#17](https://github.com/enejac/GoldclubConfigScanner/pull/17))
