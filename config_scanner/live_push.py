@@ -26,6 +26,7 @@ from config_scanner.bill_tokens_view import format_bill_notes_snapshot
 from config_scanner.build_version import OneHandBuildInfo, detect_onehand_build
 from config_scanner.denom_compat import (
     apply_magic_wheel_for_denom,
+    bet_multiplier_preset_labels,
     denom_combo_choices,
     inspect_link2win_math,
     live_cabinet_math_gap,
@@ -683,13 +684,10 @@ def wait_for_dallas_from_hardware(
     )
 
 
-BET_MULTIPLIER_PRESETS: tuple[str, ...] = (
-    "1, 2, 3, 4, 5, 8, 10, 12, 15",
-    "1, 2, 3, 4, 5",
-    "4, 8, 12",
-    "1, 2, 5, 10",
-    "1, 5, 10, 20",
-)
+# Derived from jurisdictions.json so the dropdown cannot offer a list
+# Apply will reject. Link2Win game-pack ``Bet`` rows are denom coverage,
+# not this list.
+BET_MULTIPLIER_PRESETS: tuple[str, ...] = bet_multiplier_preset_labels()
 
 CURRENCY_SYMBOL_CHOICES: tuple[str, ...] = (
     "$",
@@ -1634,7 +1632,7 @@ def live_push_catalog() -> dict[str, tuple[str, ...]]:
         "languages": _unique(languages),
         "markets": ordered_live_markets(_unique(markets)),
         "denoms": _unique(denoms),
-        "bet_multipliers": BET_MULTIPLIER_PRESETS,
+        "bet_multipliers": bet_multiplier_preset_labels(),
         "symbols": CURRENCY_SYMBOL_CHOICES,
         "magic_wheel_limits": tuple(str(v) for v in MAGIC_WHEEL_LIMITS),
         "jackpot_layouts": JACKPOT_LAYOUTS,
@@ -2079,8 +2077,11 @@ LIVE_OPTION_HELP: dict[str, str] = {
         "Link2WinBonusMath.json already contains that denom (red if it does not)."
     ),
     "Bet multipliers": (
-        "Bet multiplier list offered to the player. Must match an approved bet "
-        "setup for the selected denoms / market."
+        "Bet steps written to each slot theme MathSettings.xml "
+        "(not RouletteGame or Link2WinFeature). Must match an approved "
+        "market setup (currently 1,2,3,4,5,8,10,12,15). Country-pack "
+        "Link2Win Bet/Denom rows only gate denoms — they do not restrict "
+        "these steps if a title cannot play them."
     ),
     "Magic wheel limit": (
         "Maximum money the magic wheel can award. Written to "

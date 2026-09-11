@@ -132,6 +132,8 @@ def _matches_include(name: str, patterns: list[str]) -> bool:
 
 def profile_covers_rel(profile: GameProfile, rel: str) -> bool:
     """True if Slot (or other) profile would include this Goldclub-relative path."""
+    from config_scanner.theme_math import is_theme_math_rel
+
     candidates = [rel.replace("\\", "/").lstrip("/")]
     # Try common Goldclub casing variants CS packs use
     first, _, rest = candidates[0].partition("/")
@@ -146,6 +148,9 @@ def profile_covers_rel(profile: GameProfile, rel: str) -> bool:
         candidates.append(alt)
 
     for rel_n in candidates:
+        # Same walk collect_scan_files uses — any theme *Math.json / ProgressiveSetup.
+        if is_theme_math_rel(rel_n):
+            return True
         name = Path(rel_n).name
         for glob_pat in profile.extra_file_globs:
             pat = glob_pat.replace("\\", "/")
@@ -157,6 +162,18 @@ def profile_covers_rel(profile: GameProfile, rel: str) -> bool:
             if _matches_scan_root(rel_n, spec):
                 return True
     return False
+
+
+def snapshot_include_check(
+    rels: list[str] | tuple[str, ...],
+    *,
+    profile_id: str = "slot_lab_90",
+) -> dict[str, bool]:
+    """Map Goldclub-relative paths to whether a snapshot scan would include them."""
+    from config_scanner.profiles import get_profile
+
+    profile = get_profile(profile_id)
+    return {rel: profile_covers_rel(profile, rel) for rel in rels}
 
 
 def coverage_gaps(profile: GameProfile, leaf: Path | CountryLeaf) -> list[str]:

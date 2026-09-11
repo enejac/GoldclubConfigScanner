@@ -130,6 +130,7 @@ def test_slot_profile_definition() -> None:
         for glob_pat in profile.extra_file_globs
     )
     assert "slot/Confirmation.txt" in profile.extra_file_globs
+    assert r"\\10.0.0.98\slot" in profile.discover_targets
     assert any(root.path.casefold() == "services" for root in profile.scan_roots)
 
 

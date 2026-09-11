@@ -114,6 +114,17 @@ def allowed_bet_profiles_for(currency: str = "", market: str = "") -> list[tuple
     return out
 
 
+def bet_multiplier_preset_labels(currency: str = "", market: str = "") -> tuple[str, ...]:
+    """Live Push dropdown labels that Apply will accept for this market.
+
+    These are jurisdiction ``allowed_bet_multipliers`` lists, not per-title
+    game-pack rows. Link2Win JSON ``Bet`` values are denom coverage only.
+    """
+    profiles = allowed_bet_profiles_for(currency, market) or allowed_bet_profiles_for()
+    labels = tuple(", ".join(str(x) for x in prof) for prof in profiles)
+    return labels or ("1, 2, 3, 4, 5, 8, 10, 12, 15",)
+
+
 def cabinet_has_link2win(goldclub: Path) -> bool:
     root = goldclub_root_from_target(goldclub)
     return (root / _LINK2WIN_REL).is_file()
@@ -964,6 +975,9 @@ def validate_denom_configuration(
     live_mults = list(live.play_limits.bet_multipliers or [])
     if not live_mults and live.math:
         live_mults = list(live.math[0].bet_multipliers or [])
+    # Restriction is the market list only. Game packs do not veto steps:
+    # titles without MathSettings, plus RouletteGame / Link2WinFeature / data,
+    # simply do not receive the write. Link2Win Bet rows are not these multipliers.
     if bet_mults != live_mults and bet_mults and live_mults:
         allowed_bets = allowed_bet_profiles_for(currency, market)
         if allowed_bets and tuple(bet_mults) not in allowed_bets:
