@@ -1568,8 +1568,10 @@ def _utf16_string_after(blob: bytes, key: str) -> str:
 def is_onehand_debug_build(goldclub: Path) -> bool:
     """True when live ``OneHand.exe`` is the Debug SKU (no production licence).
 
-    Uses the exe on disk only — SlotLog is not required (cabinet may never
-    have been started).
+    Prefers VERSIONINFO ``Debug`` tokens, then the latest SlotLog
+    ``OneHand.MainFrm - DB`` line. Numbered FileVersion/ProductVersion is
+    Release when that log line is absent. A cabinet that has never booted
+    still classifies from the exe alone.
     """
     try:
         from config_scanner.build_version import detect_onehand_build

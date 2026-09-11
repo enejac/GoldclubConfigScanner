@@ -1082,25 +1082,137 @@ def _preferred_onehand_version_text(info: _ExeVersionInfo) -> str:
     return ""
 
 
+_SLOTLOG_MAINFRM_RE = re.compile(r"\bOneHand\.MainFrm\s+-\s*(.*)$")
+
+
+def _read_text_tail(path: Path, *, max_bytes: int = 256_000) -> str:
+    """Read the end of a log without pulling the whole file over SMB."""
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as handle:
+            if size > max_bytes:
+                handle.seek(max(0, size - max_bytes))
+            data = handle.read()
+    except OSError:
+        return ""
+    return data.decode("utf-8", errors="replace")
+
+
+def _slotlog_files_for_debug_sku(goldclub: Path, *, limit: int = 8) -> list[Path]:
+    """Newest SlotLog files under Goldclub or slot\\var\\log."""
+    root = Path(goldclub)
+    dirs = (
+        root / "var" / "log" / "SlotLog",
+        root / "slot" / "var" / "log" / "SlotLog",
+        root.parent / "var" / "log" / "SlotLog",
+    )
+    files: list[Path] = []
+    seen: set[str] = set()
+    for folder in dirs:
+        try:
+            if not folder.is_dir():
+                continue
+            for path in folder.glob("*.log"):
+                key = str(path)
+                if key in seen:
+                    continue
+                try:
+                    if path.is_file():
+                        seen.add(key)
+                        files.append(path)
+                except OSError:
+                    continue
+        except OSError:
+            continue
+
+    def _mtime(path: Path) -> float:
+        try:
+            return path.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    files.sort(key=_mtime)
+    return files[-limit:]
+
+
+def _mainfrm_message(line: str) -> str | None:
+    match = _SLOTLOG_MAINFRM_RE.search(line.rstrip())
+    if match is None:
+        return None
+    return match.group(1).strip()
+
+
+def _is_mainfrm_boot_banner(message: str) -> bool:
+    if not message:
+        return False
+    if len(message) >= 8 and set(message) <= {"*"}:
+        return True
+    low = message.casefold()
+    return low.startswith("slotmachine") or low.startswith("static initialization")
+
+
+def _slotlog_mainfrm_is_debug(goldclub: Path | str) -> bool:
+    """True when the latest OneHand.MainFrm boot logs an exact ``DB`` line.
+
+    Debug SKUs print ``OneHand.MainFrm - DB`` between Static initialization
+    and ``loaded assembly``. Release skips that line. Fail-closed: other
+    loggers, ``Database``, and leftover ``DB`` from an older boot do not
+    count — only the latest MainFrm boot banner wins.
+    """
+    latest_had_db: bool | None = None
+    saw_db = False
+    seen_boot = False
+    for path in _slotlog_files_for_debug_sku(Path(goldclub)):
+        text = _read_text_tail(path)
+        if not text:
+            continue
+        for line in text.splitlines():
+            message = _mainfrm_message(line)
+            if message is None:
+                continue
+            if _is_mainfrm_boot_banner(message):
+                if seen_boot:
+                    latest_had_db = saw_db
+                seen_boot = True
+                saw_db = False
+                continue
+            if message.casefold() != "db":
+                continue
+            saw_db = True
+            if not seen_boot:
+                seen_boot = True
+    if seen_boot:
+        latest_had_db = saw_db
+    return bool(latest_had_db)
+
+
 def _onehand_configuration(
-    info: _ExeVersionInfo, exe_path: Path
+    info: _ExeVersionInfo,
+    exe_path: Path,
+    goldclub: Path | None = None,
 ) -> tuple[str, str]:
-    """Debug from VERSIONINFO SKU name; numeric ProductVersion/FileVersion is Release."""
+    """Debug from VERSIONINFO SKU name; else SlotLog MainFrm DB; else numeric Release."""
     file_version_string = info.file_version_string
     if any(
         _is_debug_sku_token(part)
         for part in (file_version_string, info.product_version)
     ):
         return "Debug", "VERSIONINFO string"
-    numeric_release = any(
-        _has_numeric_version_token(part)
-        for part in (info.product_version, info.file_version, file_version_string)
-    )
+    if goldclub is not None:
+        try:
+            if _slotlog_mainfrm_is_debug(goldclub):
+                return "Debug", "SlotLog OneHand.MainFrm DB"
+        except OSError:
+            pass
     try:
         if onehand_exe_is_debug_sku(exe_path):
             return "Debug", "VERSIONINFO ProductVersion/FileVersion"
     except OSError:
         pass
+    numeric_release = any(
+        _has_numeric_version_token(part)
+        for part in (info.product_version, info.file_version, file_version_string)
+    )
     if numeric_release:
         return "Release", "VERSIONINFO"
     if info.is_debug is True:
@@ -1130,7 +1242,7 @@ def detect_onehand_build(goldclub: Path | str) -> OneHandBuildInfo | None:
                     version = core.lstrip("v")
         except OSError:
             pass
-    configuration, source = _onehand_configuration(info, exe_path)
+    configuration, source = _onehand_configuration(info, exe_path, goldclub=root)
     if not version and configuration == "Unknown":
         return None
     return OneHandBuildInfo(

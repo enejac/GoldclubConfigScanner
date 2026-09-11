@@ -13,11 +13,55 @@ from config_scanner.build_version import (
     _pdb_path_is_debug_output,
     _read_pe_debug_flag,
     _read_version_resource,
+    _slotlog_mainfrm_is_debug,
     _sniff_build_configuration,
     detect_onehand_build,
     format_onehand_build_label,
     onehand_exe_is_debug_sku,
 )
+
+_DEBUG_SLOTLOG = """\
+2026-09-10T06:47:44.204+01:00 INFO  [4] CacheCreator.DDSCacheCreator - Closing the CacheCreator
+2026-09-10T06:47:46.350+01:00 INFO  [1] OneHand.MainFrm - 
+2026-09-10T06:47:46.350+01:00 INFO  [1] OneHand.MainFrm - ************************************************************************
+2026-09-10T06:47:46.350+01:00 INFO  [1] OneHand.MainFrm - SlotMachine v3.0.0.0
+2026-09-10T06:47:46.350+01:00 INFO  [1] OneHand.MainFrm - Static initialization (i0)
+2026-09-10T06:47:46.350+01:00 INFO  [1] OneHand.MainFrm - DB
+2026-09-10T06:47:46.350+01:00 INFO  [1] OneHand.MainFrm - loaded assembly mscorlib, Version=4.0.0.0, Culture=neutral, 
+"""
+
+_RELEASE_SLOTLOG = """\
+2026-09-10T09:31:35.483+01:00 INFO  [4] CacheCreator.DDSCacheCreator - Closing the CacheCreator
+2026-09-10T09:31:36.579+01:00 INFO  [1] OneHand.MainFrm - 
+2026-09-10T09:31:36.579+01:00 INFO  [1] OneHand.MainFrm - ************************************************************************
+2026-09-10T09:31:36.579+01:00 INFO  [1] OneHand.MainFrm - SlotMachine v2.0.1.0
+2026-09-10T09:31:36.579+01:00 INFO  [1] OneHand.MainFrm - Static initialization (r4)
+2026-09-10T09:31:36.579+01:00 INFO  [1] OneHand.MainFrm - loaded assembly mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089 from C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\mscorlib.dll
+"""
+
+
+def _write_slotlog(gold: Path, text: str, name: str = "2026-09-10.log") -> Path:
+    log_dir = gold / "var" / "log" / "SlotLog"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    path = log_dir / name
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def _write_numeric_onehand(slot: Path, **version_fields: str) -> None:
+    fields = {
+        "ProductVersion": "3.0.0.0+RC2+2667F32",
+        "FileVersion": "3.0.0.0",
+        "FileDescription": "OneHand",
+    }
+    fields.update(version_fields)
+    (slot / "OneHand.exe").write_bytes(
+        b"MZ"
+        + "AssemblyConfiguration".encode("utf-16le")
+        + b"\x00\x00"
+        + "Release".encode("utf-16le")
+        + _version_info_blob(**fields)
+    )
 
 
 def _utf16_pair(key: str, value: str) -> bytes:
@@ -416,17 +460,21 @@ def test_merged_dependency_debug_versioninfo_does_not_override_release(
 
 
 def test_lab_cabinets_76_debug_and_111_release(tmp_path: Path) -> None:
-    """Paired lab expectation: 10.0.0.76 → Debug, 10.0.0.111 → Release."""
+    """Paired lab: 10.0.0.76 numeric VERSIONINFO + SlotLog DB → Debug; .111 Release."""
     from config_scanner.live_push import slot_start_launcher
     from config_scanner.slot_setup import is_onehand_debug_build
 
     cases = (
         (
             "10.0.0.76",
-            {"ProductVersion": "3.0.0.0+RC2+2667F2", "FileVersion": "Debug"},
+            {
+                "ProductVersion": "3.0.0.0+RC2+2667F32",
+                "FileVersion": "3.0.0.0",
+            },
             "Debug",
             "bootstrap",
             True,
+            _DEBUG_SLOTLOG,
         ),
         (
             "10.0.0.111",
@@ -434,25 +482,23 @@ def test_lab_cabinets_76_debug_and_111_release(tmp_path: Path) -> None:
             "Release",
             "game-start",
             False,
+            _RELEASE_SLOTLOG,
         ),
     )
-    for host, version_fields, expect_cfg, expect_launcher, expect_debug in cases:
+    for host, version_fields, expect_cfg, expect_launcher, expect_debug, slotlog in cases:
         gold = tmp_path / host.replace(".", "_")
         slot = gold / "slot"
         slot.mkdir(parents=True)
-        (slot / "OneHand.exe").write_bytes(
-            b"MZ"
-            + "AssemblyConfiguration".encode("utf-16le")
-            + b"\x00\x00"
-            + "Release".encode("utf-16le")
-            + _version_info_blob(FileDescription="OneHand", **version_fields)
-        )
+        _write_numeric_onehand(slot, **version_fields)
+        _write_slotlog(gold, slotlog)
         info = detect_onehand_build(gold)
         assert info is not None, host
         assert info.configuration == expect_cfg, host
         assert info.label.endswith(expect_cfg), host
         assert is_onehand_debug_build(gold) is expect_debug, host
         assert slot_start_launcher(str(gold), dest=gold) == expect_launcher, host
+        if expect_cfg == "Debug":
+            assert info.source == "SlotLog OneHand.MainFrm DB"
 
 
 def test_pdb_path_is_debug_output_uses_folder_not_filename() -> None:
@@ -460,6 +506,70 @@ def test_pdb_path_is_debug_output_uses_folder_not_filename() -> None:
     assert _pdb_path_is_debug_output(r"C:\src\bin\Release\OneHand.pdb") is False
     assert _pdb_path_is_debug_output(r"C:\src\OneHand-Debug.pdb") is False
     assert _pdb_path_is_debug_output("OneHand.pdb") is False
+
+
+def test_numeric_versioninfo_slotlog_db_is_debug(tmp_path: Path) -> None:
+    """Numbered FileVersion + MainFrm DB line → Debug; launcher uses Bootstrap."""
+    from config_scanner.live_push import slot_start_launcher
+    from config_scanner.slot_setup import is_onehand_debug_build
+
+    gold = tmp_path / "Goldclub"
+    slot = gold / "slot"
+    slot.mkdir(parents=True)
+    _write_numeric_onehand(slot)
+    _write_slotlog(gold, _DEBUG_SLOTLOG)
+    assert onehand_exe_is_debug_sku(slot / "OneHand.exe") is False
+    info = detect_onehand_build(gold)
+    assert info is not None
+    assert info.configuration == "Debug"
+    assert info.source == "SlotLog OneHand.MainFrm DB"
+    assert "3.0.0.0+RC2+2667F32" in (info.version or "")
+    assert info.label.endswith("Debug")
+    assert is_onehand_debug_build(gold) is True
+    assert slot_start_launcher(str(gold), dest=gold) == "bootstrap"
+
+
+def test_numeric_versioninfo_release_slotlog_stays_release(tmp_path: Path) -> None:
+    """Same numbered exe with a Release MainFrm boot (no DB) stays Release."""
+    from config_scanner.live_push import slot_start_launcher
+    from config_scanner.slot_setup import is_onehand_debug_build
+
+    gold = tmp_path / "Goldclub"
+    slot = gold / "slot"
+    slot.mkdir(parents=True)
+    _write_numeric_onehand(slot)
+    _write_slotlog(gold, _RELEASE_SLOTLOG)
+    info = detect_onehand_build(gold)
+    assert info is not None
+    assert info.configuration == "Release"
+    assert info.label.endswith("Release")
+    assert is_onehand_debug_build(gold) is False
+    assert slot_start_launcher(str(gold), dest=gold) == "game-start"
+
+
+def test_slotlog_ignores_non_mainfrm_db_and_database(tmp_path: Path) -> None:
+    gold = tmp_path / "Goldclub"
+    gold.mkdir()
+    _write_slotlog(
+        gold,
+        """\
+2026-09-10T09:31:36.579+01:00 INFO  [1] CacheCreator.DDSCacheCreator - DB
+2026-09-10T09:31:36.579+01:00 INFO  [1] OneHand.MainFrm - SlotMachine v2.0.1.0
+2026-09-10T09:31:36.579+01:00 INFO  [1] OneHand.MainFrm - Static initialization (r4)
+2026-09-10T09:31:36.579+01:00 INFO  [1] OneHand.MainFrm - Database
+2026-09-10T09:31:36.579+01:00 INFO  [1] OneHand.MainFrm - loaded assembly mscorlib DB leftover
+""",
+    )
+    assert _slotlog_mainfrm_is_debug(gold) is False
+
+
+def test_slotlog_latest_boot_wins_over_older_db(tmp_path: Path) -> None:
+    gold = tmp_path / "Goldclub"
+    gold.mkdir()
+    _write_slotlog(gold, _DEBUG_SLOTLOG + _RELEASE_SLOTLOG)
+    assert _slotlog_mainfrm_is_debug(gold) is False
+    _write_slotlog(gold, _RELEASE_SLOTLOG + _DEBUG_SLOTLOG)
+    assert _slotlog_mainfrm_is_debug(gold) is True
 
 
 def test_slot_start_launcher_uses_bootstrap_for_rc_debug_sku(tmp_path: Path) -> None:
