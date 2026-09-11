@@ -37,9 +37,13 @@ from config_scanner.cs_sources import (
     load_leaves_for_source,
     materialize_cs_path,
     recommend_cs_source,
+    share_browse_start,
+    share_offline_note,
     share_shortcuts,
     sort_cs_sources,
+    source_is_not_shipped,
 )
+from config_scanner.net_gate import remote_path_available, unc_host
 from config_scanner.embedded_updates import EmbeddedUpdate, export_b2u_copy, load_catalog
 from config_scanner.jurisdiction import (
     JurisdictionProfile,
@@ -196,6 +200,12 @@ class JurisdictionWizard(QWidget):
         )
         self._pack_combo.currentIndexChanged.connect(self._on_pack_changed)
         lay.addWidget(self._pack_combo)
+
+        self._share_lbl = QLabel("")
+        self._share_lbl.setWordWrap(True)
+        self._share_lbl.setStyleSheet("color: #f9a825;")
+        self._share_lbl.setVisible(False)
+        lay.addWidget(self._share_lbl)
 
         self._show_debug = QCheckBox("Show Debug / Test packs")
         self._show_debug.setToolTip(
@@ -500,6 +510,7 @@ class JurisdictionWizard(QWidget):
             getattr(self, "_show_debug", None) is not None and self._show_debug.isChecked()
         )
         country = self._profile.country if self._profile else None
+        self._set_status("Listing Country Selector packs…")
         all_src = sort_cs_sources(
             list_cs_sources(
                 profile_country=country,
@@ -507,6 +518,7 @@ class JurisdictionWizard(QWidget):
                 include_share_scan=True,
             )
         )
+        self._update_share_note()
         authoring = [s for s in all_src if s.authoring]
         apply_only = [s for s in all_src if not s.authoring]
         if not include_debug:
@@ -563,28 +575,52 @@ class JurisdictionWizard(QWidget):
 
         if not authoring:
             bits = [
-                "No Country Selector overlay for this market. Create needs a GameStar "
-                "2.0.x / _B2U .b2u or an unpacked CS folder.",
+                "No usable Country Selector overlay for this market on this PC. Create needs a "
+                "GameStar 2.0.x / _B2U .b2u or an unpacked CS folder.",
             ]
-            if apply_only:
+            not_shipped = [s for s in apply_only if source_is_not_shipped(s)]
+            zips = [s for s in apply_only if not source_is_not_shipped(s)]
+            if not_shipped:
+                names = ", ".join(s.embedded_id or s.label for s in not_shipped)
                 bits.append(
-                    f"{len(apply_only)} GameStar+ cabinet-apply zip(s) are listed "
+                    f"Built-in {names}: catalog entry only (grey) — no .b2u / staged tree "
+                    "in this build. Stage it beside the exe or use the lab share."
+                )
+            if zips:
+                bits.append(
+                    f"{len(zips)} GameStar+ cabinet-apply zip(s) are listed "
                     "(grey) — Restore those on the EGM, do not Create from them."
                 )
-            bits.append("Use Browse if you already have a pack.")
+            offline = share_offline_note()
+            if offline:
+                bits.append(offline)
+            bits.append("Use Open file / Browse share if you already have a pack.")
             self._pack_note.setText("\n".join(bits))
+            self._set_status("No usable pack for this market — see note above.")
             self._source = None
             self._leaf_combo.clear()
             return
 
+        # Select with signals blocked, then load once: setCurrentIndex after
+        # clear() emits currentIndexChanged, which used to run _on_pack_changed
+        # twice (two decrypt attempts, two error dialogs).
+        self._pack_combo.blockSignals(True)
         if select_idx is not None:
             self._pack_combo.setCurrentIndex(select_idx)
         elif self._pack_combo.currentData():
             pass
         elif self._pack_combo.count() > 1:
             self._pack_combo.setCurrentIndex(1)
+        self._pack_combo.blockSignals(False)
         if self._pack_combo.currentData():
             self._on_pack_changed()
+
+    def _update_share_note(self) -> None:
+        if not hasattr(self, "_share_lbl"):
+            return
+        note = share_offline_note()
+        self._share_lbl.setText(note)
+        self._share_lbl.setVisible(bool(note))
 
     def _all_sources(self) -> list[CsSource]:
         listed = getattr(self, "_listed_sources", None)
@@ -641,17 +677,20 @@ class JurisdictionWizard(QWidget):
         self._refresh_pref_combo(prefer=parsed)
 
     def _browse_cs_file(self) -> None:
+        start = share_browse_start(
+            r"\\10.0.0.249\WinSystems_SLOT\GameStar 2.0.1\Country Selectors"
+        )
         path, _ = QFileDialog.getOpenFileName(
             self,
             "Country Selector (.b2u)",
-            r"\\10.0.0.249\WinSystems_SLOT\GameStar 2.0.1\Country Selectors",
+            start,
             "Country Selector (*.b2u);;All files (*.*)",
         )
         if not path:
             path = QFileDialog.getExistingDirectory(
                 self,
                 "Unpacked CountrySelectorTool folder",
-                r"\\10.0.0.249\WinSystems_SLOT\_B2U",
+                share_browse_start(r"\\10.0.0.249\WinSystems_SLOT\_B2U"),
             )
         if not path:
             return
@@ -670,14 +709,33 @@ class JurisdictionWizard(QWidget):
         self._pack_combo.setCurrentIndex(0)
         self._pack_combo.blockSignals(False)
         self._pack_note.setText(str(path))
-        self._reload_leaves()
+        self._reload_leaves(interactive=True)
 
     def _browse_share(self) -> None:
-        start = r"\\10.0.0.249\WinSystems_SLOT\GameStar 2.0.1\Country Selectors"
+        start = ""
         for _label, path in share_shortcuts():
-            if path.is_dir():
-                start = str(path)
-                break
+            if not remote_path_available(path):
+                continue
+            try:
+                if path.is_dir():
+                    start = str(path)
+                    break
+            except OSError:
+                continue
+        self._update_share_note()
+        offline = share_offline_note()
+        if not start and offline:
+            self._set_status(offline)
+            QMessageBox.information(
+                self,
+                "Lab share",
+                offline + "\n\nPick a built-in pack, or Open file for a local .b2u / folder.",
+            )
+            return
+        if not start:
+            start = share_browse_start(
+                r"\\10.0.0.249\WinSystems_SLOT\GameStar 2.0.1\Country Selectors"
+            )
         path = QFileDialog.getExistingDirectory(self, "Lab share folder", start)
         if not path:
             return
@@ -696,7 +754,7 @@ class JurisdictionWizard(QWidget):
         self._pack_combo.setCurrentIndex(0)
         self._pack_combo.blockSignals(False)
         self._pack_note.setText(str(path))
-        self._reload_leaves()
+        self._reload_leaves(interactive=True)
 
     def _browse_live(self) -> None:
         path = QFileDialog.getExistingDirectory(
@@ -705,13 +763,26 @@ class JurisdictionWizard(QWidget):
         if path:
             self._live_edit.setText(path)
 
-    def _reload_leaves(self) -> None:
+    def _reload_leaves(self, *, interactive: bool = False) -> None:
+        """Load leaves for the selected pack.
+
+        *interactive* is True only when the user just picked a file/folder
+        themselves; then a failure is worth a dialog. Automatic selection
+        (market change, Next, Refresh list) reports inline instead — a modal
+        that pops up on its own every time step 2 opens is what the operator
+        sees as "the tool keeps complaining".
+        """
         self._leaf_combo.clear()
         self._leaves = []
         self._tool = None
         self._entry = None
         src = self._source
         if src is None:
+            return
+        if not src.authoring:
+            note = src.note or "This entry is apply-only; pick an authoring pack."
+            self._pack_note.setText(f"{src.group}\n{note}")
+            self._set_status(f"{src.label}: not usable for Create.")
             return
         try:
             if src.kind == CsSourceKind.EMBEDDED and src.embedded_id:
@@ -724,8 +795,7 @@ class JurisdictionWizard(QWidget):
             else:
                 tool, leaves = load_leaves_for_source(src)
         except (OSError, FileNotFoundError, RuntimeError, ValueError) as exc:
-            QMessageBox.warning(self, "Pack", str(exc))
-            self._set_status(str(exc))
+            self._report_pack_failure(src, str(exc), interactive=interactive)
             return
         self._tool = tool
         profile = self._profile
@@ -747,6 +817,14 @@ class JurisdictionWizard(QWidget):
         label = src.label
         self._set_status(f"Loaded {len(filtered)} leaves from {label}")
 
+    def _report_pack_failure(self, src: CsSource, why: str, *, interactive: bool) -> None:
+        hint = "Pick another pack from the list, or Open file for a local .b2u / folder."
+        text = f"Could not open {src.label}:\n{why}\n{hint}"
+        self._pack_note.setText(text)
+        self._set_status(f"Could not open {src.label} — {why.splitlines()[0]}")
+        if interactive:
+            QMessageBox.warning(self, "Pack", f"{why}\n\n{hint}")
+
     def _current_leaf(self) -> CountryLeaf | None:
         idx = self._leaf_combo.currentData()
         if idx is None or not self._leaves:
@@ -765,13 +843,19 @@ class JurisdictionWizard(QWidget):
         profile = self._profile_for_probe()
         live_text = self._live_edit.text().strip()
         live_root: Path | None = None
+        live_note = ""
         if live_text:
-            try:
-                live_root = goldclub_root_from_target(live_text)
-                if not live_root.is_dir():
+            if not remote_path_available(live_text):
+                live_note = (
+                    f"Live \\\\{unc_host(live_text)} not reachable — Live column skipped."
+                )
+            else:
+                try:
+                    live_root = goldclub_root_from_target(live_text)
+                    if not live_root.is_dir():
+                        live_root = None
+                except (OSError, ValueError):
                     live_root = None
-            except (OSError, ValueError):
-                live_root = None
         self._live_root = live_root
 
         if profile is not None:
@@ -801,9 +885,10 @@ class JurisdictionWizard(QWidget):
             )
         # de-dupe
         issues = list(dict.fromkeys(issues))
-        self._issues_lbl.setText(
-            "Consistency: " + (" · ".join(issues) if issues else "OK")
-        )
+        consistency = "Consistency: " + (" · ".join(issues) if issues else "OK")
+        if live_note:
+            consistency = f"{live_note}\n{consistency}"
+        self._issues_lbl.setText(consistency)
 
         problems_only = self._problems_only.isChecked()
         rows: list[tuple] = []
@@ -903,10 +988,11 @@ class JurisdictionWizard(QWidget):
     def _go_next(self) -> None:
         idx = self._stack.currentIndex()
         if idx == 0:
-            self._refresh_pack_list()
             self._stack.setCurrentIndex(1)
-            if self._leaf_combo.count() == 0 and self._pack_combo.currentData():
-                self._on_pack_changed()
+            # _refresh_pack_list already loads leaves for the selected pack;
+            # re-running _on_pack_changed here retried a failed decrypt and
+            # showed the same error twice.
+            self._refresh_pack_list()
         elif idx == 1:
             leaf = self._current_leaf()
             if leaf is None:
@@ -1005,6 +1091,14 @@ class JurisdictionWizard(QWidget):
                 "Export",
                 "Set Live Goldclub (step 2) to the tuned cabinet path, e.g. "
                 r"\\10.0.0.111\slot or C:\Goldclub.",
+            )
+            return
+        if not remote_path_available(live_text):
+            QMessageBox.warning(
+                self,
+                "Export",
+                f"\\\\{unc_host(live_text)} is not reachable (SMB port 445 did not answer).\n"
+                "The cabinet is off or this PC is not on the lab network.",
             )
             return
         try:

@@ -22,6 +22,13 @@ from pathlib import Path
 
 from config_scanner.cs_catalog import discover_leaves, resolve_country_selector_tool
 from config_scanner.embedded_updates import EmbeddedUpdate, load_catalog, materialize_country_tool
+from config_scanner.net_gate import (
+    clear_reachability_cache,
+    offline_note,
+    remote_path_available,
+    unc_host,
+    unreachable_hosts,
+)
 
 _SHARE_ROOT = Path("//10.0.0.249/WinSystems_SLOT")
 _SHARE_GS201 = _SHARE_ROOT / "GameStar 2.0.1/Country Selectors"
@@ -150,17 +157,73 @@ def country_matches_profile(profile_country: str, source_country: str) -> bool:
     return a == b
 
 
+NOT_SHIPPED_NOTE = (
+    "Not shipped in this build: no bundled .b2u and no staged tree. "
+    "Copy embedded_updates\\staged\\{id}\\CountrySelectorTool beside ConfigScanner.exe "
+    "(or the official .b2u) to use it offline."
+)
+
+
+def embedded_entry_has_payload(entry: EmbeddedUpdate) -> bool:
+    """True when the catalog entry can actually be opened on this PC."""
+    try:
+        return entry.staged_tool_path is not None or entry.b2u_path is not None
+    except OSError:
+        return False
+
+
 def source_is_materializable(source: CsSource) -> bool:
-    """True when ``resolve_cs_source`` can open this entry (embedded has no path)."""
+    """True when ``resolve_cs_source`` can open this entry without a modal failure.
+
+    Embedded entries need a staged tree or bundled ``.b2u`` on this PC; share
+    paths need a reachable host *and* an existing file/folder.
+    """
     if source.kind == CsSourceKind.EMBEDDED:
-        return bool(source.embedded_id)
+        if not source.embedded_id:
+            return False
+        from config_scanner.embedded_updates import find_embedded_update
+
+        entry = find_embedded_update(source.embedded_id)
+        return entry is not None and embedded_entry_has_payload(entry)
     path = source.path
     if path is None:
+        return False
+    if not remote_path_available(path):
         return False
     try:
         return path.is_file() or path.is_dir()
     except OSError:
         return False
+
+
+def share_hosts() -> tuple[str, ...]:
+    """Hosts the CS source catalog may touch (for reachability notes)."""
+    hosts: list[str] = []
+    for root in (_SHARE_ROOT, _SHARE_USB91_B2U):
+        host = unc_host(root)
+        if host and host not in hosts:
+            hosts.append(host)
+    return tuple(hosts)
+
+
+def share_offline_note() -> str:
+    """Inline note when a lab share host was probed and is down ('' when all up)."""
+    known = {h.casefold() for h in share_hosts()}
+    down = [h for h in unreachable_hosts() if h.casefold() in known]
+    return offline_note(down)
+
+
+def share_browse_start(preferred: str | Path, fallback: str = "") -> str:
+    """Start folder for a file dialog: *preferred* only when its host answers.
+
+    A native Windows file dialog pointed at a dead UNC path blocks the GUI
+    thread while the redirector times out, so fall back to a local folder.
+    """
+    if remote_path_available(preferred):
+        return str(preferred)
+    if fallback:
+        return fallback
+    return str(Path.home())
 
 
 def pick_cs_source_for_export(
@@ -212,9 +275,12 @@ def companion_share_shortcuts() -> tuple[tuple[str, Path], ...]:
 def clear_share_scan_cache() -> None:
     global _SHARE_SCAN_CACHE
     _SHARE_SCAN_CACHE = None
+    clear_reachability_cache()
 
 
 def _listdir(root: Path) -> list[Path]:
+    if not remote_path_available(root):
+        return []
     try:
         if not root.is_dir():
             return []
@@ -559,8 +625,21 @@ _CURATED_SHARE: tuple[CsSource, ...] = (
 
 
 def _embedded_sources() -> list[CsSource]:
+    """Catalog entries; ones with no payload on this PC are listed but not authoring.
+
+    The catalog names every official pack, but the exe only bundles the
+    ``.b2u`` files and staged trees live beside the exe on USB. An entry with
+    neither (e.g. PR-06 on a bare install) used to be *recommended* and then
+    failed with a modal "no staged tree or .b2u" the moment the wizard opened
+    step 2. Mark it so the wizard greys it out and skips it.
+    """
     out: list[CsSource] = []
     for entry in load_catalog():
+        shipped = embedded_entry_has_payload(entry)
+        note = entry.readme or ""
+        if not shipped:
+            missing = NOT_SHIPPED_NOTE.format(id=entry.id)
+            note = f"{missing}\n{note}" if note else missing
         out.append(
             CsSource(
                 id=f"embedded-{entry.id}",
@@ -569,11 +648,20 @@ def _embedded_sources() -> list[CsSource]:
                 gamestar_line=entry.gamestar_version or "embedded",
                 kind=CsSourceKind.EMBEDDED,
                 embedded_id=entry.id,
-                authoring=True,
-                note=entry.readme or "",
+                authoring=shipped,
+                note=note,
             )
         )
     return out
+
+
+def source_is_not_shipped(source: CsSource) -> bool:
+    """True for a catalog entry whose payload is missing on this PC."""
+    return (
+        source.kind == CsSourceKind.EMBEDDED
+        and not source.authoring
+        and source.note.startswith("Not shipped in this build")
+    )
 
 
 def list_cs_sources(
@@ -605,8 +693,16 @@ def list_cs_sources(
     for src in _embedded_sources():
         _add(src)
     for src in _CURATED_SHARE:
-        if src.path is None or src.path.is_file() or src.path.is_dir():
+        if src.path is None:
             _add(src)
+            continue
+        if not remote_path_available(src.path):
+            continue
+        try:
+            if src.path.is_file() or src.path.is_dir():
+                _add(src)
+        except OSError:
+            continue
     if include_share_scan:
         for src in _scanned_share_sources():
             _add(src)
@@ -636,6 +732,12 @@ def materialize_cs_path(path: Path) -> Path:
     returns a tool with ``data/`` or raises ``FileNotFoundError`` / ``ValueError``.
     """
     path = Path(path)
+    host = unc_host(path)
+    if host and not remote_path_available(path):
+        raise FileNotFoundError(
+            f"\\\\{host} is not reachable (SMB port 445 did not answer) — cannot open {path.name}. "
+            "Connect to the lab network or use a built-in pack."
+        )
     if not path.exists():
         raise FileNotFoundError(f"not found: {path}")
 

@@ -145,7 +145,7 @@ def test_default_live_target_prefers_local_goldclub(tmp_path: Path) -> None:
         local_candidates=(str(gold),),
         remote=r"\\10.0.0.111\slot",
     )
-    assert Path(chosen) == gold
+    assert str(chosen).replace("\\", "/").rstrip("/") == str(gold).replace("\\", "/").rstrip("/")
 
 
 def test_initial_live_cabinet_target_saved_wins_over_local() -> None:
@@ -183,13 +183,26 @@ def test_merge_live_target_history_newest_first_deduped() -> None:
     assert merge_live_target_history("", ["  ", r"C:\Goldclub"]) == [r"C:\Goldclub"]
 
 
-def test_default_live_target_falls_back_to_111_share(tmp_path: Path) -> None:
+def test_default_live_target_empty_when_no_local(tmp_path: Path) -> None:
     missing = tmp_path / "no-goldclub"
     chosen = default_live_cabinet_target(
         local_candidates=(str(missing),),
-        remote=DEFAULT_REMOTE_LIVE_TARGET,
+        remote="",
     )
-    assert chosen == DEFAULT_REMOTE_LIVE_TARGET
+    assert chosen == ""
+
+
+def test_live_targets_for_typed_ip() -> None:
+    from config_scanner.live_push import live_targets_for_ip, resolve_live_target_from_user
+
+    assert live_targets_for_ip("10.0.0.98")[0] == r"\\10.0.0.98\c$\Goldclub"
+    assert r"\\10.0.0.98\slot" in live_targets_for_ip("10.0.0.98")
+    assert live_targets_for_ip(r"\\10.0.0.98\slot") == (r"\\10.0.0.98\slot",)
+    assert resolve_live_target_from_user("10.0.0.76", probe=False) == (
+        r"\\10.0.0.76\c$\Goldclub"
+    )
+    assert live_targets_for_ip("") == ()
+    assert live_targets_for_ip("not-an-ip") == ()
 
 
 def test_this_pc_live_target_none_when_not_a_cabinet(tmp_path: Path) -> None:

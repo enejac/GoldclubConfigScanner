@@ -327,15 +327,8 @@ def prefer_local_scan_target(target: str) -> str:
 # Removable / game-image drives probed before the full alphabet sweep (G: is common on cabinets).
 _PRIORITY_GAME_DRIVES = ("G:", "D:", "E:", "F:", "H:", "C:")
 
-# Lab cabinets probed over UNC when no local game image is mounted.
-_LAB_REMOTE_GAME_ROOTS = (
-    r"\\10.0.0.90\c$\Goldclub",
-    r"\\10.0.0.90\c$\Goldclub\slot",
-    r"\\10.0.0.90\d$\Goldclub",
-    r"\\10.0.0.90\d$\Goldclub\slot",
-    r"\\10.0.0.111\slot",
-    r"\\10.0.0.111\c$\Goldclub",
-)
+# Remote UNCs are typed by the operator — do not probe hardcoded lab IPs.
+_LAB_REMOTE_GAME_ROOTS: tuple[str, ...] = ()
 
 # Maintenance RAM-clear scripts — secondary roulette USB marker when BuildVersion.txt is absent.
 _RAMCLEAR_SCRIPT_REL_PATHS = (

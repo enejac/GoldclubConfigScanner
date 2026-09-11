@@ -1756,7 +1756,8 @@ def _local_live_candidates() -> tuple[str, ...]:
     Order: unlocked ``G:`` (BitLocker game volume), ``C:\\Goldclub`` and its
     ``slot`` child, then ``D:``..``H:`` USB/image roots and their ``Goldclub``
     folders. Bare drive roots are probed with a short timeout so a locked or
-    sleeping volume never blocks the UI.
+    sleeping volume never blocks the UI. Lab UNCs are never listed here —
+    the operator types an IP only when no local tree exists.
     """
     out: list[str] = [r"G:", r"C:\Goldclub", r"C:\goldclub", r"C:\Goldclub\slot"]
     for drive in ("D:", "E:", "F:", "H:"):
@@ -1771,8 +1772,9 @@ DEFAULT_REMOTE_LIVE_TARGET = r"\\10.0.0.111\slot"
 THIS_PC_GOLDCLUB = r"C:\Goldclub"
 THIS_PC_MISSING_STATUS = (
     "This PC has no Goldclub tree (G:, C:\\Goldclub, D:-H: Goldclub). "
-    "Pick a lab cabinet or Browse."
+    "Type a cabinet IP or Browse."
 )
+_IPV4_HOST_RE = re.compile(r"^(?:\d{1,3}\.){3}\d{1,3}$")
 
 
 def _exists_quick(path: Path, *, timeout_sec: float = 0.3) -> bool:
@@ -1849,6 +1851,14 @@ def this_pc_live_target(
         if looks_like_goldclub_root(root):
             return prefer_local_scan_target(str(root))
     return None
+
+
+def detect_local_live_cabinet(
+    *,
+    local_candidates: tuple[str, ...] | None = None,
+) -> str:
+    """Local Goldclub path, or empty when this PC has no tree."""
+    return this_pc_live_target(local_candidates=local_candidates) or ""
 
 
 def is_default_remote_live_target(raw: str) -> bool:
@@ -1928,25 +1938,72 @@ def merge_live_target_history(
     return out
 
 
+def live_targets_for_ip(raw: str) -> tuple[str, ...]:
+    """UNC Goldclub roots for a typed cabinet IP or pasted share."""
+    from config_scanner.build_version import normalize_scan_target
+
+    text = (raw or "").strip().strip('"')
+    if not text:
+        return ()
+    if text.startswith("\\\\"):
+        return (normalize_scan_target(text),)
+    first, sep, rest = text.partition("\\")
+    if _IPV4_HOST_RE.fullmatch(first) and sep and rest.strip():
+        return (normalize_scan_target(rf"\\{first}\{rest.strip()}"),)
+    host = first.strip()
+    if not _IPV4_HOST_RE.fullmatch(host):
+        return ()
+    return (
+        rf"\\{host}\c$\Goldclub",
+        rf"\\{host}\slot",
+        rf"\\{host}\c$\Goldclub\slot",
+    )
+
+
+def resolve_live_target_from_user(
+    raw: str,
+    *,
+    probe: bool = True,
+) -> str:
+    """Local path, pasted UNC, or first reachable share for a typed IP."""
+    text = (raw or "").strip().strip('"')
+    if not text:
+        return ""
+    if not text.startswith("\\\\") and not _IPV4_HOST_RE.fullmatch(text.split("\\", 1)[0]):
+        return text
+    candidates = live_targets_for_ip(text)
+    if not candidates:
+        return text
+    if not probe:
+        return candidates[0]
+    for cand in candidates:
+        try:
+            if _exists_quick(Path(cand), timeout_sec=1.2) and _local_goldclub_ready(cand):
+                return cand
+        except (OSError, TimeoutError, ValueError):
+            continue
+    return candidates[0]
+
+
 def default_live_cabinet_target(
     *,
     local_candidates: tuple[str, ...] | None = None,
-    remote: str = DEFAULT_REMOTE_LIVE_TARGET,
+    remote: str = "",
 ) -> str:
-    """Pick a Goldclub tree this machine can see without a drive-letter sweep.
+    """Pick a local Goldclub tree. Empty when none — do not guess a lab IP.
 
-    On a cabinet the exe prefers unlocked ``G:`` then ``C:\\Goldclub``. On a
-    workstation those folders are absent, so callers that still want a lab
-    share get ``remote`` (shipped ``\\\\10.0.0.111\\slot``). Live Push itself
-    uses :func:`initial_live_cabinet_target` instead — empty until the user
-    types a path or This PC finds a local tree.
+    ``prefer_local_scan_target`` still folds a loopback admin share back to a
+    drive letter when this PC *is* the host. Pass *remote* only when the
+    caller already has an operator-typed share. Live Push uses
+    :func:`initial_live_cabinet_target` so a remembered UNC wins over This PC.
     """
     from config_scanner.build_version import prefer_local_scan_target
 
     local = this_pc_live_target(local_candidates=local_candidates)
     if local:
         return local
-    return prefer_local_scan_target(remote)
+    text = (remote or "").strip()
+    return prefer_local_scan_target(text) if text else ""
 
 
 def load_error_dialog_text(error: str | None) -> str:

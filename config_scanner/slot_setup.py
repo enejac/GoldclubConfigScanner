@@ -3376,6 +3376,7 @@ def build_config_pack(
         jsrc = live / _JURISDICTION_REL
         create_pack = not dedicated_magicwheel_file_exists(live)
         if jsrc.is_file():
+            create_pack = not dedicated_magicwheel_file_exists(live)
             _stage(
                 _JURISDICTION_REL,
                 lambda s, d, denom=single_denom, create=create_pack: (
