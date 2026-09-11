@@ -132,8 +132,10 @@ def prepare_cabinet_for_seamless_transfer(
     if ok:
         detail = f"{detail}; {clear_note}"
     elif cleared:
-        detail = f"{clear_note}; clock script: {detail}"
-        ok = True
+        detail = (
+            f"{clear_note}; clock script failed: {detail}. "
+            "Trial tokens were cleared but the cabinet clock was not rolled back."
+        )
     return ok, detail
 
 

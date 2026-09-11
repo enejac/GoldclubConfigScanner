@@ -1117,6 +1117,8 @@ def test_is_debug_onehand_version_token() -> None:
     assert is_debug_onehand_version("Debug")
     assert is_debug_onehand_version("DEBUG")
     assert is_debug_onehand_version("2.0.1 Debug")
+    assert is_debug_onehand_version("debug-sku")
+    assert not is_debug_onehand_version("debugger")
     assert not is_debug_onehand_version("2.0.1")
     assert not is_debug_onehand_version("")
     assert not is_debug_onehand_version(None)
@@ -1146,12 +1148,28 @@ def test_is_onehand_debug_build_ignores_earlier_numeric_then_finds_debug(
     exe.write_bytes(
         b"MZ"
         + "ProductVersion\0".encode("utf-16le")
-        + "2.0.1+RC2\0".encode("utf-16le")
+        + "3.0.0.0+RC2+2667F2\0".encode("utf-16le")
         + b"\x00" * (5 * 1024 * 1024)
         + "FileVersion\0".encode("utf-16le")
         + "Debug\0".encode("utf-16le")
     )
     assert is_onehand_debug_build(gold) is True
+
+
+def test_is_onehand_debug_build_v3_rc_hex_without_debug_word(tmp_path: Path) -> None:
+    from config_scanner.slot_setup import is_onehand_debug_build
+
+    gold = _fake_goldclub(tmp_path)
+    exe = gold / "slot" / "OneHand.exe"
+    exe.parent.mkdir(parents=True, exist_ok=True)
+    exe.write_bytes(
+        b"MZ"
+        + "ProductVersion\0".encode("utf-16le")
+        + "3.0.0.0+RC2+2667F2\0".encode("utf-16le")
+        + "AssemblyConfiguration\0".encode("utf-16le")
+        + "Release\0".encode("utf-16le")
+    )
+    assert is_onehand_debug_build(gold) is False
 
 
 def test_is_onehand_debug_build_from_filename(tmp_path: Path) -> None:

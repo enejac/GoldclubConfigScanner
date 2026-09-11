@@ -109,7 +109,8 @@ def test_simple_home_wiring() -> None:
     assert "_B2U" in home
     assert "Live push" not in window or 'tabs.addTab(LivePushPanel' not in window
     assert "Country packs" not in window or 'tabs.addTab(CountryPackAuthorPanel' not in window
-    assert "Snapshots, EGM pack authoring" in window
+    assert "Snapshots, EGM pack authoring" not in window
+    assert "Snapshots (country CS export is on home" in window
     assert "--snapshots" in app
     assert "--restore-b2u" in app
     assert "snapshots_mode" in window or "_snapshots_mode" in window
@@ -140,21 +141,32 @@ def test_jurisdiction_wizard_module_imports() -> None:
     assert "recommend_cs_source" in wiz
 
 
-def test_jurisdiction_wizard_constructs() -> None:
+def test_jurisdiction_wizard_constructs(monkeypatch) -> None:
+    import pytest
+
+    pytest.importorskip("PySide6")
     from PySide6.QtWidgets import QApplication, QGroupBox
 
     from gui.jurisdiction_wizard import JurisdictionWizard
     from gui.live_push_panel import LivePushPanel
+
+    monkeypatch.setattr(
+        "gui.live_push_panel.SettingsManager.get_live_push_target", lambda: ""
+    )
+    monkeypatch.setattr(
+        "gui.live_push_panel.SettingsManager.get_live_push_recent", lambda: []
+    )
+    monkeypatch.setattr("gui.live_push_panel.this_pc_live_target", lambda: None)
 
     QApplication.instance() or QApplication([])
     wizard = JurisdictionWizard()
     assert wizard._status is not None
     assert wizard._stack.count() == 4
     panel = LivePushPanel(autoload=False)
-    from config_scanner.live_push import default_live_cabinet_target
     from gui.live_push_panel import _combo_code
 
-    assert panel._path.text() == default_live_cabinet_target()
+    assert panel._path.text() == ""
+    assert panel._cabinet.isEditable()
     assert panel._commit.text() == "Apply & restart game"
     assert panel._commit.isEnabled()
     panel._restart.setChecked(False)
@@ -176,3 +188,38 @@ def test_jurisdiction_wizard_constructs() -> None:
     assert _combo_code(panel._currency) == "TTD"
     panel._dallas.setCurrentIndex(0)
     assert _combo_code(panel._dallas) == ""
+
+
+def test_advanced_view_is_snapshots_only(monkeypatch) -> None:
+    """Advanced holds the Snapshots widget alone: no EGM setup / Companion / Ship tabs."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication, QTabWidget
+
+    from config_manager import SettingsManager
+    from gui.config_scanner_tab import ConfigScannerTabWidget
+    from gui.config_scanner_window import ConfigScannerWindow
+
+    app = QApplication.instance() or QApplication([])
+    monkeypatch.setattr(
+        SettingsManager, "restore_config_scanner_window_geometry", lambda _w: "normal"
+    )
+    win = ConfigScannerWindow()
+    win.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    win.show()
+    app.processEvents()
+    win._show_advanced()
+    app.processEvents()
+
+    advanced = win._advanced
+    assert advanced is not None
+    assert win._root_stack.currentWidget() is advanced
+    assert advanced.findChildren(QTabWidget) == []
+    assert isinstance(win._scanner, ConfigScannerTabWidget)
+    assert win._scanner.parentWidget() is advanced
+    from gui.slot_setup_panel import SlotSetupPanel
+    from gui.companion_pack_panel import CompanionPackAuthorPanel
+    from gui.ship_panel import ShipPanel
+
+    for cls in (SlotSetupPanel, CompanionPackAuthorPanel, ShipPanel):
+        assert advanced.findChildren(cls) == [], f"{cls.__name__} must not be in Advanced"
+    win.close()

@@ -36,7 +36,7 @@ class ConfigScannerEmitter(QObject):
     apply_file_finished = Signal(bool, object, str)
     repairs_diagnosed = Signal(bool, object, str)
     repairs_applied = Signal(bool, object, str)
-    target_validated = Signal(str, bool)  # path, valid
+    target_validated = Signal(str, bool, int)  # path, valid, seq
 
 
 @dataclass(frozen=True)
@@ -90,10 +90,10 @@ class _StartupAutoDetectRunnable(QRunnable):
 
     def run(self) -> None:
         if self._saved_target and self._service.is_scan_target_valid(self._saved_target):
-            self._emitter.target_validated.emit(self._saved_target, True)
+            self._emitter.target_validated.emit(self._saved_target, True, -1)
             return
         if self._saved_target:
-            self._emitter.target_validated.emit(self._saved_target, False)
+            self._emitter.target_validated.emit(self._saved_target, False, -1)
         try:
             result = self._service.auto_detect_repo(self._saved_target or None)
             self._emitter.auto_detect_finished.emit(True, result, "", True)
@@ -111,16 +111,18 @@ class _ValidateTargetRunnable(QRunnable):
         service: ConfigScannerService,
         raw_target: str,
         emitter: ConfigScannerEmitter,
+        seq: int = -1,
     ) -> None:
         super().__init__()
         self.setAutoDelete(True)
         self._service = service
         self._raw_target = raw_target.strip()
         self._emitter = emitter
+        self._seq = seq
 
     def run(self) -> None:
         valid = bool(self._raw_target) and self._service.is_scan_target_valid(self._raw_target)
-        self._emitter.target_validated.emit(self._raw_target, valid)
+        self._emitter.target_validated.emit(self._raw_target, valid, self._seq)
 
 
 class _PrepareScanTargetRunnable(QRunnable):
@@ -546,8 +548,10 @@ def schedule_validate_scan_target(
     service: ConfigScannerService,
     raw_target: str,
     emitter: ConfigScannerEmitter,
+    *,
+    seq: int = -1,
 ) -> None:
-    pool.start(_ValidateTargetRunnable(service, raw_target, emitter))
+    pool.start(_ValidateTargetRunnable(service, raw_target, emitter, seq=seq))
 
 
 def schedule_prepare_scan_target(

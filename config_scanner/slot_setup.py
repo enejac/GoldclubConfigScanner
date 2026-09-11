@@ -23,6 +23,7 @@ from config_scanner.machine_identity import (
     postprocess_jurisdiction_xml_bytes,
 )
 from config_scanner.write_scope import _SERIALPORT_DIR_RE
+from network.lab_access import safe_join_under
 
 RECIPE_VERSION = 2
 
@@ -1540,7 +1541,7 @@ def is_debug_onehand_version(text: str | None) -> bool:
     folded = (text or "").strip().casefold()
     if not folded:
         return False
-    if folded == "debug" or folded.startswith("debug"):
+    if folded == "debug" or folded.startswith("debug ") or folded.startswith("debug-"):
         return True
     return bool(_DEBUG_VERSION_TOKEN.search(folded))
 
@@ -1565,7 +1566,21 @@ def _utf16_string_after(blob: bytes, key: str) -> str:
 
 
 def is_onehand_debug_build(goldclub: Path) -> bool:
-    """True when live ``OneHand.exe`` is the Debug SKU (no production licence)."""
+    """True when live ``OneHand.exe`` is the Debug SKU (no production licence).
+
+    Prefers VERSIONINFO ``Debug`` tokens, then the latest SlotLog
+    ``OneHand.MainFrm - DB`` line. Numbered FileVersion/ProductVersion is
+    Release when that log line is absent. A cabinet that has never booted
+    still classifies from the exe alone.
+    """
+    try:
+        from config_scanner.build_version import detect_onehand_build
+
+        info = detect_onehand_build(goldclub)
+    except Exception:
+        info = None
+    if info is not None:
+        return (info.configuration or "").strip().casefold() == "debug"
     path = onehand_exe_path(goldclub)
     if path is None:
         return False
@@ -1577,48 +1592,9 @@ def is_onehand_debug_build(goldclub: Path) -> bool:
     try:
         from config_scanner.build_version import onehand_exe_is_debug_sku
 
-        if onehand_exe_is_debug_sku(path):
-            return True
+        return bool(onehand_exe_is_debug_sku(path))
     except Exception:
-        pass
-    try:
-        from config_scanner.build_version import _extract_version_from_onehand_exe
-
-        info = _extract_version_from_onehand_exe(path)
-    except Exception:
-        info = None
-    if info is not None:
-        if getattr(info, "is_debug", None) is True:
-            return True
-        for label in (
-            info.product_version,
-            info.file_version,
-            info.product_name,
-            info.display_version,
-        ):
-            if is_debug_onehand_version(label):
-                return True
-    try:
-        from config_scanner.build_version import (
-            _all_utf16_values_after,
-            _read_version_scan_bytes,
-        )
-
-        blob = _read_version_scan_bytes(path)
-        for key in ("ProductVersion", "FileVersion", "ProductName", "FileDescription"):
-            if any(is_debug_onehand_version(value) for value in _all_utf16_values_after(blob, key)):
-                return True
         return False
-    except Exception:
-        pass
-    try:
-        blob = path.read_bytes()[: 4 * 1024 * 1024]
-    except OSError:
-        return False
-    for key in ("ProductVersion", "FileVersion", "ProductName", "FileDescription"):
-        if is_debug_onehand_version(_utf16_string_after(blob, key)):
-            return True
-    return False
 
 
 def licence_push_default_checked(
@@ -2026,16 +2002,21 @@ def patch_aurum_setup_placeholders(
     tree = _parse_xml(src)
     root = tree.getroot()
     if template:
-        old_host = ""
+        replacements: list[tuple[str, str]] = []
         for el in root.iter():
             if _local(el.tag) == "NetworkHostName":
                 old_host = (el.text or "").strip()
+                if old_host and old_host != template:
+                    replacements.append((old_host, template))
                 el.text = template
-        if old_host:
+        if replacements:
             for el in root.iter():
                 local = _local(el.tag)
                 if local in ("ServiceURI", "MessengerURI") and el.text:
-                    el.text = el.text.replace(old_host, template)
+                    text = el.text
+                    for old_host, new_host in replacements:
+                        text = text.replace(old_host, new_host)
+                    el.text = text
     if currency:
         updated_code = False
         updated_id = False
@@ -2908,16 +2889,27 @@ def recipe_from_jurisdiction_profile(
             pass
 
     credit = list(denoms)
+    credit_explicit = False
     if expected.get("denom.credit_rate_values"):
         try:
             credit = [int(x) for x in expected["denom.credit_rate_values"]]
+            credit_explicit = True
         except (TypeError, ValueError):
             pass
-    # Preferred single denom stays first in the recipe list when both are set.
+    elif getattr(profile, "allowed_denoms", None):
+        try:
+            credit = [int(x) for x in profile.allowed_denoms]
+            credit_explicit = True
+        except (TypeError, ValueError):
+            pass
+    # Preferred single denom stays first; do not shrink an explicit credit table.
     if denom is not None and denoms:
         preferred = int(denom)
         if preferred in denoms:
             denoms = [preferred] + [d for d in denoms if d != preferred]
+        if credit_explicit and preferred in credit:
+            credit = [preferred] + [c for c in credit if c != preferred]
+        elif not credit_explicit:
             credit = list(denoms)
 
     bet_mults = list(getattr(profile, "allowed_bet_multipliers", []) or [])
@@ -3384,6 +3376,7 @@ def build_config_pack(
         or single_denom is not None
     ):
         jsrc = live / _JURISDICTION_REL
+        create_pack = not dedicated_magicwheel_file_exists(live)
         if jsrc.is_file():
             create_pack = not dedicated_magicwheel_file_exists(live)
             _stage(
@@ -3399,6 +3392,22 @@ def build_config_pack(
                     )
                 ),
             )
+        elif single_denom is not None or recipe.jurisdiction.tag:
+            dest_j = pack_dir / _JURISDICTION_REL
+            dest_j.parent.mkdir(parents=True, exist_ok=True)
+            dest_j.write_bytes(
+                b'<?xml version="1.0" encoding="utf-8"?>\n'
+                b"<JurisdictionSettings>\n</JurisdictionSettings>\n"
+            )
+            patch_jurisdiction_config(
+                dest_j,
+                dest_j,
+                recipe.jurisdiction,
+                single_denomination=single_denom,
+                play_limits=pl,
+                create_pack_fields=create_pack,
+            )
+            written.append(normalize_rel_path(_JURISDICTION_REL))
 
     if _want("magicwheel") and want_jur_mw:
         for rel in iter_magicwheel_setting_rels(live):
@@ -3563,7 +3572,11 @@ def apply_config_pack(pack_dir: Path, dest_goldclub: Path) -> ApplyResult:
         if not src.is_file():
             errors.append(f"{norm}: missing in pack")
             continue
-        dest = dest_root / norm
+        try:
+            dest = safe_join_under(dest_root, norm)
+        except ValueError as exc:
+            errors.append(f"{norm}: {exc}")
+            continue
         try:
             _safe_copy_with_identity(src, dest, norm)
             written.append(norm)

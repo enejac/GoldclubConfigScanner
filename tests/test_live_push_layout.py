@@ -40,6 +40,21 @@ def qt_app() -> QApplication:
     return QApplication.instance() or QApplication([])
 
 
+@pytest.fixture(autouse=True)
+def _empty_live_push_memory(monkeypatch: pytest.MonkeyPatch):
+    """Layout tests must not pick up a leftover remembered cabinet path."""
+    monkeypatch.setattr(
+        "gui.live_push_panel.SettingsManager.get_live_push_target", lambda: ""
+    )
+    monkeypatch.setattr(
+        "gui.live_push_panel.SettingsManager.get_live_push_recent", lambda: []
+    )
+    monkeypatch.setattr(
+        "gui.live_push_panel.SettingsManager.remember_live_push_target",
+        lambda target, limit=8: [str(target).strip()] if str(target).strip() else [],
+    )
+
+
 def _board(qt_app: QApplication) -> _ColumnBoard:
     board = _ColumnBoard()
     for title, weight in PANEL_GROUPS:
@@ -690,3 +705,246 @@ def test_create_market_writes_user_sidecar(
     assert panel._preset.currentData() == "lab_cop_live"
     assert "Created market" in panel._status.text()
 
+
+def test_this_pc_no_local_tree_does_not_open_load_dialog(qt_app, monkeypatch) -> None:
+    from config_scanner.live_push import THIS_PC_GOLDCLUB, THIS_PC_MISSING_STATUS
+    from gui.live_push_panel import LivePushPanel
+
+    seen: list[str] = []
+    monkeypatch.setattr("gui.live_push_panel.this_pc_live_target", lambda: None)
+    monkeypatch.setattr(
+        "gui.live_push_panel.LivePushPanel._warn_load",
+        lambda self, text: seen.append(text),
+    )
+    monkeypatch.setattr(
+        "gui.live_push_panel.LivePushPanel._load",
+        lambda self: seen.append("load"),
+    )
+    panel = LivePushPanel(autoload=False)
+    panel.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    panel.show()
+    qt_app.processEvents()
+    panel._pick_this_pc()
+    assert seen == []
+    assert panel._path.text() == THIS_PC_GOLDCLUB
+    assert panel._status.text() == THIS_PC_MISSING_STATUS
+
+
+def test_this_pc_loads_when_local_goldclub_exists(qt_app, monkeypatch, tmp_path) -> None:
+    from gui.live_push_panel import LivePushPanel
+    from tests.test_slot_setup import _fake_goldclub
+
+    gold = _fake_goldclub(tmp_path)
+    loaded: list[str] = []
+    monkeypatch.setattr(
+        "gui.live_push_panel.this_pc_live_target", lambda: str(gold)
+    )
+    monkeypatch.setattr(
+        "gui.live_push_panel.LivePushPanel._load",
+        lambda self: loaded.append(self._path.text()),
+    )
+    panel = LivePushPanel(autoload=False)
+    panel.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    panel.show()
+    qt_app.processEvents()
+    panel._pick_this_pc()
+    assert loaded == [str(gold)]
+
+
+
+def test_default_111_autoload_uses_local_goldclub_and_shows_it(
+    qt_app, monkeypatch, tmp_path
+) -> None:
+    """Field defaults to .111; the loader must still pick a local tree first."""
+    from PySide6.QtCore import QThreadPool
+
+    from config_scanner import live_push
+    from config_scanner.live_push import DEFAULT_REMOTE_LIVE_TARGET
+    from gui.live_push_panel import LivePushPanel
+    from tests.test_slot_setup import _fake_goldclub
+
+    gold = _fake_goldclub(tmp_path / "gold")
+    warned: list[str] = []
+    monkeypatch.setattr(
+        "gui.live_push_panel.LivePushPanel._warn_load",
+        lambda self, text: warned.append(text),
+    )
+    panel = LivePushPanel(autoload=False)
+    panel.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    panel.show()
+    qt_app.processEvents()
+    # Simulate a workstation default, then a cabinet-like local tree appearing.
+    panel._path.setText(DEFAULT_REMOTE_LIVE_TARGET)
+    monkeypatch.setattr(live_push, "_LOCAL_LIVE_CANDIDATES", (str(gold),))
+
+    panel._load()
+    for _ in range(200):
+        qt_app.processEvents()
+        if not panel._busy and panel._goldclub is not None:
+            break
+        QThreadPool.globalInstance().waitForDone(50)
+
+    assert panel._goldclub == gold
+    assert Path(panel._path.text()) == gold
+    assert warned == []
+
+
+def test_explicit_cabinet_path_is_not_swapped_for_local(
+    qt_app, monkeypatch, tmp_path
+) -> None:
+    from PySide6.QtCore import QThreadPool
+
+    from config_scanner import live_push
+    from gui.live_push_panel import LivePushPanel
+    from tests.test_slot_setup import _fake_goldclub
+
+    local = _fake_goldclub(tmp_path / "local")
+    explicit = _fake_goldclub(tmp_path / "explicit")
+    monkeypatch.setattr(live_push, "_LOCAL_LIVE_CANDIDATES", (str(local),))
+    panel = LivePushPanel(autoload=False)
+    panel.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    panel.show()
+    qt_app.processEvents()
+
+    panel._pick_cabinet(str(explicit))
+    for _ in range(200):
+        qt_app.processEvents()
+        if not panel._busy and panel._goldclub is not None:
+            break
+        QThreadPool.globalInstance().waitForDone(50)
+
+    assert panel._goldclub == explicit
+    assert Path(panel._path.text()) == explicit
+
+
+def test_live_push_has_no_hardcoded_ip_chips(qt_app) -> None:
+    from PySide6.QtWidgets import QPushButton
+
+    from gui.live_push_panel import LivePushPanel
+
+    panel = LivePushPanel(autoload=False)
+    panel.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    panel.show()
+    qt_app.processEvents()
+    labels = {btn.text() for btn in panel.findChildren(QPushButton)}
+    assert "This PC" in labels
+    assert "10.0.0.90" not in labels
+    assert "10.0.0.98" not in labels
+    assert "10.0.0.111" not in labels
+    assert panel._cabinet.isEditable()
+    assert panel._path.placeholderText() == r"\\host\slot  or  C:\Goldclub"
+
+
+def test_autoload_skips_when_cabinet_path_empty(qt_app, monkeypatch) -> None:
+    from gui.live_push_panel import LivePushPanel
+
+    loaded: list[str] = []
+    monkeypatch.setattr("gui.live_push_panel.this_pc_live_target", lambda: None)
+    monkeypatch.setattr(
+        "gui.live_push_panel.LivePushPanel._load",
+        lambda self: loaded.append("load"),
+    )
+    panel = LivePushPanel(autoload=False)
+    panel.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    panel.show()
+    qt_app.processEvents()
+    assert panel._path.text() == ""
+    panel._autoload()
+    assert loaded == []
+    assert "remembered" in panel._status.text().casefold()
+
+
+def test_single_cabinet_field_no_duplicate_ip_row(qt_app) -> None:
+    """One Cabinet field. No second 'Cabinet IP' row, no Connect, no flat link."""
+    from PySide6.QtWidgets import QLabel, QLineEdit, QPushButton
+
+    from gui.live_push_panel import LivePushPanel
+
+    panel = LivePushPanel(autoload=False)
+    panel.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    panel.show()
+    qt_app.processEvents()
+    labels = {lbl.text() for lbl in panel.findChildren(QLabel)}
+    assert "Cabinet:" in labels
+    assert "Cabinet IP:" not in labels
+    buttons = {btn.text() for btn in panel.findChildren(QPushButton)}
+    assert "Connect" not in buttons
+    assert "Use a cabinet IP instead" not in buttons
+    edits = [e for e in panel.findChildren(QLineEdit) if e.placeholderText() == "10.0.0.x"]
+    assert edits == []
+    for attr in ("_ip", "_ip_row", "_ip_connect", "_use_remote_btn"):
+        assert not hasattr(panel, attr)
+
+
+def test_no_local_no_saved_prefills_lab_ip_with_last_octet_selected(
+    qt_app, monkeypatch
+) -> None:
+    from gui.live_push_panel import LivePushPanel
+
+    monkeypatch.setattr("gui.live_push_panel.detect_local_live_cabinet", lambda: "")
+    monkeypatch.setattr("gui.live_push_panel.this_pc_live_target", lambda: None)
+    loaded: list[str] = []
+    monkeypatch.setattr(
+        "gui.live_push_panel.LivePushPanel._load", lambda self: loaded.append("load")
+    )
+    panel = LivePushPanel(autoload=False)
+    panel.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    panel.show()
+    qt_app.processEvents()
+
+    panel._finish_detect()
+    qt_app.processEvents()
+
+    assert panel._path.text() == "10.0.0.111"
+    assert panel._path.selectedText() == "111", "only the last octet should be selected"
+    assert panel._path.selectionStart() == len("10.0.0.")
+    assert loaded == [], "prefill must not auto-load a guessed cabinet"
+    assert "last IP digits" in panel._detect_status.text()
+
+
+def test_cabinet_dropdown_lists_detected_fleet_ips(qt_app, monkeypatch) -> None:
+    """Live 10.0.0.x hosts fill the Cabinet dropdown; typed/prefilled text stays."""
+    from gui.live_push_panel import LivePushPanel
+
+    monkeypatch.setattr("gui.live_push_panel.detect_local_live_cabinet", lambda: "")
+    monkeypatch.setattr("gui.live_push_panel.this_pc_live_target", lambda: None)
+    monkeypatch.setattr(
+        "gui.live_push_panel.LivePushPanel._load",
+        lambda self: None,
+    )
+    panel = LivePushPanel(autoload=False)
+    panel.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    panel.show()
+    qt_app.processEvents()
+    panel._finish_detect()
+    qt_app.processEvents()
+    assert panel._path.text() == "10.0.0.111"
+    panel._apply_fleet_ips(["10.0.0.90", "10.0.0.76"])
+    items = [panel._cabinet.itemText(i) for i in range(panel._cabinet.count())]
+    assert "10.0.0.76" in items
+    assert "10.0.0.90" in items
+    assert panel._path.text() == "10.0.0.111"
+    assert panel._path.selectedText() == "111"
+
+
+def test_fleet_scan_runnable_fills_cabinet_combo(qt_app, monkeypatch) -> None:
+    from PySide6.QtCore import QThreadPool
+
+    from gui.live_push_panel import LivePushPanel
+
+    monkeypatch.setattr(
+        "gui.live_push_panel.discover_active_lab_fleet",
+        lambda **_k: ["10.0.0.76", "10.0.0.112"],
+    )
+    panel = LivePushPanel(autoload=False)
+    panel.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    panel.show()
+    qt_app.processEvents()
+    panel._start_fleet_scan()
+    QThreadPool.globalInstance().waitForDone(3000)
+    qt_app.processEvents()
+    items = [panel._cabinet.itemText(i) for i in range(panel._cabinet.count())]
+    assert "10.0.0.76" in items
+    assert "10.0.0.112" in items
+    assert panel._path.text() == ""
+    assert not hasattr(panel, "_ip")

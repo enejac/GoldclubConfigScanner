@@ -6,7 +6,7 @@ Forked from [GoldclubLogInvestigator](https://github.com/enejac/GoldclubLogInves
 
 ## Download Windows exe
 
-GitHub will not download a 62 MB file from the **blob** page (the floppy-disk icon is dead; it only says it cannot preview the file).
+GitHub will not download this large exe from the **blob** page (the floppy-disk icon is dead; it only says it cannot preview the file).
 
 While signed in, open:
 
@@ -16,7 +16,7 @@ That is the **View raw** link. Or: **Code → Download ZIP**, then take `downloa
 
 The file on disk is **ConfigScanner.exe**. Windows Properties / Task Manager should show Product name **Config Scanner** (not a leftover browser Save-As name such as `CursorUserSetup-x64-…`).
 
-Stamp: **2026-09-10 11:48**. Keep repo `tools\` next to the exe.
+Stamp: **2026-09-11 06:51**. Keep repo `tools\` next to the exe.
 
 ## Run from source
 
@@ -31,6 +31,17 @@ python gui_app.py
 ```
 
 Output: `dist\ConfigScanner.exe` (copied to repo root). Writable data lives in `config-scanner\` beside the exe.
+
+## Changelog
+
+[CHANGELOG.md](CHANGELOG.md) — one line per merged PR, newest first.
+
+It updates itself when a PR is merged to `master` (`.github/workflows/changelog.yml`).
+The PR title is the line. Rebuild from GitHub:
+
+```powershell
+gh pr list --state merged --limit 100 --json number,title,mergedAt,url | python scripts/update_changelog.py --rebuild
+```
 
 ## Tests
 

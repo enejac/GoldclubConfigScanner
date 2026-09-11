@@ -17,6 +17,8 @@ import os
 import re
 import socket
 import sys
+from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 LAB_FLEET_IPS: frozenset[str] = frozenset(
@@ -30,9 +32,6 @@ LAB_FLEET_IPS: frozenset[str] = frozenset(
         "10.0.0.171",
     }
 )
-
-# Roulette-only lab cabinets (no ``ruleta`` in a generic ``…\\var`` scan path).
-LAB_ROULETTE_IPS: frozenset[str] = frozenset({"10.0.0.111"})
 
 LAB_USERNAME_HINT = r"GOLD-CLUB\test"
 
@@ -332,6 +331,135 @@ def probe_tcp_port(host: str, port: int, *, timeout_sec: float = 2.0) -> bool:
             return True
     except OSError:
         return False
+
+
+def _last_octet(ip: str) -> int:
+    try:
+        return int(ip.rsplit(".", 1)[-1])
+    except ValueError:
+        return 999
+
+
+def lab_lan_ip_from_text(raw: str) -> str | None:
+    """IPv4 on 10.0.0.0/24 from a typed IP or UNC Goldclub path."""
+    text = (raw or "").strip().strip('"').replace("/", "\\")
+    if is_lab_lan_ip(text):
+        return text
+    host = text
+    if text.startswith("\\\\"):
+        host = text.lstrip("\\").split("\\", 1)[0].strip()
+    else:
+        host = text.split("\\", 1)[0].strip()
+    if is_lab_lan_ip(host):
+        return host
+    return None
+
+
+def this_pc_lab_lan_ips() -> frozenset[str]:
+    """This machine's 10.0.0.x addresses — skip them when listing remote cabinets."""
+    keys: set[str] = set()
+    try:
+        hn = socket.gethostname()
+        _name, _aliases, ips = socket.gethostbyname_ex(hn)
+        keys.update(str(ip).strip() for ip in ips)
+    except OSError:
+        pass
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("10.0.0.1", 80))
+            keys.add(sock.getsockname()[0])
+    except OSError:
+        pass
+    return frozenset(ip for ip in keys if is_lab_lan_ip(ip))
+
+
+def lab_lan_scan_ips(*, skip: Sequence[str] | None = None) -> list[str]:
+    """Every host on 10.0.0.0/24 except .0 / .255 and *skip* (usually this PC)."""
+    ignored = {str(item).strip() for item in (skip or ()) if str(item).strip()}
+    return [
+        f"10.0.0.{n}"
+        for n in range(1, 255)
+        if f"10.0.0.{n}" not in ignored
+    ]
+
+
+def priority_lab_scan_ips(
+    recent: Sequence[str] | None = None,
+) -> list[str]:
+    """Probe last-used cabinets and the named shortcut set first."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in recent or ():
+        ip = lab_lan_ip_from_text(str(raw))
+        if ip and ip not in seen:
+            seen.add(ip)
+            out.append(ip)
+    for ip in sorted(LAB_FLEET_IPS, key=_last_octet):
+        if ip not in seen:
+            seen.add(ip)
+            out.append(ip)
+    return out
+
+
+def _host_answers_smb(host: str, *, timeout_sec: float) -> bool:
+    if probe_tcp_port(host, 445, timeout_sec=timeout_sec):
+        return True
+    return probe_tcp_port(host, 139, timeout_sec=min(0.15, timeout_sec))
+
+
+def discover_active_lab_fleet(
+    *,
+    probe: Callable[[str], bool] | None = None,
+    hosts: Sequence[str] | None = None,
+    skip_hosts: Sequence[str] | None = None,
+    priority_hosts: Sequence[str] | None = None,
+    timeout_sec: float = 0.25,
+    workers: int = 48,
+    on_found: Callable[[str], None] | None = None,
+) -> list[str]:
+    """Lab LAN IPv4s that answer SMB — the cabinets that are actually up.
+
+    Scans ``10.0.0.0/24`` unless *hosts* is passed. This PC's own 10.0.0.x
+    addresses are skipped unless *skip_hosts* is set explicitly. Down
+    cabinets are omitted. *priority_hosts* are probed first so remembered
+    / named EGMs appear in the dropdown before the rest of the subnet.
+    """
+    if skip_hosts is None:
+        skip = set(this_pc_lab_lan_ips())
+    else:
+        skip = {str(item).strip() for item in skip_hosts if str(item).strip()}
+
+    if hosts is not None:
+        batches = [[h.strip() for h in hosts if h and h.strip() not in skip]]
+    else:
+        priority = [
+            h.strip()
+            for h in (priority_hosts or ())
+            if h and h.strip() not in skip
+        ]
+        rest = lab_lan_scan_ips(skip=skip.union(priority))
+        batches = [priority, rest] if priority else [rest]
+
+    check = probe or (lambda host: _host_answers_smb(host, timeout_sec=timeout_sec))
+    live: list[str] = []
+    seen: set[str] = set()
+    pool_size = max(1, min(int(workers), 64))
+    for batch in batches:
+        if not batch:
+            continue
+        with ThreadPoolExecutor(max_workers=min(pool_size, len(batch))) as pool:
+            for host, ok in zip(batch, pool.map(check, batch)):
+                if not ok or host in seen:
+                    continue
+                seen.add(host)
+                live.append(host)
+                if on_found is not None:
+                    try:
+                        on_found(host)
+                    except Exception:
+                        pass
+    live.sort(key=_last_octet)
+    return live
 
 
 def format_lab_lan_unreachable(ip: str, *, winrm_open: bool, smb_open: bool, ping_ok: bool) -> str:

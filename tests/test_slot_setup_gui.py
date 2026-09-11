@@ -36,7 +36,11 @@ def test_window_hosts_setup_and_apply_modes() -> None:
     assert "CountryWizardPanel" in WINDOW_SRC
     assert "CompanionApplyPanel" in WINDOW_SRC
     assert "Snapshots" in WINDOW_SRC
-    assert "EGM setup" in WINDOW_SRC
+    # Advanced view is Snapshots only; authoring tools are not tabs any more.
+    assert "EGM setup" not in WINDOW_SRC
+    assert "Companion packs" not in WINDOW_SRC
+    assert 'addTab(ShipPanel' not in WINDOW_SRC
+    assert "QTabWidget" not in WINDOW_SRC
 
 
 def test_gui_app_exposes_apply_and_country_flags() -> None:
