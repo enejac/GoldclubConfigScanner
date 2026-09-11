@@ -1,0 +1,15 @@
+# Changelog (automatic on merge)
+
+`CHANGELOG.md` is one line per merged PR, newest first. GitHub Action
+`.github/workflows/changelog.yml` appends the line when the PR lands on
+`master`. Do not hand-edit dated entries for work that will merge.
+
+## PR title is the log line
+
+Write a short title that says what was fixed (the operator-facing change).
+That title becomes `- Title ([#N](…))` under today's date.
+
+## Skip
+
+Put `[skip changelog]` in the title for noise (typo-only, revert of a
+revert, changelog-tooling with nothing to report).

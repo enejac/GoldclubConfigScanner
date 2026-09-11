@@ -23,6 +23,7 @@ from config_scanner.machine_identity import (
     postprocess_jurisdiction_xml_bytes,
 )
 from config_scanner.write_scope import _SERIALPORT_DIR_RE
+from network.lab_access import safe_join_under
 
 RECIPE_VERSION = 2
 
@@ -63,6 +64,14 @@ _SAS_SETUP_REL = "Services/aurum/config/SASControler1/SASsetupData.xml"
 _AURUM_SETUP_REL = "Services/aurum/config/AurumSetup.xml"
 _OTICKET_REL = "bios/etc/application/slot/oticket.xml"
 _MAGICWHEEL_REL = "slot/themes/magicwheel_Config.xml"
+# Newer OneHand / gamepack trees also keep wheel knobs on the theme file
+# named by mgconfig MagicWheelPath, or only in jurisdiction_config.
+_MAGICWHEEL_THEME_RELS: tuple[str, ...] = (
+    "slot/themes/magicwheel.xml",
+    "slot/themes/magicwheel_3Screens.xml",
+    "themes/magicwheel.xml",
+    "themes/magicwheel_3Screens.xml",
+)
 _BILL_PROTO_DIR = "slot/hwdrivers/protocols/billacceptor"
 _TICKET_PROTO_DIR = "slot/hwdrivers/protocols/ticketprinter"
 _DRIVERSSETUP_RELS: tuple[str, ...] = (
@@ -1444,9 +1453,15 @@ def read_jurisdiction_settings(goldclub: Path) -> JurisdictionSettings:
         symbol = _find_desc(root, "CurrencySymbol")
         if symbol is not None and (symbol.text or "").strip():
             out.currency_symbol = (symbol.text or "").strip()
-        limit = _find_desc(root, "MoneyLimit")
-        if limit is not None and (limit.text or "").strip().isdigit():
-            out.magic_wheel_money_limit = int((limit.text or "").strip())
+        pack = _find_child(root, "MagicWheelPackSettings")
+        if pack is not None:
+            fields = _read_magicwheel_fields(pack)
+            if fields["money_limit"] is not None:
+                out.magic_wheel_money_limit = fields["money_limit"]
+        else:
+            limit = _find_desc(root, "MoneyLimit")
+            if limit is not None and (limit.text or "").strip().isdigit():
+                out.magic_wheel_money_limit = int((limit.text or "").strip())
     return out
 
 
@@ -1526,7 +1541,7 @@ def is_debug_onehand_version(text: str | None) -> bool:
     folded = (text or "").strip().casefold()
     if not folded:
         return False
-    if folded == "debug" or folded.startswith("debug"):
+    if folded == "debug" or folded.startswith("debug ") or folded.startswith("debug-"):
         return True
     return bool(_DEBUG_VERSION_TOKEN.search(folded))
 
@@ -1551,7 +1566,21 @@ def _utf16_string_after(blob: bytes, key: str) -> str:
 
 
 def is_onehand_debug_build(goldclub: Path) -> bool:
-    """True when live ``OneHand.exe`` is the Debug SKU (no production licence)."""
+    """True when live ``OneHand.exe`` is the Debug SKU (no production licence).
+
+    Prefers VERSIONINFO ``Debug`` tokens, then the latest SlotLog
+    ``OneHand.MainFrm - DB`` line. Numbered FileVersion/ProductVersion is
+    Release when that log line is absent. A cabinet that has never booted
+    still classifies from the exe alone.
+    """
+    try:
+        from config_scanner.build_version import detect_onehand_build
+
+        info = detect_onehand_build(goldclub)
+    except Exception:
+        info = None
+    if info is not None:
+        return (info.configuration or "").strip().casefold() == "debug"
     path = onehand_exe_path(goldclub)
     if path is None:
         return False
@@ -1561,28 +1590,11 @@ def is_onehand_debug_build(goldclub: Path) -> bool:
     except OSError:
         return False
     try:
-        from config_scanner.build_version import _extract_version_from_onehand_exe
+        from config_scanner.build_version import onehand_exe_is_debug_sku
 
-        info = _extract_version_from_onehand_exe(path)
+        return bool(onehand_exe_is_debug_sku(path))
     except Exception:
-        info = None
-    if info is not None:
-        for label in (
-            info.product_version,
-            info.file_version,
-            info.product_name,
-            info.display_version,
-        ):
-            if is_debug_onehand_version(label):
-                return True
-    try:
-        blob = path.read_bytes()[: 4 * 1024 * 1024]
-    except OSError:
         return False
-    for key in ("ProductVersion", "FileVersion", "ProductName", "FileDescription"):
-        if is_debug_onehand_version(_utf16_string_after(blob, key)):
-            return True
-    return False
 
 
 def licence_push_default_checked(
@@ -1790,6 +1802,8 @@ def patch_jurisdiction_config(
     settings: JurisdictionSettings,
     *,
     single_denomination: int | None = None,
+    play_limits: PlayLimitsSettings | None = None,
+    create_pack_fields: bool = False,
 ) -> None:
     tree = _parse_xml(src)
     root = tree.getroot()
@@ -1817,11 +1831,18 @@ def patch_jurisdiction_config(
                         el.text = settings.currency_name
         if settings.currency_symbol:
             _set_text(cds, "CurrencySymbol", settings.currency_symbol)
-    if settings.magic_wheel_money_limit is not None:
+    want_limit = settings.magic_wheel_money_limit is not None
+    want_play = play_limits is not None and play_limits.touches_magicwheel()
+    if want_limit or want_play:
         mw = _find_child(root, "MagicWheelPackSettings")
         if mw is None:
             mw = _ensure_child(root, "MagicWheelPackSettings")
-        _set_text(mw, "MoneyLimit", str(settings.magic_wheel_money_limit))
+        if want_limit:
+            _set_text(mw, "MoneyLimit", str(settings.magic_wheel_money_limit))
+        if play_limits is not None:
+            _write_magicwheel_pack_play(
+                mw, play_limits, create_missing=create_pack_fields
+            )
     if single_denomination is not None:
         display = _find_child(root, "DenominationDisplay")
         if display is None:
@@ -1981,16 +2002,21 @@ def patch_aurum_setup_placeholders(
     tree = _parse_xml(src)
     root = tree.getroot()
     if template:
-        old_host = ""
+        replacements: list[tuple[str, str]] = []
         for el in root.iter():
             if _local(el.tag) == "NetworkHostName":
                 old_host = (el.text or "").strip()
+                if old_host and old_host != template:
+                    replacements.append((old_host, template))
                 el.text = template
-        if old_host:
+        if replacements:
             for el in root.iter():
                 local = _local(el.tag)
                 if local in ("ServiceURI", "MessengerURI") and el.text:
-                    el.text = el.text.replace(old_host, template)
+                    text = el.text
+                    for old_host, new_host in replacements:
+                        text = text.replace(old_host, new_host)
+                    el.text = text
     if currency:
         updated_code = False
         updated_id = False
@@ -2373,6 +2399,148 @@ def _int_from_xml(root: ET.Element, name: str) -> int | None:
     return _parse_opt_int(_elem_text(root, name) or None)
 
 
+def _read_magicwheel_fields(root: ET.Element) -> dict[str, int | bool | None]:
+    """Bet / limit / enabled from a magic-wheel settings element."""
+    average = _int_from_xml(root, "MoneyWheelAverage")
+    if average is None:
+        average = _int_from_xml(root, "Average")
+    return {
+        "money_limit": _int_from_xml(root, "MoneyLimit"),
+        "enabled": _bool_from_xml(root, "Enabled"),
+        "bet": _int_from_xml(root, "Bet"),
+        "max_spins": _int_from_xml(root, "MaxWheelSpins"),
+        "average": average,
+    }
+
+
+def _merge_magicwheel_play(
+    out: PlayLimitsSettings,
+    fields: dict[str, int | bool | None],
+    *,
+    overwrite: bool,
+) -> None:
+    mapping = {
+        "enabled": "magic_wheel_enabled",
+        "bet": "magic_wheel_bet",
+        "max_spins": "magic_wheel_max_spins",
+        "average": "magic_wheel_average",
+    }
+    for src, dest in mapping.items():
+        val = fields.get(src)
+        if val is None:
+            continue
+        if overwrite or getattr(out, dest) is None:
+            setattr(out, dest, val)
+
+
+def _write_magicwheel_pack_play(
+    pack: ET.Element,
+    play_limits: PlayLimitsSettings,
+    *,
+    create_missing: bool,
+) -> None:
+    existing = {_local(child.tag).casefold() for child in pack}
+
+    def write(tag: str, value: object, *, as_bool: bool = False) -> None:
+        if value is None:
+            return
+        if not create_missing and tag.casefold() not in existing:
+            return
+        _set_text(pack, tag, _bool_xml(bool(value)) if as_bool else str(value))
+
+    write("Enabled", play_limits.magic_wheel_enabled, as_bool=True)
+    write("Bet", play_limits.magic_wheel_bet)
+    write("MaxWheelSpins", play_limits.magic_wheel_max_spins)
+    if play_limits.magic_wheel_average is None:
+        return
+    if create_missing or "moneywheelaverage" in existing:
+        write("MoneyWheelAverage", play_limits.magic_wheel_average)
+    elif "average" in existing:
+        write("Average", play_limits.magic_wheel_average)
+
+
+def theme_rel_from_mgconfig_path(raw: str) -> str:
+    """``themes\\magicwheel.xml`` → ``slot/themes/magicwheel.xml``."""
+    text = (raw or "").replace("\\", "/").strip().lstrip("/")
+    if not text:
+        return ""
+    if text.casefold().startswith("slot/"):
+        return text
+    if text.casefold().startswith("themes/"):
+        return f"slot/{text}"
+    return f"slot/themes/{Path(text).name}"
+
+
+def read_mgconfig_magicwheel_path(goldclub: Path) -> str:
+    mg = goldclub / _MGCONFIG_REL
+    if not mg.is_file():
+        return ""
+    return _elem_text(_parse_xml(mg).getroot(), "MagicWheelPath")
+
+
+def iter_magicwheel_setting_rels(goldclub: Path) -> list[str]:
+    """Cabinet-relative XMLs that actually hold magic-wheel knobs.
+
+    Gamepacks on newer builds write ``jurisdiction_config``
+    ``MagicWheelPackSettings`` (not mgconfig). Older images still use
+    ``magicwheel_Config.xml``; display-mode leaves use MagicWheelPath.
+    """
+    root = goldclub_root_from_target(goldclub)
+    ordered: list[str] = []
+    seen: set[str] = set()
+
+    def add(rel: str) -> None:
+        norm = rel.replace("\\", "/").strip().lstrip("/")
+        if not norm:
+            return
+        key = norm.casefold()
+        if key in seen:
+            return
+        path = _resolve_goldclub_rel(root, norm)
+        if path is None or not path.is_file():
+            return
+        seen.add(key)
+        ordered.append(norm)
+
+    add(_JURISDICTION_REL)
+    add(_MAGICWHEEL_REL)
+    path_text = read_mgconfig_magicwheel_path(root)
+    if path_text:
+        add(theme_rel_from_mgconfig_path(path_text))
+    for rel in _MAGICWHEEL_THEME_RELS:
+        add(rel)
+    return ordered
+
+
+def dedicated_magicwheel_file_exists(goldclub: Path) -> bool:
+    """True when a magic-wheel XML exists besides jurisdiction_config."""
+    return any(
+        rel.casefold() != _JURISDICTION_REL.casefold()
+        for rel in iter_magicwheel_setting_rels(goldclub)
+    )
+
+
+def looks_like_magicwheel_settings(path: Path) -> bool:
+    try:
+        root = _parse_xml(path).getroot()
+    except (OSError, ET.ParseError, ValueError):
+        return False
+    fields = _read_magicwheel_fields(root)
+    if any(value is not None for value in fields.values()):
+        return True
+    return _local(root.tag).casefold() in {
+        "magicwheelsettingsconfig",
+        "magicwheelpacksettings",
+    }
+
+
+def math_settings_rels(goldclub: Path) -> list[str]:
+    """Theme MathSettings.xml files Live Push may rewrite for bet steps."""
+    return [
+        f"slot/themes/{name}/MathSettings.xml" for name in _math_theme_names(goldclub)
+    ]
+
+
 def read_play_limits(goldclub: Path) -> PlayLimitsSettings:
     """Read jackpot / magic-wheel / UI play knobs from live XML."""
     out = PlayLimitsSettings()
@@ -2393,11 +2561,33 @@ def read_play_limits(goldclub: Path) -> PlayLimitsSettings:
         out.ticket_use_currency_iso = _bool_from_xml(root, "UseCurrencyISO")
     mw = goldclub / _MAGICWHEEL_REL
     if mw.is_file():
-        root = _parse_xml(mw).getroot()
-        out.magic_wheel_enabled = _bool_from_xml(root, "Enabled")
-        out.magic_wheel_bet = _int_from_xml(root, "Bet")
-        out.magic_wheel_max_spins = _int_from_xml(root, "MaxWheelSpins")
-        out.magic_wheel_average = _int_from_xml(root, "MoneyWheelAverage")
+        _merge_magicwheel_play(
+            out,
+            _read_magicwheel_fields(_parse_xml(mw).getroot()),
+            overwrite=True,
+        )
+    root = goldclub_root_from_target(goldclub)
+    for rel in iter_magicwheel_setting_rels(root):
+        if rel.casefold() in {
+            _JURISDICTION_REL.casefold(),
+            _MAGICWHEEL_REL.casefold(),
+        }:
+            continue
+        path = _resolve_goldclub_rel(root, rel)
+        if path is None or not looks_like_magicwheel_settings(path):
+            continue
+        _merge_magicwheel_play(
+            out,
+            _read_magicwheel_fields(_parse_xml(path).getroot()),
+            overwrite=False,
+        )
+    jur = root / _JURISDICTION_REL
+    if jur.is_file():
+        pack = _find_child(_parse_xml(jur).getroot(), "MagicWheelPackSettings")
+        if pack is not None:
+            _merge_magicwheel_play(
+                out, _read_magicwheel_fields(pack), overwrite=True
+            )
     return out
 
 
@@ -2706,16 +2896,27 @@ def recipe_from_jurisdiction_profile(
             pass
 
     credit = list(denoms)
+    credit_explicit = False
     if expected.get("denom.credit_rate_values"):
         try:
             credit = [int(x) for x in expected["denom.credit_rate_values"]]
+            credit_explicit = True
         except (TypeError, ValueError):
             pass
-    # Preferred single denom stays first in the recipe list when both are set.
+    elif getattr(profile, "allowed_denoms", None):
+        try:
+            credit = [int(x) for x in profile.allowed_denoms]
+            credit_explicit = True
+        except (TypeError, ValueError):
+            pass
+    # Preferred single denom stays first; do not shrink an explicit credit table.
     if denom is not None and denoms:
         preferred = int(denom)
         if preferred in denoms:
             denoms = [preferred] + [d for d in denoms if d != preferred]
+        if credit_explicit and preferred in credit:
+            credit = [preferred] + [c for c in credit if c != preferred]
+        elif not credit_explicit:
             credit = list(denoms)
 
     bet_mults = list(getattr(profile, "allowed_bet_multipliers", []) or [])
@@ -3172,38 +3373,80 @@ def build_config_pack(
     single_denom = (
         int(recipe.denomination_list[0]) if recipe.denomination_list else None
     )
+    want_jur_mw = (
+        recipe.jurisdiction.magic_wheel_money_limit is not None
+        or pl.touches_magicwheel()
+    )
     if _want("jurisdiction") and (
         recipe.jurisdiction.tag
         or recipe.jurisdiction.currency_name
         or recipe.jurisdiction.culture_name
-        or recipe.jurisdiction.magic_wheel_money_limit is not None
+        or want_jur_mw
         or single_denom is not None
     ):
         jsrc = live / _JURISDICTION_REL
+        create_pack = not dedicated_magicwheel_file_exists(live)
         if jsrc.is_file():
+            create_pack = not dedicated_magicwheel_file_exists(live)
             _stage(
                 _JURISDICTION_REL,
-                lambda s, d, denom=single_denom: patch_jurisdiction_config(
-                    s, d, recipe.jurisdiction, single_denomination=denom
+                lambda s, d, denom=single_denom, create=create_pack: (
+                    patch_jurisdiction_config(
+                        s,
+                        d,
+                        recipe.jurisdiction,
+                        single_denomination=denom,
+                        play_limits=pl,
+                        create_pack_fields=create,
+                    )
                 ),
             )
+        elif single_denom is not None or recipe.jurisdiction.tag:
+            dest_j = pack_dir / _JURISDICTION_REL
+            dest_j.parent.mkdir(parents=True, exist_ok=True)
+            dest_j.write_bytes(
+                b'<?xml version="1.0" encoding="utf-8"?>\n'
+                b"<JurisdictionSettings>\n</JurisdictionSettings>\n"
+            )
+            patch_jurisdiction_config(
+                dest_j,
+                dest_j,
+                recipe.jurisdiction,
+                single_denomination=single_denom,
+                play_limits=pl,
+                create_pack_fields=create_pack,
+            )
+            written.append(normalize_rel_path(_JURISDICTION_REL))
 
-    if _want("magicwheel") and (
-        recipe.jurisdiction.magic_wheel_money_limit is not None
-        or pl.touches_magicwheel()
-    ):
-        _stage(
-            _MAGICWHEEL_REL,
-            lambda s, d: patch_magicwheel_config(
-                s,
-                d,
-                money_limit=recipe.jurisdiction.magic_wheel_money_limit,
-                enabled=pl.magic_wheel_enabled,
-                bet=pl.magic_wheel_bet,
-                max_spins=pl.magic_wheel_max_spins,
-                average=pl.magic_wheel_average,
-            ),
-        )
+    if _want("magicwheel") and want_jur_mw:
+        for rel in iter_magicwheel_setting_rels(live):
+            if rel.casefold() == _JURISDICTION_REL.casefold():
+                continue
+            src = _resolve_goldclub_rel(live, rel)
+            if src is None:
+                continue
+            if (
+                rel.casefold() != _MAGICWHEEL_REL.casefold()
+                and not looks_like_magicwheel_settings(src)
+            ):
+                continue
+
+            def _patch_mw(
+                s: Path,
+                d: Path,
+                _rel: str = rel,
+            ) -> None:
+                patch_magicwheel_config(
+                    s,
+                    d,
+                    money_limit=recipe.jurisdiction.magic_wheel_money_limit,
+                    enabled=pl.magic_wheel_enabled,
+                    bet=pl.magic_wheel_bet,
+                    max_spins=pl.magic_wheel_max_spins,
+                    average=pl.magic_wheel_average,
+                )
+
+            _stage(rel, _patch_mw)
 
     # Aurum hostname placeholders and/or currency (must match jurisdiction CurrencyName)
     currency = (
@@ -3338,7 +3581,11 @@ def apply_config_pack(pack_dir: Path, dest_goldclub: Path) -> ApplyResult:
         if not src.is_file():
             errors.append(f"{norm}: missing in pack")
             continue
-        dest = dest_root / norm
+        try:
+            dest = safe_join_under(dest_root, norm)
+        except ValueError as exc:
+            errors.append(f"{norm}: {exc}")
+            continue
         try:
             _safe_copy_with_identity(src, dest, norm)
             written.append(norm)

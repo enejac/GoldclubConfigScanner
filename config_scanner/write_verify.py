@@ -82,9 +82,16 @@ def capture_pre_write_state(
     pre_write_bytes: dict[str, bytes] = {}
     for entry in manifest.files:
         rel = entry.relative_path.replace("\\", "/").strip("/")
+        in_scope = rel in allow_norm or (
+            is_protected_write_path(rel) and not is_licence_path(rel)
+        )
+        if not in_scope:
+            continue
         try:
             live_path = safe_join_under(dest_root, entry.relative_path)
-        except ValueError:
+        except ValueError as exc:
+            if rel in allow_norm:
+                raise ValueError(f"{entry.relative_path}: {exc}") from exc
             continue
         if not live_path.is_file():
             continue
@@ -93,6 +100,33 @@ def capture_pre_write_state(
         elif rel in allow_norm:
             pre_write_bytes[rel] = live_path.read_bytes()
     return PreWriteCapture(protected_sha1, pre_write_bytes)
+
+
+def rollback_pre_write_state(
+    dest_root: Path,
+    written_paths: tuple[str, ...] | list[str],
+    pre_write: PreWriteCapture,
+) -> list[str]:
+    """Restore bytes captured before a failed write. Deletes newly created files."""
+    errors: list[str] = []
+    for rel in written_paths:
+        norm = rel.replace("\\", "/").strip("/")
+        try:
+            live_path = safe_join_under(dest_root, rel)
+        except ValueError as exc:
+            errors.append(f"{norm}: {exc}")
+            continue
+        prior = pre_write.pre_write_bytes.get(norm)
+        try:
+            if prior is None:
+                if live_path.is_file():
+                    live_path.unlink()
+            else:
+                live_path.parent.mkdir(parents=True, exist_ok=True)
+                live_path.write_bytes(prior)
+        except OSError as exc:
+            errors.append(f"{norm}: rollback failed: {exc}")
+    return errors
 
 
 def verify_snapshot_restore(

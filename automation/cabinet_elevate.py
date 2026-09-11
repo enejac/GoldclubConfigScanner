@@ -89,13 +89,7 @@ def elevate_task_registered(host: str) -> bool:
         $out = cmd /c 'schtasks /Query /TN {_ELEVATE_TASK} /FO LIST 2>&1'
         if ($LASTEXITCODE -eq 0) {{ 'REGISTERED'; exit 0 }}
         if ($out -match 'cannot find the file') {{ 'MISSING'; exit 0 }}
-        # Access denied: task may exist but test cannot query it — probe /Run instead.
-        $run = cmd /c 'schtasks /Run /TN {_ELEVATE_TASK} 2>&1'
-        if ($run -notmatch 'cannot find the file' -and $run -notmatch 'Access is denied') {{
-            'REGISTERED'
-        }} else {{
-            'MISSING'
-        }}
+        'UNKNOWN'
         """
     ).strip()
     result = winrm_run_inline(ip=ip, script=script, timeout=45)

@@ -10,7 +10,13 @@ from config_scanner.live_push import (
     LIVE_FIELD_TOOLTIP_CHANGED,
     LIVE_FIELD_TOOLTIP_MATCH,
     commit_live_push,
+    THIS_PC_GOLDCLUB,
+    THIS_PC_MISSING_STATUS,
     default_live_cabinet_target,
+    initial_live_cabinet_target,
+    load_error_dialog_text,
+    merge_live_target_history,
+    this_pc_live_target,
     goldclub_stack_kind,
     live_field_file_hover,
     live_field_highlight_state,
@@ -139,16 +145,163 @@ def test_default_live_target_prefers_local_goldclub(tmp_path: Path) -> None:
         local_candidates=(str(gold),),
         remote=r"\\10.0.0.111\slot",
     )
-    assert Path(chosen) == gold
+    assert str(chosen).replace("\\", "/").rstrip("/") == str(gold).replace("\\", "/").rstrip("/")
 
 
-def test_default_live_target_falls_back_to_111_share(tmp_path: Path) -> None:
+def test_initial_live_cabinet_target_saved_wins_over_local() -> None:
+    assert (
+        initial_live_cabinet_target(
+            saved=r"\\10.0.0.90\c$\Goldclub",
+            local=r"C:\Goldclub",
+        )
+        == r"\\10.0.0.90\c$\Goldclub"
+    )
+
+
+def test_initial_live_cabinet_target_uses_local_then_empty() -> None:
+    assert initial_live_cabinet_target(saved="  ", local="G:") == "G:"
+    assert initial_live_cabinet_target(saved="", local=None) == ""
+    assert initial_live_cabinet_target() == ""
+
+
+def test_merge_live_target_history_newest_first_deduped() -> None:
+    merged = merge_live_target_history(
+        r"\\10.0.0.98\c$\Goldclub",
+        [
+            r"\\10.0.0.90\c$\Goldclub",
+            r"//10.0.0.98/c$/Goldclub",
+            r"C:\Goldclub",
+            "",
+        ],
+        limit=3,
+    )
+    assert merged == [
+        r"\\10.0.0.98\c$\Goldclub",
+        r"\\10.0.0.90\c$\Goldclub",
+        r"C:\Goldclub",
+    ]
+    assert merge_live_target_history("", ["  ", r"C:\Goldclub"]) == [r"C:\Goldclub"]
+
+
+def test_default_live_target_empty_when_no_local(tmp_path: Path) -> None:
     missing = tmp_path / "no-goldclub"
     chosen = default_live_cabinet_target(
         local_candidates=(str(missing),),
-        remote=DEFAULT_REMOTE_LIVE_TARGET,
+        remote="",
     )
-    assert chosen == DEFAULT_REMOTE_LIVE_TARGET
+    assert chosen == ""
+
+
+def test_live_targets_for_typed_ip() -> None:
+    from config_scanner.live_push import live_targets_for_ip, resolve_live_target_from_user
+
+    assert live_targets_for_ip("10.0.0.98")[0] == r"\\10.0.0.98\c$\Goldclub"
+    assert r"\\10.0.0.98\slot" in live_targets_for_ip("10.0.0.98")
+    assert live_targets_for_ip(r"\\10.0.0.98\slot") == (r"\\10.0.0.98\slot",)
+    assert resolve_live_target_from_user("10.0.0.76", probe=False) == (
+        r"\\10.0.0.76\c$\Goldclub"
+    )
+    assert live_targets_for_ip("") == ()
+    assert live_targets_for_ip("not-an-ip") == ()
+
+
+def test_this_pc_live_target_none_when_not_a_cabinet(tmp_path: Path) -> None:
+    missing = tmp_path / "no-goldclub"
+    assert this_pc_live_target(local_candidates=(str(missing),)) is None
+    assert "Goldclub" in THIS_PC_MISSING_STATUS
+    assert THIS_PC_GOLDCLUB == r"C:\Goldclub"
+
+
+def test_this_pc_live_target_finds_local_goldclub(tmp_path: Path) -> None:
+    gold = _fake_goldclub(tmp_path)
+    assert Path(this_pc_live_target(local_candidates=(str(gold),))) == gold
+
+
+def test_local_live_candidates_sweep_image_drives_after_c() -> None:
+    from config_scanner.live_push import _LOCAL_LIVE_CANDIDATES, _local_candidate_path
+
+    cands = [c.casefold() for c in _LOCAL_LIVE_CANDIDATES]
+    assert cands[0] == "g:"
+    assert cands.index(r"c:\goldclub") < cands.index(r"d:\goldclub")
+    for drive in ("d:", "e:", "f:", "h:"):
+        assert drive in cands
+        assert rf"{drive}\goldclub" in cands
+    assert not any(c.startswith("\\\\") for c in cands), "local sweep must stay local"
+    assert _local_candidate_path("G:") == "G:\\"
+    assert _local_candidate_path("d") == "d:\\"
+    assert _local_candidate_path(r"C:\Goldclub") == r"C:\Goldclub"
+    assert _local_candidate_path("/tmp/gold") == "/tmp/gold"
+
+
+def test_default_111_and_this_pc_resolve_local_root_first(tmp_path: Path) -> None:
+    from config_scanner.live_push import (
+        is_default_remote_live_target,
+        resolve_live_load_target,
+    )
+
+    gold = _fake_goldclub(tmp_path)
+    cands = (str(tmp_path / "missing"), str(gold))
+
+    assert is_default_remote_live_target(r"\\10.0.0.111\slot")
+    assert is_default_remote_live_target(r"//10.0.0.111/slot/")
+    assert not is_default_remote_live_target(r"\\10.0.0.90\c$\Goldclub")
+
+    target, note = resolve_live_load_target(
+        DEFAULT_REMOTE_LIVE_TARGET, prefer_local=True, local_candidates=cands
+    )
+    assert Path(target) == gold
+    assert "10.0.0.111" in note and str(gold) in note
+
+    target, note = resolve_live_load_target(
+        THIS_PC_GOLDCLUB, prefer_local=True, local_candidates=cands
+    )
+    assert Path(target) == gold and note
+
+    # Explicit cabinet paths are never swapped.
+    explicit = r"\\10.0.0.90\c$\Goldclub"
+    assert resolve_live_load_target(explicit, prefer_local=True, local_candidates=cands) == (
+        explicit,
+        "",
+    )
+    # Without a local tree the default stays .111.
+    assert resolve_live_load_target(
+        DEFAULT_REMOTE_LIVE_TARGET,
+        prefer_local=True,
+        local_candidates=(str(tmp_path / "missing"),),
+    ) == (DEFAULT_REMOTE_LIVE_TARGET, "")
+    assert resolve_live_load_target(
+        DEFAULT_REMOTE_LIVE_TARGET, prefer_local=False, local_candidates=cands
+    ) == (DEFAULT_REMOTE_LIVE_TARGET, "")
+
+
+def test_load_live_cabinet_prefer_local_swaps_default(tmp_path: Path, monkeypatch) -> None:
+    from config_scanner import live_push
+    from config_scanner.live_push import load_live_cabinet
+
+    gold = _fake_goldclub(tmp_path)
+    monkeypatch.setattr(live_push, "_LOCAL_LIVE_CANDIDATES", (str(gold),))
+    outcome = load_live_cabinet(DEFAULT_REMOTE_LIVE_TARGET, prefer_local=True)
+    assert outcome.error == ""
+    assert outcome.root == gold
+    assert outcome.recipe is not None
+
+
+def test_missing_local_path_explains_instead_of_cmdkey(tmp_path: Path) -> None:
+    root, err = prepare_live_goldclub(str(tmp_path / "Goldclub"))
+    assert root is None
+    assert "on this PC" in err
+    assert "slot\\themes" in err
+    assert "Browse" in err
+    assert "cmdkey" not in err
+
+
+def test_load_error_dialog_text_never_blank() -> None:
+    assert load_error_dialog_text("") == "Cannot load cabinet."
+    assert load_error_dialog_text("   \n") == "Cannot load cabinet."
+    assert load_error_dialog_text(None) == "Cannot load cabinet."
+    assert load_error_dialog_text("Folder exists but is not a Goldclub root") == (
+        "Folder exists but is not a Goldclub root"
+    )
 
 
 def test_live_field_matches_bill_protocol(tmp_path: Path) -> None:
@@ -385,6 +538,14 @@ def test_live_push_chrome_has_tooltips() -> None:
     assert "delta" in src.casefold() or "differ from the cabinet" in src
     assert "_install_label_click_tips" in src
     assert "mouse_release_shows_tip" in src
+    assert r"\\host\slot  or  C:\Goldclub" in src
+    assert '("10.0.0.90"' not in src
+    assert '("10.0.0.98"' not in src
+    assert '("10.0.0.111"' not in src
+    assert "initial_live_cabinet_target" in src
+    assert "remember_live_push_target" in src
+    assert "discover_active_lab_fleet" in src
+    assert "_start_fleet_scan" in src
 
 
 def test_home_and_wizard_tooltips() -> None:
@@ -677,6 +838,83 @@ def test_slot_start_script_falls_back_to_start_process() -> None:
     assert "Start-Process" in script
     assert "Live Push started BiOS2 menu instead of OneHand" in script
     assert "OneHand did not start after Bootstrap" in script
+
+
+def test_game_start_exe_candidates_for_c_dollar_slot() -> None:
+    from config_scanner.live_push import game_start_exe_candidates
+
+    found = game_start_exe_candidates(
+        r"\\10.0.0.98\c$\Goldclub\slot",
+        dest=r"\\10.0.0.98\c$\Goldclub\slot",
+    )
+    assert r"C:\Goldclub\slot\game-start.exe" in found
+    assert r"G:\slot\game-start.exe" in found
+    gold_root = game_start_exe_candidates(
+        r"\\10.0.0.98\c$\Goldclub",
+        dest=r"\\10.0.0.98\c$\Goldclub",
+    )
+    assert r"C:\Goldclub\slot\game-start.exe" in gold_root
+
+
+def test_slot_start_script_release_uses_game_start_not_onehand() -> None:
+    from config_scanner.live_push import _slot_start_script
+
+    script = _slot_start_script(
+        (r"C:\Goldclub\slot\game-start.exe",),
+        launcher="game-start",
+    )
+    assert r"C:\Goldclub\slot\game-start.exe" in script
+    assert "game-start.exe not found" in script
+    assert "OneHand did not start after game-start" in script
+    assert "OneHand did not start after Bootstrap" not in script
+    assert "Bootstrap.exe did not start" not in script
+    assert "Get-Process -Name Bootstrap" not in script
+    assert "-FilePath OneHand.exe" not in script
+    assert "-Execute OneHand.exe" not in script
+
+
+def test_slot_start_launcher_release_vs_debug(monkeypatch, tmp_path: Path) -> None:
+    from config_scanner.build_version import OneHandBuildInfo
+    from config_scanner.live_push import slot_start_launcher
+
+    gold = tmp_path / "Goldclub"
+    gold.mkdir()
+    monkeypatch.setattr(
+        "config_scanner.live_push.detect_onehand_build",
+        lambda _r: OneHandBuildInfo(version="2.0.1", configuration="Release"),
+    )
+    monkeypatch.setattr(
+        "config_scanner.live_push.goldclub_root_from_target",
+        lambda _p: gold,
+    )
+    assert slot_start_launcher(str(gold)) == "game-start"
+    monkeypatch.setattr(
+        "config_scanner.live_push.detect_onehand_build",
+        lambda _r: OneHandBuildInfo(version="2.0.1", configuration="Debug"),
+    )
+    assert slot_start_launcher(str(gold)) == "bootstrap"
+    monkeypatch.setattr(
+        "config_scanner.live_push.detect_onehand_build",
+        lambda _r: None,
+    )
+    assert slot_start_launcher(str(gold)) == "bootstrap"
+    monkeypatch.setattr(
+        "config_scanner.live_push.detect_onehand_build",
+        lambda _r: (_ for _ in ()).throw(OSError("smb down")),
+    )
+    assert slot_start_launcher(str(gold)) == "bootstrap"
+
+
+def test_watchdog_release_starts_game_start() -> None:
+    from config_scanner.live_push import _slot_bootstrap_watchdog_script
+
+    wd = _slot_bootstrap_watchdog_script(
+        (r"G:\slot\game-start.exe",),
+        launcher="game-start",
+    )
+    assert r"G:\slot\game-start.exe" in wd
+    assert "OneHand,game-start" in wd
+    assert "Bootstrap,OneHand" not in wd
 
 
 def test_live_push_changed_sections_maps_labels() -> None:
@@ -1311,3 +1549,16 @@ def test_commit_sas_only_heals_overlay_hostname_without_rewriting_setup(
     assert 'id="GCC_ST_20664_01"' in text
     assert (gold / "Services" / "aurum" / "config" / "AurumSetup.xml.bak-host-GST20664").is_file()
 
+
+
+def test_cabinet_ip_prefill_selects_last_octet() -> None:
+    from config_scanner.live_push import DEFAULT_CABINET_IP, cabinet_ip_prefill
+
+    assert DEFAULT_CABINET_IP == "10.0.0.111"
+    text, start, length = cabinet_ip_prefill()
+    assert text == "10.0.0.111"
+    assert text[start : start + length] == "111"
+    text, start, length = cabinet_ip_prefill("10.0.0.9")
+    assert (text[start : start + length], start) == ("9", 7)
+    assert cabinet_ip_prefill("") == ("", 0, 0)
+    assert cabinet_ip_prefill("host")[2] == 0

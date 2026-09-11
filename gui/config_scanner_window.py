@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -14,7 +14,6 @@ from PySide6.QtWidgets import (
     QPushButton,
     QStatusBar,
     QStackedWidget,
-    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -26,16 +25,16 @@ from gui.single_instance import (
 
 from gui.app_branding import apply_window_branding, status_bar_brand_pixmap
 from gui.app_logging import get_logger
-from gui.companion_pack_panel import CompanionApplyPanel, CompanionPackAuthorPanel
+from gui.companion_pack_panel import CompanionApplyPanel
 from gui.config_scanner_tab import ConfigScannerTabWidget
 from gui.country_pack_panel import CountryWizardPanel
-from gui.ship_panel import ShipPanel
 from gui.simple_home import SimpleShell
-from gui.slot_setup_panel import SlotApplyPanel, SlotSetupPanel
+from gui.slot_setup_panel import SlotApplyPanel
 from gui.theme_utils import apply_theme
 from config_manager import SettingsManager
 from config_scanner.app_brand import program_title
 from config_scanner.ui_screenshot import save_widget_screenshot
+from gui.screenshot_hotkey import install_anytime_screenshot
 
 logger = get_logger(__name__)
 
@@ -125,13 +124,16 @@ class ConfigScannerWindow(QMainWindow):
         sb.addWidget(self._status, stretch=1)
         self._screenshot_btn = QPushButton("Screenshot")
         self._screenshot_btn.setToolTip(
-            "Save a PNG of this window next to ConfigScanner.exe "
-            "(Ctrl+Shift+S). Does not capture the desktop."
+            "Save a PNG of the app next to ConfigScanner.exe. "
+            "Stays in this bottom-right corner over popups "
+            "(also Ctrl+Shift+S or F12)."
         )
         self._screenshot_btn.clicked.connect(self._screenshot_ui)
         sb.addPermanentWidget(self._screenshot_btn)
         self._screenshot_shortcut = QShortcut(QKeySequence("Ctrl+Shift+S"), self)
+        self._screenshot_shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
         self._screenshot_shortcut.activated.connect(self._screenshot_ui)
+        self._anytime_screenshot = install_anytime_screenshot(self)
 
         app = QApplication.instance()
         if app is not None:
@@ -150,22 +152,16 @@ class ConfigScannerWindow(QMainWindow):
             top.clicked.connect(lambda: self._root_stack.setCurrentWidget(self._simple))
             lay.addWidget(top)
             hint = QLabel(
-                "Snapshots, EGM pack authoring, companions, ship "
-                "(country CS export is on home → Create client update)"
+                "Snapshots (country CS export is on home → Create client update)"
             )
             hint.setStyleSheet("color: #888; padding-left: 4px;")
             lay.addWidget(hint)
-            tabs = QTabWidget(wrap)
             try:
                 self._scanner = ConfigScannerTabWidget(self)
             except Exception:
                 logger.exception("ConfigScannerTabWidget failed during init")
                 raise
-            tabs.addTab(self._scanner, "Snapshots")
-            tabs.addTab(SlotSetupPanel(self), "EGM setup")
-            tabs.addTab(CompanionPackAuthorPanel(self), "Companion packs")
-            tabs.addTab(ShipPanel(self), "Ship")
-            lay.addWidget(tabs, stretch=1)
+            lay.addWidget(self._scanner, stretch=1)
             self._advanced = wrap
             self._root_stack.addWidget(self._advanced)
         self._root_stack.setCurrentWidget(self._advanced)
@@ -199,6 +195,13 @@ class ConfigScannerWindow(QMainWindow):
         self._simple.show_push()
 
     def closeEvent(self, event) -> None:  # noqa: ANN001, N802
+        if self._simple is not None:
+            self._simple.mark_closing()
+        if self._scanner is not None and hasattr(self._scanner, "mark_closing"):
+            self._scanner.mark_closing()
+        guard = getattr(self, "_anytime_screenshot", None)
+        if guard is not None:
+            guard.shutdown()
         SettingsManager.save_config_scanner_window_geometry(self)
         super().closeEvent(event)
 

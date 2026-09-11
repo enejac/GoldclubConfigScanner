@@ -3,8 +3,9 @@
 Does not rewrite serialport layout/locations or Windows boot.
 Licences are never overwritten; missing licence XML / licence.dll may be
 copied next to OneHand when the operator enables that Live Push section.
-Slot cabinets: stop OneHand/Bootstrap, write, start Bootstrap.exe.
-Roulette cabinets: Kill-All then Run-FullStack. No EGM reboot either way.
+Slot cabinets: stop OneHand/Bootstrap, write, then start game-start
+(Release) or Bootstrap (Debug / unknown). Roulette: Kill-All then
+Run-FullStack. No EGM reboot either way.
 """
 
 from __future__ import annotations
@@ -49,6 +50,8 @@ from config_scanner.slot_setup import (
     goldclub_root_from_target,
     leftover_jurisdiction_single_denomination,
     load_recipe_from_goldclub,
+    iter_magicwheel_setting_rels,
+    math_settings_rels,
     merge_play_limits,
     missing_display_mode_assets,
     normalize_mei_bill_tokens_for_currency,
@@ -1023,17 +1026,124 @@ def bootstrap_exe_candidates(
     return _unique(found)
 
 
-def _slot_start_script(candidates: tuple[str, ...]) -> str:
+def game_start_exe_candidates(
+    scan_target: str, dest: Path | str | None = None
+) -> tuple[str, ...]:
+    """Cabinet-local slot\\game-start.exe paths (Release OneHand launcher)."""
+    found = [
+        r"G:\slot\game-start.exe",
+        r"C:\goldclub\slot\game-start.exe",
+        r"C:\Goldclub\slot\game-start.exe",
+    ]
+    text = str(dest or scan_target or "").replace("/", "\\")
+    host = unc_host_from_target(scan_target) or unc_host_from_target(text)
+    if host and text:
+        marker = rf"\\{host}\c$".casefold()
+        low = text.casefold()
+        if low.startswith(marker):
+            rest = text[len(rf"\\{host}\c$") :].lstrip("\\")
+            rest_norm = rest.rstrip("\\")
+            if rest_norm:
+                if rest_norm.casefold() == "slot" or rest_norm.casefold().endswith(
+                    "\\slot"
+                ):
+                    found.insert(0, rf"C:\{rest_norm}\game-start.exe")
+                else:
+                    found.insert(0, rf"C:\{rest_norm}\slot\game-start.exe")
+        elif low.rstrip("\\").endswith("\\slot"):
+            found.insert(0, r"C:\goldclub\slot\game-start.exe")
+    return _unique(found)
+
+
+def slot_start_launcher(
+    scan_target: str, dest: Path | str | None = None
+) -> str:
+    """``game-start`` for Release OneHand, ``bootstrap`` for Debug."""
+    raw = dest or scan_target
+    try:
+        root = goldclub_root_from_target(raw)
+    except (OSError, TypeError, ValueError):
+        root = Path(str(raw or ""))
+    try:
+        info = detect_onehand_build(root)
+    except (OSError, TypeError, ValueError):
+        info = None
+    cfg = ((info.configuration if info else "") or "").strip().casefold()
+    if cfg == "release":
+        return "game-start"
+    # Debug, Unknown, or detect failed — Bootstrap (do not assume Release).
+    return "bootstrap"
+
+
+def slot_start_candidates(
+    scan_target: str,
+    dest: Path | str | None = None,
+    *,
+    launcher: str | None = None,
+) -> tuple[str, ...]:
+    kind = (launcher or slot_start_launcher(scan_target, dest)).strip().casefold()
+    if kind == "game-start":
+        return game_start_exe_candidates(scan_target, dest)
+    return bootstrap_exe_candidates(scan_target, dest)
+
+
+def _slot_start_script(
+    candidates: tuple[str, ...],
+    *,
+    launcher: str = "bootstrap",
+) -> str:
     quoted = ", ".join("'" + c.replace("'", "''") + "'" for c in candidates)
     tried = "; ".join(candidates)
-    return textwrap.dedent(
+    kind = (launcher or "bootstrap").strip().casefold()
+    if kind == "game-start":
+        missing = f"game-start.exe not found. Tried: {tried}"
+        start_fail = "Could not start game-start.exe"
+        after_start = """
+        Start-Sleep -Seconds 5
+        $deadline = (Get-Date).AddSeconds(60)
+        $oh = $null
+        do {
+            $oh = Get-Process -Name OneHand -ErrorAction SilentlyContinue
+            if ($oh) { break }
+            Start-Sleep -Seconds 1
+        } while ((Get-Date) -lt $deadline)
+        if (-not $oh) {
+            if (Get-Process -Name BiOS2 -ErrorAction SilentlyContinue) {
+                throw 'Live Push started BiOS2 menu instead of OneHand'
+            }
+            throw 'OneHand did not start after game-start'
+        }
+        """
+    else:
+        missing = f"Bootstrap.exe not found. Tried: {tried}"
+        start_fail = "Could not start Bootstrap.exe"
+        after_start = """
+        Start-Sleep -Seconds 5
+        if (-not (Get-Process -Name Bootstrap -ErrorAction SilentlyContinue)) {
+            throw 'Bootstrap.exe did not start'
+        }
+        $deadline = (Get-Date).AddSeconds(45)
+        $oh = $null
+        do {
+            $oh = Get-Process -Name OneHand -ErrorAction SilentlyContinue
+            if ($oh) { break }
+            Start-Sleep -Seconds 1
+        } while ((Get-Date) -lt $deadline)
+        if (-not $oh) {
+            if (Get-Process -Name BiOS2 -ErrorAction SilentlyContinue) {
+                throw 'Live Push started BiOS2 menu instead of OneHand'
+            }
+            throw 'OneHand did not start after Bootstrap'
+        }
+        """
+    head = textwrap.dedent(
         f"""
         $ErrorActionPreference = 'Stop'
         $exe = $null
         foreach ($c in @({quoted})) {{
             if (Test-Path -LiteralPath $c) {{ $exe = $c; break }}
         }}
-        if (-not $exe) {{ throw 'Bootstrap.exe not found. Tried: {tried}' }}
+        if (-not $exe) {{ throw '{missing}' }}
         $dir = Split-Path -Parent $exe
         $started = $false
         try {{
@@ -1052,42 +1162,35 @@ def _slot_start_script(candidates: tuple[str, ...]) -> str:
             Start-Process -FilePath $exe -WorkingDirectory $dir
             $started = $true
         }}
-        if (-not $started) {{ throw 'Could not start Bootstrap.exe' }}
-        Start-Sleep -Seconds 5
-        if (-not (Get-Process -Name Bootstrap -ErrorAction SilentlyContinue)) {{
-            throw 'Bootstrap.exe did not start'
-        }}
-        $deadline = (Get-Date).AddSeconds(45)
-        $oh = $null
-        do {{
-            $oh = Get-Process -Name OneHand -ErrorAction SilentlyContinue
-            if ($oh) {{ break }}
-            Start-Sleep -Seconds 1
-        }} while ((Get-Date) -lt $deadline)
-        if (-not $oh) {{
-            if (Get-Process -Name BiOS2 -ErrorAction SilentlyContinue) {{
-                throw 'Live Push started BiOS2 menu instead of OneHand'
-            }}
-            throw 'OneHand did not start after Bootstrap'
-        }}
-        "OK $exe"
+        if (-not $started) {{ throw '{start_fail}' }}
         """
     ).strip()
+    tail = textwrap.dedent(after_start).strip()
+    return head + "\n" + tail + '\n        "OK $exe"'
 
 
 _SLOT_WATCHDOG_MARKER = "GoldClub-LivePush-Watchdog"
 
 
-def _slot_bootstrap_watchdog_script(candidates: tuple[str, ...]) -> str:
-    """Detached starter: if Apply dies after kill, still launch Bootstrap."""
+def _slot_bootstrap_watchdog_script(
+    candidates: tuple[str, ...],
+    *,
+    launcher: str = "bootstrap",
+) -> str:
+    """Detached starter: if Apply dies after kill, still launch the game."""
     quoted = ", ".join("'" + c.replace("'", "''") + "'" for c in candidates)
+    kind = (launcher or "bootstrap").strip().casefold()
+    if kind == "game-start":
+        game_names = "OneHand,game-start"
+    else:
+        game_names = "Bootstrap,OneHand"
     return textwrap.dedent(
         f"""
         # {_SLOT_WATCHDOG_MARKER}
         $ErrorActionPreference = 'SilentlyContinue'
         $deadline = (Get-Date).AddMinutes(10)
         while ((Get-Date) -lt $deadline) {{
-            $game = Get-Process -Name Bootstrap,OneHand -ErrorAction SilentlyContinue
+            $game = Get-Process -Name {game_names} -ErrorAction SilentlyContinue
             if ($game) {{ exit 0 }}
             $tool = @(Get-Process -Name ConfigScanner,LogInvestigator -ErrorAction SilentlyContinue)
             $py = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {{
@@ -1096,7 +1199,7 @@ def _slot_bootstrap_watchdog_script(candidates: tuple[str, ...]) -> str:
             }})
             if ($tool.Count -gt 0 -or $py.Count -gt 0) {{ Start-Sleep -Seconds 5; continue }}
             Start-Sleep -Seconds 8
-            $game = Get-Process -Name Bootstrap,OneHand -ErrorAction SilentlyContinue
+            $game = Get-Process -Name {game_names} -ErrorAction SilentlyContinue
             if ($game) {{ exit 0 }}
             $exe = $null
             foreach ($c in @({quoted})) {{
@@ -1133,8 +1236,10 @@ def _arm_slot_bootstrap_watchdog(
         return
     if not _slot_target_is_local(scan_target) or not running_on_egm():
         return
+    launcher = slot_start_launcher(scan_target, dest)
     script = _slot_bootstrap_watchdog_script(
-        bootstrap_exe_candidates(scan_target, dest)
+        slot_start_candidates(scan_target, dest, launcher=launcher),
+        launcher=launcher,
     )
     path = Path(tempfile.gettempdir()) / "GoldClub-LivePush-Watchdog.ps1"
     try:
@@ -1216,12 +1321,12 @@ _LABEL_SECTIONS: dict[str, frozenset[str]] = {
     "Denoms (cents)": frozenset(
         {"mgconfig", "jurisdiction", "link2win", "magicwheel", "math"}
     ),
-    "Bet multipliers": frozenset({"math", "mgconfig"}),
+    "Bet multipliers": frozenset({"math"}),
     "Magic wheel limit": frozenset({"magicwheel", "jurisdiction"}),
-    "Magic wheel bet": frozenset({"magicwheel"}),
-    "Magic wheel enabled": frozenset({"magicwheel"}),
-    "Magic wheel max spins": frozenset({"magicwheel"}),
-    "Magic wheel average": frozenset({"magicwheel"}),
+    "Magic wheel bet": frozenset({"magicwheel", "jurisdiction"}),
+    "Magic wheel enabled": frozenset({"magicwheel", "jurisdiction"}),
+    "Magic wheel max spins": frozenset({"magicwheel", "jurisdiction"}),
+    "Magic wheel average": frozenset({"magicwheel", "jurisdiction"}),
     "Jackpot counters": frozenset({"mgconfig"}),
     "Jackpot receipt": frozenset({"hardware"}),
     "Jackpot celebration": frozenset({"mgconfig"}),
@@ -1443,17 +1548,44 @@ def backup_live_push_files(
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, target)
             copied += 1
-        except OSError:
-            continue
+        except OSError as exc:
+            raise OSError(f"Could not backup {norm}: {exc}") from exc
     if copied == 0:
         return None
     return bak
+
+
+def restore_live_push_backup(
+    dest_goldclub: Path | str,
+    backup_dir: Path,
+) -> list[str]:
+    """Copy a Live Push backup folder back onto the live Goldclub root."""
+    from network.lab_access import safe_join_under
+
+    dest = goldclub_root_from_target(dest_goldclub)
+    root = Path(backup_dir)
+    errors: list[str] = []
+    if not root.is_dir():
+        return [f"backup folder missing: {root}"]
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(root).as_posix()
+        try:
+            target = safe_join_under(dest, rel)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, target)
+        except (OSError, ValueError) as exc:
+            errors.append(f"{rel}: {exc}")
+    return errors
 
 
 def _short_fail(detail: str) -> str:
     text = (detail or "").strip()
     if not text:
         return "unknown error"
+    if "game-start.exe not found" in text:
+        return "game-start.exe did not start on the cabinet."
     if "Bootstrap.exe not found" in text:
         return "Bootstrap.exe did not start on the cabinet."
     return text.splitlines()[0][:240]
@@ -1615,15 +1747,32 @@ def cabinet_host_reachable(target: str, *, timeout_sec: float = 2.0) -> tuple[bo
     )
 
 
-# Local Goldclub roots first (cabinet running the exe). Prefer unlocked G: before C:,
-# but never block the UI on a locked BitLocker G: (probe with a short timeout).
-_LOCAL_LIVE_CANDIDATES: tuple[str, ...] = (
-    r"G:",
-    r"C:\Goldclub",
-    r"C:\goldclub",
-    r"C:\Goldclub\slot",
-)
+def _local_live_candidates() -> tuple[str, ...]:
+    """Local Goldclub roots: cabinet volume first, then the same image drives
+    the Config Scanner tab sweeps for a slot repo (no full alphabet sweep).
+
+    Order: unlocked ``G:`` (BitLocker game volume), ``C:\\Goldclub`` and its
+    ``slot`` child, then ``D:``..``H:`` USB/image roots and their ``Goldclub``
+    folders. Bare drive roots are probed with a short timeout so a locked or
+    sleeping volume never blocks the UI. Lab UNCs are never listed here —
+    the operator types an IP only when no local tree exists.
+    """
+    out: list[str] = [r"G:", r"C:\Goldclub", r"C:\goldclub", r"C:\Goldclub\slot"]
+    for drive in ("D:", "E:", "F:", "H:"):
+        out.append(drive)
+        out.append(rf"{drive}\Goldclub")
+        out.append(rf"{drive}\Goldclub\slot")
+    return tuple(out)
+
+
+_LOCAL_LIVE_CANDIDATES: tuple[str, ...] = _local_live_candidates()
 DEFAULT_REMOTE_LIVE_TARGET = r"\\10.0.0.111\slot"
+THIS_PC_GOLDCLUB = r"C:\Goldclub"
+THIS_PC_MISSING_STATUS = (
+    "This PC has no Goldclub tree (G:, C:\\Goldclub, D:-H: Goldclub). "
+    "Type a cabinet IP or Browse."
+)
+_IPV4_HOST_RE = re.compile(r"^(?:\d{1,3}\.){3}\d{1,3}$")
 
 
 def _exists_quick(path: Path, *, timeout_sec: float = 0.3) -> bool:
@@ -1646,15 +1795,29 @@ def _exists_quick(path: Path, *, timeout_sec: float = 0.3) -> bool:
     return box["ok"]
 
 
+def _is_bare_drive(text: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z]:?", text))
+
+
+def _local_candidate_path(raw: str) -> str:
+    """``G:`` -> ``G:\\`` so Path never treats it as drive-relative to the cwd."""
+    text = str(raw).strip()
+    if _is_bare_drive(text):
+        return text.rstrip(":") + ":\\"
+    return text
+
+
 def _local_goldclub_ready(raw: str) -> bool:
     """True when the path looks like a usable unlocked Goldclub tree."""
     try:
         text = str(raw).replace("/", "\\").rstrip("\\")
-        # Locked BitLocker G: can hang Path.exists for minutes — bail fast.
-        if text.upper() in {"G:", "G"}:
-            if not _exists_quick(Path(r"G:\Bootstrap.exe"), timeout_sec=0.25):
-                return False
-        root = goldclub_root_from_target(raw)
+        # Locked BitLocker / sleeping removable drives can hang Path.exists for
+        # minutes — bail fast on bare drive roots.
+        if _is_bare_drive(text) and not _exists_quick(
+            Path(_local_candidate_path(text)), timeout_sec=0.25
+        ):
+            return False
+        root = goldclub_root_from_target(_local_candidate_path(raw))
         if not looks_like_goldclub_root(root):
             return False
         if text.upper() in {"G:", "G"}:
@@ -1666,17 +1829,13 @@ def _local_goldclub_ready(raw: str) -> bool:
         return False
 
 
-def default_live_cabinet_target(
+def this_pc_live_target(
     *,
     local_candidates: tuple[str, ...] | None = None,
-    remote: str = DEFAULT_REMOTE_LIVE_TARGET,
-) -> str:
-    """Pick the Goldclub tree this machine can see without a drive-letter sweep.
+) -> str | None:
+    """Local Goldclub if this machine is a cabinet, else ``None``.
 
-    On a cabinet the exe prefers unlocked ``G:`` then ``C:\\Goldclub``. On a
-    workstation those folders are absent, so the path stays the lab share
-    ``\\\\10.0.0.111\\slot``. ``prefer_local_scan_target`` still folds a
-    loopback admin share back to a drive letter when this PC *is* the host.
+    Does not fall back to a lab UNC share — type or recall a cabinet path instead.
     """
     from config_scanner.build_version import prefer_local_scan_target
 
@@ -1684,12 +1843,188 @@ def default_live_cabinet_target(
         if not _local_goldclub_ready(raw):
             continue
         try:
-            root = goldclub_root_from_target(raw)
+            root = goldclub_root_from_target(_local_candidate_path(raw))
         except (OSError, TimeoutError, ValueError):
             continue
         if looks_like_goldclub_root(root):
             return prefer_local_scan_target(str(root))
-    return prefer_local_scan_target(remote)
+    return None
+
+
+def detect_local_live_cabinet(
+    *,
+    local_candidates: tuple[str, ...] | None = None,
+) -> str:
+    """Local Goldclub path, or empty when this PC has no tree."""
+    return this_pc_live_target(local_candidates=local_candidates) or ""
+
+
+def is_default_remote_live_target(raw: str) -> bool:
+    """True when *raw* is the shipped ``\\\\10.0.0.111\\slot`` default (any case/slashes)."""
+    norm = (raw or "").strip().replace("/", "\\").rstrip("\\").casefold()
+    return norm == DEFAULT_REMOTE_LIVE_TARGET.casefold()
+
+
+def resolve_live_load_target(
+    raw: str,
+    *,
+    prefer_local: bool,
+    local_candidates: tuple[str, ...] | None = None,
+) -> tuple[str, str]:
+    """Target to actually load, plus a note when it was swapped for a local root.
+
+    The shipped default stays ``\\\\10.0.0.111\\slot``. With *prefer_local*,
+    that default (and the ``This PC`` path) is first resolved against local
+    Goldclub roots so a cabinet running the exe reads its own tree, never
+    another EGM's share. Explicit cabinet paths are returned unchanged.
+    """
+    text = (raw or "").strip()
+    if not prefer_local or not text:
+        return text, ""
+    is_this_pc = text.replace("/", "\\").rstrip("\\").casefold() == (
+        THIS_PC_GOLDCLUB.casefold()
+    )
+    if not (is_default_remote_live_target(text) or is_this_pc):
+        return text, ""
+    local = this_pc_live_target(local_candidates=local_candidates)
+    if not local or local.casefold().rstrip("\\") == text.casefold().rstrip("\\"):
+        return text, ""
+    return local, f"Local Goldclub found at {local}; using it instead of {text}."
+
+
+def initial_live_cabinet_target(
+    *,
+    saved: str | None = None,
+    local: str | None = None,
+) -> str:
+    """Path for the Live Push cabinet field on launch.
+
+    A remembered UNC wins so a workstation does not auto-scan This PC.
+    Else the local Goldclub tree when this machine is a cabinet.
+    Else empty — never a hardcoded lab IP.
+    """
+    text = (saved or "").strip()
+    if text:
+        return text
+    local_text = (local or "").strip()
+    if local_text:
+        return local_text
+    return ""
+
+
+DEFAULT_CABINET_IP = "10.0.0.111"
+
+
+def cabinet_ip_prefill(default_ip: str = DEFAULT_CABINET_IP) -> tuple[str, int, int]:
+    """Text to pre-fill the Cabinet field with when nothing else is known, plus
+    the (start, length) of its last octet so the caller can select it.
+
+    The operator then only types the last digits (``111`` -> ``98``) instead
+    of the whole address. Lab EGMs all sit on ``10.0.0.x``.
+    """
+    text = (default_ip or "").strip()
+    if not text or "." not in text:
+        return text, len(text), 0
+    start = text.rfind(".") + 1
+    return text, start, len(text) - start
+
+
+def merge_live_target_history(
+    newest: str,
+    recent: list[str] | tuple[str, ...] | None = None,
+    *,
+    limit: int = 8,
+) -> list[str]:
+    """Newest first, de-duped (slash/case-insensitive), capped. Empty newest is skipped."""
+    cap = max(1, int(limit))
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in (newest, *(recent or ())):
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        key = text.replace("/", "\\").rstrip("\\").casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(text)
+        if len(out) >= cap:
+            break
+    return out
+
+
+def live_targets_for_ip(raw: str) -> tuple[str, ...]:
+    """UNC Goldclub roots for a typed cabinet IP or pasted share."""
+    from config_scanner.build_version import normalize_scan_target
+
+    text = (raw or "").strip().strip('"')
+    if not text:
+        return ()
+    if text.startswith("\\\\"):
+        return (normalize_scan_target(text),)
+    first, sep, rest = text.partition("\\")
+    if _IPV4_HOST_RE.fullmatch(first) and sep and rest.strip():
+        return (normalize_scan_target(rf"\\{first}\{rest.strip()}"),)
+    host = first.strip()
+    if not _IPV4_HOST_RE.fullmatch(host):
+        return ()
+    return (
+        rf"\\{host}\c$\Goldclub",
+        rf"\\{host}\slot",
+        rf"\\{host}\c$\Goldclub\slot",
+    )
+
+
+def resolve_live_target_from_user(
+    raw: str,
+    *,
+    probe: bool = True,
+) -> str:
+    """Local path, pasted UNC, or first reachable share for a typed IP."""
+    text = (raw or "").strip().strip('"')
+    if not text:
+        return ""
+    if not text.startswith("\\\\") and not _IPV4_HOST_RE.fullmatch(text.split("\\", 1)[0]):
+        return text
+    candidates = live_targets_for_ip(text)
+    if not candidates:
+        return text
+    if not probe:
+        return candidates[0]
+    for cand in candidates:
+        try:
+            if _exists_quick(Path(cand), timeout_sec=1.2) and _local_goldclub_ready(cand):
+                return cand
+        except (OSError, TimeoutError, ValueError):
+            continue
+    return candidates[0]
+
+
+def default_live_cabinet_target(
+    *,
+    local_candidates: tuple[str, ...] | None = None,
+    remote: str = "",
+) -> str:
+    """Pick a local Goldclub tree. Empty when none — do not guess a lab IP.
+
+    ``prefer_local_scan_target`` still folds a loopback admin share back to a
+    drive letter when this PC *is* the host. Pass *remote* only when the
+    caller already has an operator-typed share. Live Push uses
+    :func:`initial_live_cabinet_target` so a remembered UNC wins over This PC.
+    """
+    from config_scanner.build_version import prefer_local_scan_target
+
+    local = this_pc_live_target(local_candidates=local_candidates)
+    if local:
+        return local
+    text = (remote or "").strip()
+    return prefer_local_scan_target(text) if text else ""
+
+
+def load_error_dialog_text(error: str | None) -> str:
+    """Body for the Load warning. Never return blank (empty QMessageBox)."""
+    text = str(error or "").strip()
+    return text or "Cannot load cabinet."
 
 
 def live_field_matches(live: SlotSetupRecipe, form: SlotSetupRecipe) -> dict[str, bool]:
@@ -1749,15 +2084,26 @@ LIVE_OPTION_HELP: dict[str, str] = {
         "these steps if a title cannot play them."
     ),
     "Magic wheel limit": (
-        "Maximum money the magic wheel can award (machine currency units)."
+        "Maximum money the magic wheel can award. Written to "
+        "jurisdiction_config MagicWheelPackSettings/MoneyLimit and, when "
+        "present, magicwheel_Config.xml — not mgconfig."
     ),
     "Magic wheel bet": (
-        "Magic-wheel entry bet in cents. Must match the active denom pack."
+        "Magic-wheel entry bet in cents. Newer gamepacks store this in "
+        "jurisdiction_config MagicWheelPackSettings; older images use "
+        "magicwheel_Config.xml. Must match the active denom pack."
     ),
-    "Magic wheel enabled": "Turns the magic-wheel feature on or off in mgconfig.",
-    "Magic wheel max spins": "Maximum spins allowed in a magic-wheel session.",
+    "Magic wheel enabled": (
+        "Turns the magic-wheel feature on or off in jurisdiction_config "
+        "MagicWheelPackSettings and/or magicwheel_Config.xml — not mgconfig."
+    ),
+    "Magic wheel max spins": (
+        "Maximum spins allowed in a magic-wheel session "
+        "(jurisdiction_config / magicwheel_Config.xml)."
+    ),
     "Magic wheel average": (
-        "Expected average win for magic-wheel math. Must match the denom pack."
+        "Expected average win for magic-wheel math. Written with the other "
+        "wheel knobs (not mgconfig). Must match the denom pack."
     ),
     "Jackpot counters": "How many progressive / jackpot counters the UI shows.",
     "Jackpot receipt": "Jackpot receipt / ticket layout style.",
@@ -1897,12 +2243,37 @@ LIVE_FIELD_CONFIG_RELS: dict[str, tuple[str, ...]] = {
         "slot/themes/Link2WinFeature/Link2WinBonusMath.json",
         "slot/themes/Link2WinFeature/Link2WinBonusMath_Config2.json",
     ),
-    "Bet multipliers": (_MGCONFIG_REL,),
-    "Magic wheel limit": (_JURISDICTION_REL, _MGCONFIG_REL),
-    "Magic wheel bet": (_MGCONFIG_REL,),
-    "Magic wheel enabled": (_MGCONFIG_REL,),
-    "Magic wheel max spins": (_MGCONFIG_REL,),
-    "Magic wheel average": (_MGCONFIG_REL,),
+    "Bet multipliers": ("slot/themes/*/MathSettings.xml",),
+    "Magic wheel limit": (
+        _JURISDICTION_REL,
+        "slot/themes/magicwheel_Config.xml",
+        "slot/themes/magicwheel.xml",
+        "slot/themes/magicwheel_3Screens.xml",
+    ),
+    "Magic wheel bet": (
+        _JURISDICTION_REL,
+        "slot/themes/magicwheel_Config.xml",
+        "slot/themes/magicwheel.xml",
+        "slot/themes/magicwheel_3Screens.xml",
+    ),
+    "Magic wheel enabled": (
+        _JURISDICTION_REL,
+        "slot/themes/magicwheel_Config.xml",
+        "slot/themes/magicwheel.xml",
+        "slot/themes/magicwheel_3Screens.xml",
+    ),
+    "Magic wheel max spins": (
+        _JURISDICTION_REL,
+        "slot/themes/magicwheel_Config.xml",
+        "slot/themes/magicwheel.xml",
+        "slot/themes/magicwheel_3Screens.xml",
+    ),
+    "Magic wheel average": (
+        _JURISDICTION_REL,
+        "slot/themes/magicwheel_Config.xml",
+        "slot/themes/magicwheel.xml",
+        "slot/themes/magicwheel_3Screens.xml",
+    ),
     "Jackpot counters": (_MGCONFIG_REL,),
     "Jackpot receipt": (_MGCONFIG_REL, _HARDWARE_CONFIG_REL),
     "Jackpot celebration": (_MGCONFIG_REL,),
@@ -2050,6 +2421,52 @@ def live_display_corruption_errors(goldclub: Path | str) -> dict[str, str]:
     return out
 
 
+_FIELD_LABEL_ALIASES: dict[str, str] = {
+    "Money limit": "Magic wheel limit",
+    "Wheel bet": "Magic wheel bet",
+    "Max spins": "Magic wheel max spins",
+    "Money average": "Magic wheel average",
+    "Symbol": "Currency symbol",
+    "Target market": "Market",
+    "Inactivity": "Inactivity to selector",
+}
+
+_MAGIC_WHEEL_LABELS: frozenset[str] = frozenset(
+    {
+        "Magic wheel limit",
+        "Magic wheel bet",
+        "Magic wheel enabled",
+        "Magic wheel max spins",
+        "Magic wheel average",
+    }
+)
+
+
+def canonicalize_live_field_label(label: str) -> str:
+    """Map form captions (Money limit) to snapshot / right-click keys."""
+    text = (label or "").strip()
+    return _FIELD_LABEL_ALIASES.get(text, text)
+
+
+def _live_field_rels_for(goldclub: Path, label: str) -> list[str]:
+    canon = canonicalize_live_field_label(label)
+    if canon in _MAGIC_WHEEL_LABELS:
+        try:
+            discovered = iter_magicwheel_setting_rels(goldclub)
+        except (OSError, ValueError):
+            discovered = []
+        if discovered:
+            return list(discovered)
+    if canon == "Bet multipliers":
+        try:
+            math_rels = math_settings_rels(goldclub)
+        except (OSError, ValueError):
+            math_rels = []
+        if math_rels:
+            return math_rels
+    return list(LIVE_FIELD_CONFIG_RELS.get(canon, ()))
+
+
 def resolve_live_field_config_files(
     goldclub: Path | str, label: str
 ) -> list[Path]:
@@ -2057,20 +2474,29 @@ def resolve_live_field_config_files(
     found: list[Path] = []
     seen: set[str] = set()
     root = Path(goldclub)
-    for rel in LIVE_FIELD_CONFIG_RELS.get(label, ()):
-        path = _resolve_goldclub_rel(root, rel)
-        if path is None:
-            continue
+    for rel in _live_field_rels_for(root, label):
+        pattern = str(rel).replace("\\", "/").lstrip("/")
         try:
-            if not path.is_file():
-                continue
-            key = str(path).casefold()
-            if key in seen:
-                continue
-            seen.add(key)
-            found.append(path)
-        except OSError:
+            matches = (
+                list(root.glob(pattern))
+                if "*" in pattern
+                else [_resolve_goldclub_rel(root, pattern)]
+            )
+        except (OSError, ValueError):
             continue
+        for path in matches:
+            if path is None:
+                continue
+            try:
+                if not path.is_file():
+                    continue
+                key = str(path).casefold()
+                if key in seen:
+                    continue
+                seen.add(key)
+                found.append(path)
+            except OSError:
+                continue
     return found
 
 
@@ -2475,6 +2901,12 @@ def _probe_live_goldclub(
             return None, (
                 f"Folder exists but is not a Goldclub root (need slot\\themes):\n{root}"
             )
+        if not host:
+            return None, (
+                f"No Goldclub tree at {raw} on this PC "
+                "(need slot\\themes or slot\\OneHand.exe).\n"
+                "Use Browse… to pick the Goldclub folder, or a cabinet button for a lab EGM."
+            )
         return None, (
             f"Cannot reach {raw}. Store the lab login (cmdkey) and check the cabinet is on."
         )
@@ -2504,9 +2936,16 @@ class LiveLoadOutcome:
     onehand_build: OneHandBuildInfo | None = None
 
 
-def load_live_cabinet(target: str) -> LiveLoadOutcome:
-    """Load a cabinet recipe. Never raises — dead shares return an error string."""
+def load_live_cabinet(target: str, *, prefer_local: bool = False) -> LiveLoadOutcome:
+    """Load a cabinet recipe. Never raises — dead shares return an error string.
+
+    With *prefer_local*, the shipped ``\\\\10.0.0.111\\slot`` default and the
+    ``This PC`` path are first resolved against local Goldclub roots.
+    """
     try:
+        target, swapped = resolve_live_load_target(target, prefer_local=prefer_local)
+        if swapped:
+            _lp_log(swapped)
         root, err = prepare_live_goldclub(target)
         if root is None:
             return LiveLoadOutcome(None, None, err, "")
@@ -2735,14 +3174,20 @@ def run_slot_stack_kill(scan_target: str) -> tuple[bool, str]:
 def run_slot_stack_start(
     scan_target: str, dest: Path | str | None = None
 ) -> tuple[bool, str]:
-    """Start Bootstrap.exe in the console session on the target cabinet."""
-    candidates = bootstrap_exe_candidates(scan_target, dest)
-    script = _slot_start_script(candidates)
+    """Start the slot game in the console session on the target cabinet.
+
+    Release OneHand: ``slot\\game-start.exe`` (never OneHand.exe directly).
+    Debug OneHand: ``Bootstrap.exe`` (unchanged).
+    """
+    launcher = slot_start_launcher(scan_target, dest)
+    candidates = slot_start_candidates(scan_target, dest, launcher=launcher)
+    script = _slot_start_script(candidates, launcher=launcher)
     local = _slot_target_is_local(scan_target)
     _lp_log(
-        f"slot start local={local} target={scan_target!r} dest={dest!r} "
-        f"candidates={candidates}"
+        f"slot start local={local} launcher={launcher} target={scan_target!r} "
+        f"dest={dest!r} candidates={candidates}"
     )
+    noun = "game-start" if launcher == "game-start" else "Bootstrap"
     if local:
         ok, detail = _run_local_powershell(script, timeout=150)
         _lp_log(f"slot start local result ok={ok} {detail}")
@@ -2761,7 +3206,7 @@ def run_slot_stack_start(
     blob = ((result.stdout or "") + (result.stderr or "")).strip()
     _lp_log(f"slot start remote host={host} exit={result.returncode} {blob[:800]}")
     if result.returncode == 0:
-        return True, blob or f"Bootstrap started on {host}"
+        return True, blob or f"{noun} started on {host}"
     return False, blob or f"Slot start failed on {host} (exit {result.returncode})"
 
 
@@ -3162,12 +3607,22 @@ def commit_live_push(
         written = applied.written
         skipped = applied.skipped
         errors = applied.errors
+        if errors and backup_dir:
+            rb = restore_live_push_backup(dest, Path(backup_dir))
+            if rb:
+                errors = errors + tuple(f"backup restore: {item}" for item in rb)
+            else:
+                errors = errors + ("Reverted live files from backup.",)
         _lp_log(
             f"write done files={len(written)} skipped={len(skipped)} "
             f"errors={errors} sections={sorted(sections) if sections else 'full'}"
         )
     except (OSError, ValueError, FileNotFoundError) as exc:
         errors = (str(exc),)
+        if backup_dir:
+            rb = restore_live_push_backup(dest, Path(backup_dir))
+            if not rb:
+                errors = errors + ("Reverted live files from backup.",)
     finally:
         if work_parent is None:
             shutil.rmtree(parent, ignore_errors=True)
@@ -3192,6 +3647,11 @@ def commit_live_push(
     stack_started = False
     ramclear_ran = False
     ramclear_detail = ""
+    start_noun = (
+        "game-start"
+        if use_slot and slot_start_launcher(plan_src, dest) == "game-start"
+        else "Bootstrap"
+    )
     if (
         use_slot
         and ramclear_reasons
@@ -3208,8 +3668,9 @@ def commit_live_push(
         _lp_log(f"ramclear ok={ok_rc} {ramclear_detail[:400]}")
         if not ok_rc:
             errors = (
-                "Settings written, but RAM clear failed — Bootstrap was not "
-                f"started: {_short_fail(ramclear_detail)} (log: {log_path})",
+                "Settings written, but RAM clear failed — "
+                f"{start_noun} was not started: {_short_fail(ramclear_detail)} "
+                f"(log: {log_path})",
             )
 
     if use_slot and effective_restart and not errors:
@@ -3220,24 +3681,24 @@ def commit_live_push(
         if not ok_hw:
             errors = (
                 "Settings written, but GoldClub Hardware Subsystem is not "
-                f"Running — Bootstrap was not started: {_short_fail(hw_detail)} "
+                f"Running — {start_noun} was not started: {_short_fail(hw_detail)} "
                 f"(log: {log_path})",
             )
 
     if use_slot and effective_restart and not errors:
-        _emit(progress, "Ensuring game is stopped before Bootstrap…")
+        _emit(progress, f"Ensuring game is stopped before {start_noun}…")
         ok_stop, stop_detail = run_slot_stack_kill(plan_src)
         stack_detail = f"{stack_detail}\n{stop_detail}".strip()
-        _lp_log(f"pre-bootstrap kill ok={ok_stop} {stop_detail[:400]}")
+        _lp_log(f"pre-start kill ok={ok_stop} {stop_detail[:400]}")
         if not ok_stop:
             errors = (
                 "Settings written, but OneHand/Bootstrap was still running — "
-                f"Bootstrap was not started: {_short_fail(stop_detail)} "
+                f"{start_noun} was not started: {_short_fail(stop_detail)} "
                 f"(log: {log_path})",
             )
 
     if use_slot and effective_restart and not errors:
-        _emit(progress, "Starting Bootstrap on the cabinet…")
+        _emit(progress, f"Starting {start_noun} on the cabinet…")
         ok, start_detail = run_slot_stack_start(plan_src, dest=dest)
         stack_started = ok
         stack_detail = f"{stack_detail}\n{start_detail}".strip()

@@ -31,7 +31,7 @@ from config_scanner.companion_pack import (
     load_manifest,
     stage_companion_from_source,
 )
-from config_scanner.cs_sources import companion_share_shortcuts
+from config_scanner.cs_sources import companion_share_shortcuts, share_browse_start
 from config_scanner.slot_setup import goldclub_root_from_target
 
 
@@ -122,7 +122,9 @@ class CompanionPackAuthorPanel(QWidget):
         root.addWidget(self._status)
 
     def _browse(self) -> None:
-        start = self._path_edit.text().strip() or str(companion_share_shortcuts()[0][1])
+        start = share_browse_start(
+            self._path_edit.text().strip() or str(companion_share_shortcuts()[0][1])
+        )
         path = QFileDialog.getExistingDirectory(
             self, "Select Updates / _B2U companion folder", start
         )

@@ -327,15 +327,8 @@ def prefer_local_scan_target(target: str) -> str:
 # Removable / game-image drives probed before the full alphabet sweep (G: is common on cabinets).
 _PRIORITY_GAME_DRIVES = ("G:", "D:", "E:", "F:", "H:", "C:")
 
-# Lab cabinets probed over UNC when no local game image is mounted.
-_LAB_REMOTE_GAME_ROOTS = (
-    r"\\10.0.0.90\c$\Goldclub",
-    r"\\10.0.0.90\c$\Goldclub\slot",
-    r"\\10.0.0.90\d$\Goldclub",
-    r"\\10.0.0.90\d$\Goldclub\slot",
-    r"\\10.0.0.111\slot",
-    r"\\10.0.0.111\c$\Goldclub",
-)
+# Remote UNCs are typed by the operator — do not probe hardcoded lab IPs.
+_LAB_REMOTE_GAME_ROOTS: tuple[str, ...] = ()
 
 # Maintenance RAM-clear scripts — secondary roulette USB marker when BuildVersion.txt is absent.
 _RAMCLEAR_SCRIPT_REL_PATHS = (
@@ -416,6 +409,9 @@ def normalize_game_drive(game_drive: str) -> str:
         return cleaned.rstrip("\\")
     if re.fullmatch(r"[A-Za-z]:", cleaned):
         return f"{cleaned[0].upper()}:\\"
+    if os.name != "nt":
+        # A trailing backslash is a real character in the POSIX name.
+        return cleaned.rstrip("/\\") or cleaned
     if cleaned.endswith("\\"):
         return cleaned
     return cleaned + "\\"
@@ -448,10 +444,38 @@ class _ExeVersionInfo:
     product_name: str | None
     display_version: str | None
     is_debug: bool | None = None
+    file_version_string: str | None = None
 
 
 # VS_FIXEDFILEINFO.FileFlags bit for a debug build (winver.h).
 _VS_FF_DEBUG = 0x00000001
+_VS_VERSION_KEY = "VS_VERSION_INFO".encode("utf-16le")
+_FIXEDFILEINFO_SIG = b"\xbd\x04\xef\xfe"
+_SKU_VERSION_KEYS = (
+    "ProductVersion",
+    "FileVersion",
+    "ProductName",
+    "FileDescription",
+    "SpecialBuild",
+    "PrivateBuild",
+)
+_WIN32_LANG_FALLBACKS = (
+    (0x0409, 0x04B0),
+    (0x0000, 0x04B0),
+    (0x0409, 0x04E4),
+    (0x0000, 0x04E4),
+    (0x0409, 0x0000),
+    (0x0000, 0x0000),
+)
+
+
+@dataclass(frozen=True)
+class _VersionResource:
+    """String table + flags from the exe's own VS_VERSIONINFO resource."""
+
+    fields: dict[str, tuple[str, ...]]
+    file_flags: int | None = None
+    file_version_numeric: str | None = None
 
 
 @dataclass(frozen=True)
@@ -462,6 +486,7 @@ class OneHandBuildInfo:
     configuration: str
     product_name: str = ""
     exe_path: str = ""
+    source: str = ""
 
     @property
     def label(self) -> str:
@@ -482,31 +507,63 @@ def _read_pe_debug_flag(win32api: object, exe_str: str) -> bool | None:
         return None
 
 
+def _win32_translations(win32api: object, exe_str: str) -> list[tuple[int, int]]:
+    found: list[tuple[int, int]] = []
+    try:
+        raw = win32api.GetFileVersionInfo(exe_str, r"\VarFileInfo\Translation")
+        for item in raw or ():
+            try:
+                pair = (int(item[0]), int(item[1]))
+            except (TypeError, ValueError, IndexError):
+                continue
+            if pair not in found:
+                found.append(pair)
+    except Exception:
+        pass
+    for pair in _WIN32_LANG_FALLBACKS:
+        if pair not in found:
+            found.append(pair)
+    return found
+
+
 def _read_pe_string_field(
     win32api: object,
     exe_str: str,
     field: str,
     lang_cp: tuple[int, int] | None,
 ) -> str:
-    paths: list[str] = []
+    values = _read_pe_string_fields(win32api, exe_str, field, lang_cp)
+    if not values:
+        return ""
+    debug = [item for item in values if _configuration_from_strings(item) == "Debug"]
+    return (debug or values)[0]
+
+
+def _read_pe_string_fields(
+    win32api: object,
+    exe_str: str,
+    field: str,
+    lang_cp: tuple[int, int] | None,
+) -> list[str]:
+    pairs: list[tuple[int, int]] = []
     if lang_cp is not None:
-        lang, codepage = lang_cp
-        paths.append(f"\\StringFileInfo\\{lang:04x}{codepage:04x}\\{field}")
-    paths.extend(
-        (
-            f"\\StringFileInfo\\040904b0\\{field}",
-            f"\\StringFileInfo\\000004b0\\{field}",
-        )
-    )
-    for path in paths:
+        pairs.append((int(lang_cp[0]), int(lang_cp[1])))
+    pairs.extend(_WIN32_LANG_FALLBACKS)
+    seen_paths: set[str] = set()
+    found: list[str] = []
+    for lang, codepage in pairs:
+        path = f"\\StringFileInfo\\{lang:04x}{codepage:04x}\\{field}"
+        if path in seen_paths:
+            continue
+        seen_paths.add(path)
         try:
             value = win32api.GetFileVersionInfo(exe_str, path) or ""
         except Exception:
             continue
         text = str(value).strip()
-        if text:
-            return text
-    return ""
+        if text and text not in found:
+            found.append(text)
+    return found
 
 
 def _configuration_from_strings(*parts: str) -> str | None:
@@ -518,6 +575,458 @@ def _configuration_from_strings(*parts: str) -> str | None:
     if re.search(r"\brelease\b", blob):
         return "Release"
     return None
+
+
+def _decode_version_value(rest: bytes) -> str:
+    """First printable UTF-16LE C-string, allowing a DWORD pad after the key."""
+    for skip in (0, 2):
+        chunk = rest[skip:]
+        if len(chunk) < 2:
+            continue
+        text = chunk.decode("utf-16le", errors="ignore")
+        value = text.split("\x00", 1)[0].strip()
+        if value and all(ch.isprintable() or ch.isspace() for ch in value):
+            return value
+    return ""
+
+
+def _all_utf16_values_after(blob: bytes, key: str) -> tuple[str, ...]:
+    """Every VERSIONINFO-style value for ``key``, not just the first hit."""
+    needle = (key + "\0").encode("utf-16le")
+    found: list[str] = []
+    start = 0
+    while True:
+        idx = blob.find(needle, start)
+        if idx < 0:
+            break
+        value = _decode_version_value(blob[idx + len(needle) : idx + len(needle) + 160])
+        if value and value not in found:
+            found.append(value)
+        start = idx + 2
+    return tuple(found)
+
+
+def _numeric_file_version(ms: int, ls: int) -> str:
+    a = (ms >> 16) & 0xFFFF
+    b = ms & 0xFFFF
+    c = (ls >> 16) & 0xFFFF
+    d = ls & 0xFFFF
+    if d:
+        return f"{a}.{b}.{c}.{d}"
+    return f"{a}.{b}.{c}"
+
+
+def _parse_fixedfileinfo(blob: bytes) -> tuple[int | None, str | None]:
+    off = blob.find(_FIXEDFILEINFO_SIG)
+    if off < 0 or off + 32 > len(blob):
+        return None, None
+    struct_ver = int.from_bytes(blob[off + 4 : off + 8], "little")
+    if struct_ver not in {0x00010000, 0x00000000}:
+        return None, None
+    ms = int.from_bytes(blob[off + 8 : off + 12], "little")
+    ls = int.from_bytes(blob[off + 12 : off + 16], "little")
+    flags = int.from_bytes(blob[off + 28 : off + 32], "little")
+    ver = _numeric_file_version(ms, ls)
+    if ver in {"0.0.0", "0.0.0.0"}:
+        ver = None
+    return flags, ver
+
+
+def _parse_version_info_blob(blob: bytes) -> _VersionResource | None:
+    fields: dict[str, list[str]] = {}
+    for key in _SKU_VERSION_KEYS + ("Comments",):
+        values = _all_utf16_values_after(blob, key)
+        if values:
+            fields[key] = list(values)
+    flags, numeric = _parse_fixedfileinfo(blob)
+    if not fields and flags is None and numeric is None:
+        return None
+    return _VersionResource(
+        fields={key: tuple(vals) for key, vals in fields.items()},
+        file_flags=flags,
+        file_version_numeric=numeric,
+    )
+
+
+def _iter_version_info_windows(data: bytes) -> list[bytes]:
+    windows: list[bytes] = []
+    start = 0
+    while True:
+        idx = data.find(_VS_VERSION_KEY, start)
+        if idx < 0:
+            break
+        hdr = idx - 6
+        if hdr >= 0 and hdr + 2 <= len(data):
+            length = int.from_bytes(data[hdr : hdr + 2], "little")
+            if length < 40 or length > 65_535:
+                length = 4096
+            end = min(len(data), hdr + length)
+            if end > hdr:
+                windows.append(data[hdr:end])
+        start = idx + 2
+    return windows
+
+
+def _read_pe_rsrc_bytes(path: Path) -> bytes | None:
+    """Read the PE resource section (.rsrc) without loading the whole exe."""
+    try:
+        with path.open("rb") as handle:
+            hdr = handle.read(4096)
+            if len(hdr) < 64 or hdr[:2] != b"MZ":
+                return None
+            e_lfanew = int.from_bytes(hdr[0x3C:0x40], "little")
+            if e_lfanew < 64 or e_lfanew > 1_000_000:
+                return None
+            handle.seek(e_lfanew)
+            pe = handle.read(24)
+            if pe[:4] != b"PE\x00\x00":
+                return None
+            num_sections = int.from_bytes(pe[6:8], "little")
+            opt_size = int.from_bytes(pe[20:22], "little")
+            if opt_size < 96 or not (1 <= num_sections <= 96):
+                return None
+            handle.seek(e_lfanew)
+            pe = handle.read(24 + opt_size + num_sections * 40)
+            if len(pe) < 24 + opt_size + 40:
+                return None
+            opt = pe[24 : 24 + opt_size]
+            magic = int.from_bytes(opt[0:2], "little")
+            if magic == 0x10B:
+                dd = 96
+            elif magic == 0x20B:
+                dd = 112
+            else:
+                return None
+            if dd + 24 > len(opt):
+                return None
+            rsrc_rva = int.from_bytes(opt[dd + 16 : dd + 20], "little")
+            rsrc_size = int.from_bytes(opt[dd + 20 : dd + 24], "little")
+            raw_off = None
+            raw_size = None
+            sect = pe[24 + opt_size :]
+            for i in range(num_sections):
+                block = sect[i * 40 : (i + 1) * 40]
+                if len(block) < 40:
+                    break
+                name = block[0:8].split(b"\x00", 1)[0]
+                virt_size = int.from_bytes(block[8:12], "little")
+                virt_addr = int.from_bytes(block[12:16], "little")
+                size_raw = int.from_bytes(block[16:20], "little")
+                ptr_raw = int.from_bytes(block[20:24], "little")
+                if rsrc_rva and virt_addr <= rsrc_rva < virt_addr + max(virt_size, size_raw):
+                    delta = rsrc_rva - virt_addr
+                    raw_off = ptr_raw + delta
+                    remain = size_raw - delta if size_raw > delta else 0
+                    raw_size = min(rsrc_size or remain, remain)
+                    break
+                if name == b".rsrc" and raw_off is None:
+                    raw_off = ptr_raw
+                    raw_size = size_raw
+            if raw_off is None or not raw_size or raw_size < 0:
+                return None
+            handle.seek(int(raw_off))
+            return handle.read(min(int(raw_size), 8 * 1024 * 1024))
+    except OSError:
+        return None
+
+
+def _pe_rva_to_offset(
+    sections: list[tuple[int, int, int, int]], rva: int
+) -> tuple[int, int] | None:
+    """Map RVA to (file_offset, max_readable) using PE section table."""
+    for virt_addr, virt_size, ptr_raw, size_raw in sections:
+        span = max(virt_size, size_raw)
+        if virt_addr <= rva < virt_addr + span:
+            delta = rva - virt_addr
+            remain = size_raw - delta if size_raw > delta else 0
+            if remain <= 0:
+                return None
+            return ptr_raw + delta, remain
+    return None
+
+
+def _read_pe_layout(
+    handle,
+) -> tuple[list[tuple[int, int, int, int]], bytes] | None:
+    """Return (sections, optional_header) for CodeView PDB path reads."""
+    handle.seek(0)
+    hdr = handle.read(4096)
+    if len(hdr) < 64 or hdr[:2] != b"MZ":
+        return None
+    e_lfanew = int.from_bytes(hdr[0x3C:0x40], "little")
+    if e_lfanew < 64 or e_lfanew > 1_000_000:
+        return None
+    handle.seek(e_lfanew)
+    pe = handle.read(24)
+    if pe[:4] != b"PE\x00\x00":
+        return None
+    num_sections = int.from_bytes(pe[6:8], "little")
+    opt_size = int.from_bytes(pe[20:22], "little")
+    if opt_size < 96 or not (1 <= num_sections <= 96):
+        return None
+    handle.seek(e_lfanew)
+    pe = handle.read(24 + opt_size + num_sections * 40)
+    if len(pe) < 24 + opt_size + 40:
+        return None
+    opt = pe[24 : 24 + opt_size]
+    sect = pe[24 + opt_size :]
+    sections: list[tuple[int, int, int, int]] = []
+    for i in range(num_sections):
+        block = sect[i * 40 : (i + 1) * 40]
+        if len(block) < 40:
+            break
+        virt_size = int.from_bytes(block[8:12], "little")
+        virt_addr = int.from_bytes(block[12:16], "little")
+        size_raw = int.from_bytes(block[16:20], "little")
+        ptr_raw = int.from_bytes(block[20:24], "little")
+        sections.append((virt_addr, virt_size, ptr_raw, size_raw))
+    return sections, opt
+
+
+def _pdb_path_is_debug_output(pdb_path: str) -> bool:
+    """True when the CodeView path has a ``Debug`` folder (not the word in a filename)."""
+    parts = [p for p in re.split(r"[\\/]+", (pdb_path or "").strip()) if p]
+    return any(part.casefold() == "debug" for part in parts[:-1])
+
+
+def _decode_rsds_pdb_path(blob: bytes, offset: int) -> str:
+    if offset + 24 > len(blob) or blob[offset : offset + 4] != b"RSDS":
+        return ""
+    rest = blob[offset + 24 : offset + 24 + 512]
+    end = rest.find(b"\x00")
+    raw = rest if end < 0 else rest[:end]
+    try:
+        text = raw.decode("ascii")
+    except UnicodeDecodeError:
+        return ""
+    if not text.lower().endswith(".pdb"):
+        return ""
+    if not all(ch.isprintable() for ch in text):
+        return ""
+    return text
+
+
+def _iter_pe_codeview_pdb_paths(path: Path) -> list[str]:
+    """PDB paths from IMAGE_DEBUG_DIRECTORY (CodeView / RSDS)."""
+    found: list[str] = []
+    try:
+        with path.open("rb") as handle:
+            layout = _read_pe_layout(handle)
+            if layout is None:
+                return found
+            sections, opt = layout
+            magic = int.from_bytes(opt[0:2], "little")
+            if magic == 0x10B:
+                dd = 96
+            elif magic == 0x20B:
+                dd = 112
+            else:
+                return found
+            # IMAGE_DIRECTORY_ENTRY_DEBUG = 6
+            dbg_off = dd + 6 * 8
+            if dbg_off + 8 > len(opt):
+                return found
+            rva = int.from_bytes(opt[dbg_off : dbg_off + 4], "little")
+            size = int.from_bytes(opt[dbg_off + 4 : dbg_off + 8], "little")
+            if not rva or size < 28:
+                return found
+            mapped = _pe_rva_to_offset(sections, rva)
+            if mapped is None:
+                return found
+            file_off, remain = mapped
+            handle.seek(int(file_off))
+            table = handle.read(min(int(size), int(remain), 4096))
+            for i in range(0, len(table) - 27, 28):
+                entry = table[i : i + 28]
+                dtype = int.from_bytes(entry[12:16], "little")
+                data_size = int.from_bytes(entry[16:20], "little")
+                raw_ptr = int.from_bytes(entry[24:28], "little")
+                if dtype != 2 or data_size < 25 or raw_ptr <= 0:
+                    continue
+                handle.seek(raw_ptr)
+                cv = handle.read(min(data_size, 1024))
+                pdb = _decode_rsds_pdb_path(cv, 0)
+                if pdb:
+                    found.append(pdb)
+    except OSError:
+        return found
+    return found
+
+
+def _pe_codeview_is_debug_build(path: Path) -> bool:
+    """True when this exe's own CodeView path was produced from a Debug folder."""
+    for pdb in _iter_pe_codeview_pdb_paths(path):
+        if _pdb_path_is_debug_output(pdb):
+            return True
+    return False
+
+
+def _read_head_tail_bytes(path: Path, *, head: int, tail: int) -> bytes:
+    with path.open("rb") as handle:
+        handle.seek(0, os.SEEK_END)
+        size = handle.tell()
+        if size <= head + tail:
+            handle.seek(0)
+            return handle.read()
+        handle.seek(0)
+        data = handle.read(head)
+        handle.seek(size - tail)
+        return data + handle.read()
+
+
+def _read_version_scan_bytes(path: Path) -> bytes:
+    rsrc = _read_pe_rsrc_bytes(path)
+    if rsrc:
+        return rsrc
+    try:
+        return _read_head_tail_bytes(path, head=2 * 1024 * 1024, tail=3 * 1024 * 1024)
+    except OSError:
+        return b""
+
+
+def _version_resource_score(res: _VersionResource) -> tuple[int, int, int, int]:
+    """Prefer the exe's own VERSIONINFO over a dependency block in the same scan."""
+    fv = res.fields.get("FileVersion", ())
+    pv = res.fields.get("ProductVersion", ())
+    names = list(res.fields.get("ProductName", ())) + list(
+        res.fields.get("FileDescription", ())
+    )
+    onehand = any("onehand" in (name or "").casefold() for name in names)
+    numeric = any(_has_numeric_version_token(value) for value in (*fv, *pv))
+    debug_fv = any(_is_debug_sku_token(value) for value in fv) and not any(
+        _has_numeric_version_token(value) for value in fv
+    )
+    return (
+        1 if onehand else 0,
+        1 if numeric else 0,
+        1 if debug_fv else 0,
+        sum(len(vals) for vals in res.fields.values()),
+    )
+
+
+def _read_version_resource(path: Path) -> _VersionResource | None:
+    """Parse the primary VS_VERSIONINFO from .rsrc or exe head/tail (no win32api).
+
+    Multiple VERSIONINFO windows can appear (dependencies). Pick one block —
+    never merge FileVersion/ProductVersion across blocks.
+    """
+    data = _read_version_scan_bytes(path)
+    if not data:
+        return None
+    candidates: list[_VersionResource] = []
+    for blob in _iter_version_info_windows(data) or [data]:
+        parsed = _parse_version_info_blob(blob)
+        if parsed is not None:
+            candidates.append(parsed)
+    if not candidates:
+        return None
+    return max(candidates, key=_version_resource_score)
+
+
+def _is_debug_sku_token(text: str | None) -> bool:
+    """True when ProductVersion / FileVersion *is* the Debug SKU name."""
+    folded = (text or "").strip().casefold()
+    return folded == "debug" or folded.startswith("debug ") or folded.startswith("debug-")
+
+
+def _has_numeric_version_token(text: str | None) -> bool:
+    raw = (text or "").strip()
+    return bool(raw) and bool(re.search(r"\d+\.\d+", raw)) and not _is_debug_sku_token(raw)
+
+
+def _field_values_are_debug_sku(values: list[str] | tuple[str, ...]) -> bool:
+    """Debug only when a Debug token exists and no numeric sibling shares the field."""
+    if not values:
+        return False
+    if any(_has_numeric_version_token(value) for value in values):
+        return False
+    return any(_is_debug_sku_token(value) for value in values)
+
+
+def _version_resource_is_debug(res: _VersionResource | None) -> bool:
+    """Debug SKU only from ProductVersion / FileVersion, not Comments.
+
+    ``FileVersion=Debug`` with a numeric ProductVersion is still Debug.
+    A numeric FileVersion (``2.0.1.0``) stays Release even if another
+    VERSIONINFO in the scan window said Debug — primary block is selected
+    first, and a numeric sibling in the same field list also wins.
+    """
+    if res is None:
+        return False
+    if _field_values_are_debug_sku(res.fields.get("FileVersion", ())):
+        return True
+    return _field_values_are_debug_sku(res.fields.get("ProductVersion", ()))
+
+
+def _version_resource_is_numeric_release(res: _VersionResource | None) -> bool:
+    """Official VERSIONINFO is a numbered SKU (not FileVersion/ProductVersion=Debug)."""
+    if res is None or _version_resource_is_debug(res):
+        return False
+    for key in ("ProductVersion", "FileVersion"):
+        if any(_has_numeric_version_token(value) for value in res.fields.get(key, ())):
+            return True
+    return bool(res.file_version_numeric) and _has_numeric_version_token(
+        res.file_version_numeric
+    )
+
+
+def _blob_has_debug_sku_strings(blob: bytes) -> bool:
+    if not blob:
+        return False
+    if _field_values_are_debug_sku(_all_utf16_values_after(blob, "FileVersion")):
+        return True
+    return _field_values_are_debug_sku(_all_utf16_values_after(blob, "ProductVersion"))
+
+
+def _pick_display_product_version(values: list[str] | tuple[str, ...]) -> str:
+    """Prefer a numeric / RC ProductVersion over a VERSIONINFO value that is only 'Debug'."""
+    cleaned = [str(item).strip() for item in values if str(item).strip()]
+    if not cleaned:
+        return ""
+    numeric = [item for item in cleaned if re.search(r"\d+\.\d+", item)]
+    if numeric:
+        rc = [item for item in numeric if re.search(r"rc", item, re.IGNORECASE)]
+        return (rc or numeric)[0]
+    for item in cleaned:
+        if _configuration_from_strings(item) != "Debug":
+            return item
+    return ""
+
+
+def onehand_exe_is_debug_sku(exe_path: Path | str) -> bool:
+    """True when this OneHand.exe is the Debug VERSIONINFO SKU.
+
+    ``FileVersion=Debug`` / ``ProductVersion=Debug`` is Debug. A numeric
+    ProductVersion + FileVersion is Release. CodeView ``\\Debug\\`` folder is
+    only a fallback when VERSIONINFO is missing. Comments and dependency
+    VERSIONINFO blocks do not override the primary SKU.
+    """
+    path = Path(exe_path)
+    try:
+        if "debug" in path.name.casefold():
+            return True
+    except OSError:
+        return False
+    try:
+        res = _read_version_resource(path)
+    except OSError:
+        res = None
+    if _version_resource_is_debug(res):
+        return True
+    if _version_resource_is_numeric_release(res):
+        return False
+    try:
+        if _pe_codeview_is_debug_build(path):
+            return True
+    except OSError:
+        pass
+    if res is not None:
+        return False
+    try:
+        blob = _read_version_scan_bytes(path)
+    except OSError:
+        return False
+    return _blob_has_debug_sku_strings(blob)
 
 
 def _sniff_build_configuration(exe_path: Path) -> str | None:
@@ -573,34 +1082,144 @@ def _preferred_onehand_version_text(info: _ExeVersionInfo) -> str:
     return ""
 
 
-def _onehand_configuration(
-    info: _ExeVersionInfo, exe_path: Path, goldclub: Path
-) -> str:
-    """Debug wins over an unset VS_FF_DEBUG bit (OneHand Debug SKUs leave it 0)."""
-    if info.is_debug is True:
-        return "Debug"
-    labels = (
-        info.product_version,
-        info.file_version,
-        info.product_name,
-        info.display_version,
-        exe_path.name,
-    )
-    if _configuration_from_strings(*(p or "" for p in labels)) == "Debug":
-        return "Debug"
-    try:
-        from config_scanner.slot_setup import is_onehand_debug_build
+_SLOTLOG_MAINFRM_RE = re.compile(r"\bOneHand\.MainFrm\s+-\s*(.*)$")
 
-        if is_onehand_debug_build(goldclub):
-            return "Debug"
-    except Exception:
+
+def _read_text_tail(path: Path, *, max_bytes: int = 256_000) -> str:
+    """Read the end of a log without pulling the whole file over SMB."""
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as handle:
+            if size > max_bytes:
+                handle.seek(max(0, size - max_bytes))
+            data = handle.read()
+    except OSError:
+        return ""
+    return data.decode("utf-8", errors="replace")
+
+
+def _slotlog_files_for_debug_sku(goldclub: Path, *, limit: int = 8) -> list[Path]:
+    """Newest SlotLog files under Goldclub or slot\\var\\log."""
+    root = Path(goldclub)
+    dirs = (
+        root / "var" / "log" / "SlotLog",
+        root / "slot" / "var" / "log" / "SlotLog",
+        root.parent / "var" / "log" / "SlotLog",
+    )
+    files: list[Path] = []
+    seen: set[str] = set()
+    for folder in dirs:
+        try:
+            if not folder.is_dir():
+                continue
+            for path in folder.glob("*.log"):
+                key = str(path)
+                if key in seen:
+                    continue
+                try:
+                    if path.is_file():
+                        seen.add(key)
+                        files.append(path)
+                except OSError:
+                    continue
+        except OSError:
+            continue
+
+    def _mtime(path: Path) -> float:
+        try:
+            return path.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    files.sort(key=_mtime)
+    return files[-limit:]
+
+
+def _mainfrm_message(line: str) -> str | None:
+    match = _SLOTLOG_MAINFRM_RE.search(line.rstrip())
+    if match is None:
+        return None
+    return match.group(1).strip()
+
+
+def _is_mainfrm_boot_banner(message: str) -> bool:
+    if not message:
+        return False
+    if len(message) >= 8 and set(message) <= {"*"}:
+        return True
+    low = message.casefold()
+    return low.startswith("slotmachine") or low.startswith("static initialization")
+
+
+def _slotlog_mainfrm_is_debug(goldclub: Path | str) -> bool:
+    """True when the latest OneHand.MainFrm boot logs an exact ``DB`` line.
+
+    Debug SKUs print ``OneHand.MainFrm - DB`` between Static initialization
+    and ``loaded assembly``. Release skips that line. Fail-closed: other
+    loggers, ``Database``, and leftover ``DB`` from an older boot do not
+    count — only the latest MainFrm boot banner wins.
+    """
+    latest_had_db: bool | None = None
+    saw_db = False
+    seen_boot = False
+    for path in _slotlog_files_for_debug_sku(Path(goldclub)):
+        text = _read_text_tail(path)
+        if not text:
+            continue
+        for line in text.splitlines():
+            message = _mainfrm_message(line)
+            if message is None:
+                continue
+            if _is_mainfrm_boot_banner(message):
+                if seen_boot:
+                    latest_had_db = saw_db
+                seen_boot = True
+                saw_db = False
+                continue
+            if message.casefold() != "db":
+                continue
+            saw_db = True
+            if not seen_boot:
+                seen_boot = True
+    if seen_boot:
+        latest_had_db = saw_db
+    return bool(latest_had_db)
+
+
+def _onehand_configuration(
+    info: _ExeVersionInfo,
+    exe_path: Path,
+    goldclub: Path | None = None,
+) -> tuple[str, str]:
+    """Debug from VERSIONINFO SKU name; else SlotLog MainFrm DB; else numeric Release."""
+    file_version_string = info.file_version_string
+    if any(
+        _is_debug_sku_token(part)
+        for part in (file_version_string, info.product_version)
+    ):
+        return "Debug", "VERSIONINFO string"
+    if goldclub is not None:
+        try:
+            if _slotlog_mainfrm_is_debug(goldclub):
+                return "Debug", "SlotLog OneHand.MainFrm DB"
+        except OSError:
+            pass
+    try:
+        if onehand_exe_is_debug_sku(exe_path):
+            return "Debug", "VERSIONINFO ProductVersion/FileVersion"
+    except OSError:
         pass
-    sniffed = _sniff_build_configuration(exe_path)
-    if sniffed == "Debug":
-        return "Debug"
-    if info.is_debug is False or sniffed == "Release":
-        return "Release"
-    return "Release"
+    numeric_release = any(
+        _has_numeric_version_token(part)
+        for part in (info.product_version, info.file_version, file_version_string)
+    )
+    if numeric_release:
+        return "Release", "VERSIONINFO"
+    if info.is_debug is True:
+        return "Debug", "VERSIONINFO"
+    if info.is_debug is False:
+        return "Release", "VERSIONINFO"
+    return "Release", "default"
 
 
 def detect_onehand_build(goldclub: Path | str) -> OneHandBuildInfo | None:
@@ -623,7 +1242,7 @@ def detect_onehand_build(goldclub: Path | str) -> OneHandBuildInfo | None:
                     version = core.lstrip("v")
         except OSError:
             pass
-    configuration = _onehand_configuration(info, exe_path, root)
+    configuration, source = _onehand_configuration(info, exe_path, goldclub=root)
     if not version and configuration == "Unknown":
         return None
     return OneHandBuildInfo(
@@ -631,11 +1250,21 @@ def detect_onehand_build(goldclub: Path | str) -> OneHandBuildInfo | None:
         configuration=configuration,
         product_name=(info.product_name or "").strip(),
         exe_path=str(exe_path),
+        source=source,
     )
 
 
 def _find_onehand_exe(scan_root: Path) -> Path | None:
-    for rel in ("OneHand.exe", "bin/OneHand.exe", "slot/OneHand.exe"):
+    """Prefer slot\\OneHand.exe — a leftover at the Goldclub root is the wrong SKU."""
+    try:
+        from config_scanner.slot_setup import onehand_exe_path
+
+        found = onehand_exe_path(scan_root)
+        if found is not None:
+            return found
+    except Exception:
+        pass
+    for rel in ("slot/OneHand.exe", "OneHand.exe", "bin/OneHand.exe"):
         path = scan_root / rel
         try:
             if path.is_file():
@@ -734,7 +1363,6 @@ def _extract_version_from_exe(exe_path: Path, *, slot_style: bool = False) -> _E
     exe_str = str(exe_path)
     product_version = ""
     product_name_meta = ""
-    extra_strings = ""
     is_debug: bool | None = None
     win32api = None
     try:
@@ -746,48 +1374,88 @@ def _extract_version_from_exe(exe_path: Path, *, slot_style: bool = False) -> _E
     try:
         lang_cp: tuple[int, int] | None = None
         file_version: str | None = None
+        file_version_string = ""
+        file_description = ""
+        special_build = ""
+        private_build = ""
+        comments = ""
+        product_versions: list[str] = []
         if win32api is not None:
             file_version = _read_pe_file_version(win32api, exe_str)
             is_debug = _read_pe_debug_flag(win32api, exe_str)
-            try:
-                lang_cp = win32api.GetFileVersionInfo(exe_str, r"\VarFileInfo\Translation")[0]
-                lang, codepage = lang_cp
-                path = f"\\StringFileInfo\\{lang:04x}{codepage:04x}\\ProductVersion"
-                product_version = win32api.GetFileVersionInfo(exe_str, path) or ""
-            except Exception:
-                for fallback in (
-                    r"\StringFileInfo\040904b0\ProductVersion",
-                    r"\StringFileInfo\000004b0\ProductVersion",
-                ):
-                    try:
-                        product_version = win32api.GetFileVersionInfo(exe_str, fallback) or ""
-                        if product_version:
-                            break
-                    except Exception:
-                        continue
+            translations = _win32_translations(win32api, exe_str)
+            if translations:
+                lang_cp = translations[0]
+            product_versions = _read_pe_string_fields(
+                win32api, exe_str, "ProductVersion", lang_cp
+            )
+            product_version = _pick_display_product_version(product_versions) or (
+                product_versions[0] if product_versions else ""
+            )
             product_name_meta = _read_pe_string_field(
                 win32api, exe_str, "ProductName", lang_cp
             )
-            extra_strings = " ".join(
-                _read_pe_string_field(win32api, exe_str, field, lang_cp)
-                for field in (
-                    "SpecialBuild",
-                    "PrivateBuild",
-                    "Comments",
-                    "FileDescription",
-                    "OriginalFilename",
-                    "InternalName",
-                )
+            file_version_string = _read_pe_string_field(
+                win32api, exe_str, "FileVersion", lang_cp
             )
+            file_description = _read_pe_string_field(
+                win32api, exe_str, "FileDescription", lang_cp
+            )
+            special_build = _read_pe_string_field(
+                win32api, exe_str, "SpecialBuild", lang_cp
+            )
+            private_build = _read_pe_string_field(
+                win32api, exe_str, "PrivateBuild", lang_cp
+            )
+            comments = _read_pe_string_field(win32api, exe_str, "Comments", lang_cp)
 
         pv = str(product_version).strip()
         product_name = str(product_name_meta).strip() or None
-        if not pv:
-            sniff_pv, sniff_pn = _sniff_exe_version_strings(exe_path)
-            if sniff_pv:
-                pv = sniff_pv.strip()
-            if sniff_pn and not product_name:
-                product_name = sniff_pn
+        res = _read_version_resource(exe_path)
+        if res is not None:
+            res_pvs = list(res.fields.get("ProductVersion", ()))
+            if res_pvs:
+                picked = _pick_display_product_version(res_pvs + product_versions)
+                if picked:
+                    pv = picked
+                elif not pv:
+                    pv = res_pvs[0]
+            if not product_name:
+                names = res.fields.get("ProductName", ())
+                if names:
+                    product_name = names[0]
+            if not file_version_string:
+                fv_strings = res.fields.get("FileVersion", ())
+                if fv_strings:
+                    numeric_fv = [
+                        item
+                        for item in fv_strings
+                        if _has_numeric_version_token(item)
+                    ]
+                    debug_fv = [
+                        item for item in fv_strings if _is_debug_sku_token(item)
+                    ]
+                    file_version_string = (numeric_fv or debug_fv or fv_strings)[0]
+            if not file_version and res.file_version_numeric:
+                file_version = res.file_version_numeric
+            if _version_resource_is_debug(res):
+                is_debug = True
+            elif _version_resource_is_numeric_release(res):
+                is_debug = False
+            elif res.file_flags is not None and res.file_flags & _VS_FF_DEBUG:
+                is_debug = True
+        sniff_pv, sniff_pn = _sniff_exe_version_strings(exe_path)
+        if sniff_pv:
+            rich = sniff_pv.strip()
+            # Display only, and only when VERSIONINFO has no real version.
+            # A 32 MB sniff otherwise picks a dependency 3.0.0.0+RC2+… and
+            # poisons a Release 2.x ProductVersion.
+            if rich and (
+                not pv or _configuration_from_strings(pv) == "Debug"
+            ) and _configuration_from_strings(rich) != "Debug":
+                pv = rich
+        if sniff_pn and not product_name:
+            product_name = sniff_pn
         if not file_version and win32api is not None:
             file_version = _read_pe_file_version(win32api, exe_str)
 
@@ -799,14 +1467,22 @@ def _extract_version_from_exe(exe_path: Path, *, slot_style: bool = False) -> _E
         else:
             display = pv or file_version
 
-        # VS_FF_DEBUG is often 0 on OneHand Debug SKUs; VERSIONINFO strings win.
-        hinted = _configuration_from_strings(
-            pv, file_version or "", product_name or "", extra_strings
-        )
-        if hinted == "Debug":
+        # FileVersion/ProductVersion token Debug wins; numeric VERSIONINFO is Release.
+        # Ignore Comments / FileDescription / stray Release words.
+        if _is_debug_sku_token(file_version_string) and not _has_numeric_version_token(
+            file_version_string
+        ):
             is_debug = True
-        elif is_debug is None and hinted == "Release":
+        elif _is_debug_sku_token(pv) and not _has_numeric_version_token(pv):
+            is_debug = True
+        elif _has_numeric_version_token(pv) or _has_numeric_version_token(
+            file_version_string
+        ):
             is_debug = False
+        elif is_debug is None:
+            sku_hint = _configuration_from_strings(pv, file_version_string)
+            if sku_hint == "Release":
+                is_debug = False
 
         return _ExeVersionInfo(
             product_version=pv or None,
@@ -814,6 +1490,7 @@ def _extract_version_from_exe(exe_path: Path, *, slot_style: bool = False) -> _E
             product_name=product_name,
             display_version=display,
             is_debug=is_debug,
+            file_version_string=file_version_string or None,
         )
     except Exception:
         return _ExeVersionInfo(None, None, None, None, None)

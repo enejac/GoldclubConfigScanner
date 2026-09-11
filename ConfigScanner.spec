@@ -6,6 +6,14 @@ from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_all
 
+# Each PyInstaller run bakes this process's local clock (not a committed time).
+try:
+    from config_scanner.build_stamp_write import write_build_stamp
+
+    print("[ConfigScanner.spec] Build stamp:", write_build_stamp())
+except Exception as exc:  # noqa: BLE001
+    print("[ConfigScanner.spec] WARN: could not bake build stamp:", exc)
+
 _spec_dir = Path(SPEC).resolve().parent
 _embed = _spec_dir / "config_scanner" / "assets" / "embedded_updates"
 # Staged CountrySelector trees have 250+ char paths — PyInstaller bootloader
@@ -66,6 +74,49 @@ datas = [
     ],
 ]
 binaries = []
+
+
+def _collect_pyside6_qt_plugins() -> list[tuple[str, str]]:
+    """Bundle Qt platform plugins.
+
+    Wine PyInstaller often skips ``plugins/platforms/qwindows.dll``. Without
+    that file Windows shows: "no Qt platform plugin could be initialized".
+    Destination must be ``PySide6/plugins/...`` (see pyi_rth_pyside6).
+    """
+    try:
+        import PySide6
+    except ImportError:
+        return []
+    root = Path(PySide6.__file__).resolve().parent / "plugins"
+    if not root.is_dir():
+        print("[ConfigScanner.spec] WARN: PySide6/plugins not found")
+        return []
+    keep = {
+        "platforms",
+        "styles",
+        "imageformats",
+        "iconengines",
+        "tls",
+        "networkinformation",
+        "generic",
+        "platforminputcontexts",
+    }
+    collected: list[tuple[str, str]] = []
+    for sub in sorted(root.iterdir()):
+        if not sub.is_dir() or sub.name not in keep:
+            continue
+        dest = f"PySide6/plugins/{sub.name}"
+        for dll in sorted(sub.glob("*.dll")):
+            collected.append((str(dll), dest))
+    names = [Path(src).name for src, _dest in collected]
+    print(f"[ConfigScanner.spec] Qt plugins: {len(collected)} ({', '.join(names)})")
+    if "qwindows.dll" not in {n.casefold() for n in names}:
+        print("[ConfigScanner.spec] ERROR: qwindows.dll was not collected")
+    return collected
+
+
+binaries += _collect_pyside6_qt_plugins()
+
 hiddenimports = [
     "gui.app_logging",
     "gui.app_branding",

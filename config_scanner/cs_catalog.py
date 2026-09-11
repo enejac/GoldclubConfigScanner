@@ -234,7 +234,10 @@ def is_cs_forbidden_rel(rel_posix: str) -> bool:
 
 def _prefer_existing_case(goldclub_root: Path, rest: str) -> Path:
     """Join *rest* onto *goldclub_root*, preserving on-disk folder casing."""
-    parts = [p for p in rest.replace("\\", "/").split("/") if p]
+    from network.lab_access import safe_join_under
+
+    safe_join_under(goldclub_root, rest)
+    parts = [p for p in rest.replace("\\", "/").split("/") if p and p not in (".",)]
     cur = Path(goldclub_root)
     for part in parts:
         if cur.is_dir():
@@ -267,7 +270,7 @@ def _normalize_goldclub_path(path_str: str, goldclub_root: Path) -> Path:
         return _prefer_existing_case(goldclub_root, text.split("/", 1)[1])
     if re.match(r"^(slot|services|bios|var|platform|maintenance)(/|$)", text, re.I):
         return _prefer_existing_case(goldclub_root, text)
-    return Path(text)
+    raise ValueError(f"install.json path escapes Goldclub root: {path_str!r}")
 
 
 def apply_country_leaf(
@@ -292,8 +295,17 @@ def apply_country_leaf(
     skipped: list[str] = []
     errors: list[str] = []
 
+    def _map_goldclub(path_str: str, *, action: str) -> Path | None:
+        try:
+            return _normalize_goldclub_path(path_str, goldclub_root)
+        except ValueError as exc:
+            errors.append(f"{action} {path_str}: {exc}")
+            return None
+
     for del_path in recipe.delete_paths:
-        target = _normalize_goldclub_path(del_path, goldclub_root)
+        target = _map_goldclub(del_path, action="delete")
+        if target is None:
+            continue
         rel_note = str(target)
         if dry_run:
             deleted.append(rel_note)
@@ -312,7 +324,9 @@ def apply_country_leaf(
 
     for frm, to in recipe.copy_ops:
         src = leaf_dir / frm
-        dest_root = _normalize_goldclub_path(to, goldclub_root)
+        dest_root = _map_goldclub(to, action="copy")
+        if dest_root is None:
+            continue
         if not src.exists():
             skipped.append(f"copy {frm}: source missing in leaf")
             continue
@@ -326,7 +340,9 @@ def apply_country_leaf(
 
     if subs:
         for file_path in recipe.variable_files:
-            target = _normalize_goldclub_path(file_path, goldclub_root)
+            target = _map_goldclub(file_path, action="subst")
+            if target is None:
+                continue
             if dry_run:
                 substituted.append(str(target))
                 continue

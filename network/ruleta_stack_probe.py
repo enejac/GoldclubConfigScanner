@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import textwrap
+from dataclasses import dataclass
 from pathlib import Path
 
 _BLOCKING_NAMES = ("Ruleta", "ruleta", "nginx", "godot", "Godot")
@@ -17,7 +18,19 @@ def blocking_process_names() -> tuple[str, ...]:
     return _BLOCKING_NAMES
 
 
-def _probe_local_powershell(script: str, *, timeout: int = 45) -> str:
+@dataclass(frozen=True)
+class BlockingProcessProbe:
+    """Process names on the target, or a probe failure that must fail closed."""
+
+    names: tuple[str, ...] = ()
+    error: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.error is None
+
+
+def _probe_local_powershell(script: str, *, timeout: int = 45) -> tuple[str, str | None]:
     run_kw: dict = {
         "capture_output": True,
         "text": True,
@@ -31,29 +44,45 @@ def _probe_local_powershell(script: str, *, timeout: int = 45) -> str:
             ["powershell.exe", "-NoProfile", "-Command", script],
             **run_kw,
         )
-    except (OSError, subprocess.TimeoutExpired):
-        return ""
-    return ((result.stdout or "") + (result.stderr or "")).strip()
+    except subprocess.TimeoutExpired:
+        return "", "local process probe timed out"
+    except OSError as exc:
+        return "", f"local process probe failed: {exc}"
+    blob = ((result.stdout or "") + (result.stderr or "")).strip()
+    if result.returncode not in (0, None) and not blob:
+        return "", f"local process probe exited {result.returncode}"
+    return blob, None
 
 
 def probe_blocking_processes_local() -> tuple[str, ...]:
     """Process names still running on this machine."""
+    return probe_blocking_processes_local_result().names
+
+
+def probe_blocking_processes_local_result() -> BlockingProcessProbe:
     names = ",".join(f"'{n}'" for n in _BLOCKING_NAMES)
-    blob = _probe_local_powershell(
+    blob, error = _probe_local_powershell(
         f"$n=@({names}); "
         "(Get-Process -Name $n -ErrorAction SilentlyContinue | "
         "Select-Object -ExpandProperty ProcessName -Unique) -join ','"
     )
+    if error:
+        return BlockingProcessProbe(error=error)
     if not blob:
-        return ()
-    return tuple(sorted({part.strip() for part in blob.split(",") if part.strip()}))
+        return BlockingProcessProbe()
+    found = tuple(sorted({part.strip() for part in blob.split(",") if part.strip()}))
+    return BlockingProcessProbe(names=found)
 
 
 def probe_blocking_processes_remote(host: str) -> tuple[str, ...]:
     """Process names still running on a lab cabinet via WinRM."""
+    return probe_blocking_processes_remote_result(host).names
+
+
+def probe_blocking_processes_remote_result(host: str) -> BlockingProcessProbe:
     host = (host or "").strip()
     if not host:
-        return ()
+        return BlockingProcessProbe(error="remote process probe requires a cabinet host")
     try:
         from automation.remote_exec import winrm_run_inline
         from network.lab_access import ensure_lab_smb_credential, require_lab_fleet_ip
@@ -67,21 +96,41 @@ def probe_blocking_processes_remote(host: str) -> tuple[str, ...]:
             $found = Get-Process -Name $names -ErrorAction SilentlyContinue |
                 Select-Object -ExpandProperty ProcessName -Unique
             if ($found) {{ ($found -join ',') }}
+            else {{ 'NONE' }}
             """
         ).strip()
         result = winrm_run_inline(ip=host, script=script, timeout=60)
         blob = ((result.stdout or "") + (result.stderr or "")).strip()
-    except Exception:
-        return ()
+    except Exception as exc:
+        return BlockingProcessProbe(error=f"remote process probe failed: {exc}")
+    if result.returncode not in (0, None):
+        return BlockingProcessProbe(
+            error=f"remote process probe exited {result.returncode}: {blob[:180]}"
+        )
     if not blob:
-        return ()
-    return tuple(sorted({part.strip() for part in blob.split(",") if part.strip()}))
+        return BlockingProcessProbe(error="remote process probe returned no output")
+    if blob.casefold() == "none":
+        return BlockingProcessProbe()
+    found = tuple(
+        sorted(
+            {
+                part.strip()
+                for part in blob.split(",")
+                if part.strip() and part.strip().casefold() != "none"
+            }
+        )
+    )
+    return BlockingProcessProbe(names=found)
 
 
 def probe_blocking_processes(host: str | None) -> tuple[str, ...]:
+    return probe_blocking_processes_result(host).names
+
+
+def probe_blocking_processes_result(host: str | None) -> BlockingProcessProbe:
     if host and host.strip().lower() not in {"", "local", "127.0.0.1", "localhost"}:
-        return probe_blocking_processes_remote(host.strip())
-    return probe_blocking_processes_local()
+        return probe_blocking_processes_remote_result(host.strip())
+    return probe_blocking_processes_local_result()
 
 
 def dest_ruleta_file_locked(dest_ruleta: Path, rel: Path = _CANARY_DLL) -> bool:
@@ -134,7 +183,10 @@ def verify_stack_clear_for_swap(
     dest_ruleta: Path,
 ) -> tuple[bool, str]:
     """Return (True, '') when processes are down and swap targets look writable."""
-    running = probe_blocking_processes(host)
+    probe = probe_blocking_processes_result(host)
+    if probe.error:
+        return False, f"Could not check running processes: {probe.error}"
+    running = probe.names
     if running:
         return False, "Still running on target: " + ", ".join(running)
     ok, msg = dest_ruleta_swap_writable(dest_ruleta)
@@ -207,7 +259,9 @@ def force_stop_blocking_processes_local() -> tuple[bool, str]:
         'OK'
         """
     ).strip()
-    blob = _probe_local_powershell(script, timeout=90)
+    blob, error = _probe_local_powershell(script, timeout=90)
+    if error:
+        return False, error
     if "still running" in blob.casefold():
         return False, blob.splitlines()[-1]
     return True, "Forced stop OK"
