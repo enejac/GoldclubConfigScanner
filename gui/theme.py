@@ -23,7 +23,9 @@ COLOR_LOW = "#6a9fb5"
 COLOR_SUCCESS = "#89d185"
 
 STYLESHEET = f"""
-QWidget {{
+/* ``QWidget:!window`` — styling a top-level window background makes Qt
+   draw a custom frame and Windows then cannot move or resize the app. */
+QWidget:!window {{
     background-color: {COLOR_BG};
     color: {COLOR_TEXT};
     font-size: 13px;
@@ -36,9 +38,6 @@ QToolTip {{
     color: {COLOR_TEXT};
     border: 1px solid {COLOR_BORDER};
     padding: 6px 8px;
-}}
-QMainWindow {{
-    background-color: {COLOR_BG};
 }}
 QLineEdit, QComboBox {{
     background-color: {COLOR_BG_INPUT};

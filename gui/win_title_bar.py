@@ -74,7 +74,73 @@ _HWND_TOPMOST = -1
 _HWND_NOTOPMOST = -2
 _SWP_NOSIZE = 0x0001
 _SWP_NOMOVE = 0x0002
+_SWP_NOZORDER = 0x0004
 _SWP_NOACTIVATE = 0x0010
+_SWP_FRAMECHANGED = 0x0020
+_GWL_STYLE = -16
+_WS_CAPTION = 0x00C00000
+_WS_SYSMENU = 0x00080000
+_WS_THICKFRAME = 0x00040000
+_WS_MINIMIZEBOX = 0x00020000
+_WS_MAXIMIZEBOX = 0x00010000
+_WS_OVERLAPPEDWINDOW = (
+    _WS_CAPTION | _WS_SYSMENU | _WS_THICKFRAME | _WS_MINIMIZEBOX | _WS_MAXIMIZEBOX
+)
+
+
+def ensure_native_resizable_frame(widget: QWidget) -> None:
+    """Keep the OS caption and resize border on a top-level window.
+
+    An application stylesheet that paints ``QWidget`` / ``QMainWindow``
+    can make Qt use a custom frame. Windows then ignores title-bar drag
+    and the resize edges. Drop the fixed-size dialog hint and restore
+    ``WS_THICKFRAME`` / caption bits without recreating the HWND.
+    """
+    if widget is None:
+        return
+    try:
+        if not widget.isWindow():
+            return
+    except RuntimeError:
+        return
+    try:
+        from PySide6.QtWidgets import QWIDGETSIZE_MAX
+
+        flags = widget.windowFlags()
+        fixed = Qt.WindowType.MSWindowsFixedSizeDialogHint
+        if flags & fixed:
+            widget.setWindowFlags(flags & ~fixed)
+        widget.setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX)
+    except Exception:
+        pass
+    if sys.platform != "win32":
+        return
+    try:
+        widget.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
+        hwnd = int(widget.winId())
+    except Exception:
+        return
+    if not hwnd:
+        return
+    try:
+        user32 = ctypes.windll.user32
+        getter = getattr(user32, "GetWindowLongPtrW", user32.GetWindowLongW)
+        setter = getattr(user32, "SetWindowLongPtrW", user32.SetWindowLongW)
+        style = int(getter(wintypes.HWND(hwnd), _GWL_STYLE))
+        new_style = style | _WS_OVERLAPPEDWINDOW
+        if new_style != style:
+            setter(wintypes.HWND(hwnd), _GWL_STYLE, new_style)
+            user32.SetWindowPos(
+                wintypes.HWND(hwnd),
+                None,
+                0,
+                0,
+                0,
+                0,
+                _SWP_NOMOVE | _SWP_NOSIZE | _SWP_NOZORDER | _SWP_FRAMECHANGED,
+            )
+    except Exception:
+        return
 
 
 def set_window_always_on_top(widget: QWidget, on: bool) -> bool:
@@ -168,7 +234,7 @@ class _TitleBarNotifyHook(QObject):
         def notify(receiver: QObject, event: QEvent) -> bool:
             et = event.type()
             if (
-                et in (QEvent.Type.Show, QEvent.Type.WinIdChange, QEvent.Type.Polish)
+                et in (QEvent.Type.Show, QEvent.Type.WinIdChange)
                 and isinstance(receiver, QWidget)
             ):
                 try:

@@ -53,12 +53,12 @@ def config_scanner_show_mode(
 ) -> str:
     """How to show Config Scanner on launch.
 
-    First run (nothing saved) opens maximized so Live Push fields are visible.
+    First run (nothing saved) opens a normal movable/resizable window.
     Later runs restore the last size/position, including maximize/fullscreen.
     """
     if fullscreen:
         return SHOW_MODE_FULLSCREEN
-    if maximized or not has_saved:
+    if has_saved and maximized:
         return SHOW_MODE_MAXIMIZED
     return SHOW_MODE_NORMAL
 _KEY_AI_HELPER_MODEL_PATH = "ai_helper/model_path"

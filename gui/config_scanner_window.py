@@ -86,6 +86,9 @@ class ConfigScannerWindow(QMainWindow):
         self.setMinimumSize(900, 600)
         self.resize(1180, 860)
         apply_window_branding(self)
+        from gui.win_title_bar import ensure_native_resizable_frame
+
+        ensure_native_resizable_frame(self)
 
         if self._companion_pack is not None:
             self._scanner = None
@@ -114,6 +117,7 @@ class ConfigScannerWindow(QMainWindow):
                 )
 
         sb = QStatusBar(self)
+        sb.setSizeGripEnabled(True)
         self.setStatusBar(sb)
 
         brand = QLabel()
@@ -172,10 +176,13 @@ class ConfigScannerWindow(QMainWindow):
         if self._applied_show_mode:
             return
         self._applied_show_mode = True
+        from gui.win_title_bar import ensure_native_resizable_frame
+
         if self._cs_show_mode == "fullscreen":
             self.showFullScreen()
         elif self._cs_show_mode == "maximized":
             self.showMaximized()
+        ensure_native_resizable_frame(self)
         if self._should_open_live_push_on_launch():
             QTimer.singleShot(0, self._open_live_push)
 
@@ -252,7 +259,11 @@ def run_config_scanner_app(
     app._config_scanner_instance_lock = instance_lock  # type: ignore[attr-defined]
 
     from gui.app_branding import apply_app_icon
-    from gui.win_title_bar import install_title_bar_theme_filter, schedule_title_bar_theme
+    from gui.win_title_bar import (
+        ensure_native_resizable_frame,
+        install_title_bar_theme_filter,
+        schedule_title_bar_theme,
+    )
 
     apply_app_icon(app)
     install_title_bar_theme_filter(app, SettingsManager.get_theme)
@@ -266,5 +277,6 @@ def run_config_scanner_app(
         snapshots=snapshots,
     )
     win.show()
+    ensure_native_resizable_frame(win)
     schedule_title_bar_theme(win, SettingsManager.get_theme())
     return app.exec()

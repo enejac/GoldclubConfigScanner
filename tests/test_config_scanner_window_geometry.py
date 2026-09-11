@@ -1,4 +1,4 @@
-"""Config Scanner remembers window size/maximize and opens Live Push maximized first."""
+"""Config Scanner remembers window size/maximize and opens Live Push in a normal window."""
 
 from __future__ import annotations
 
@@ -15,10 +15,10 @@ from config_manager import (
 )
 
 
-def test_first_launch_opens_maximized() -> None:
+def test_first_launch_opens_normal() -> None:
     assert (
         config_scanner_show_mode(has_saved=False, maximized=False, fullscreen=False)
-        == SHOW_MODE_MAXIMIZED
+        == SHOW_MODE_NORMAL
     )
 
 
@@ -178,15 +178,15 @@ def test_save_restore_maximized_flag(isolated_settings: str) -> None:
     assert mode == SHOW_MODE_MAXIMIZED
 
 
-def test_first_restore_without_saved_geometry_is_maximized(
+def test_first_restore_without_saved_geometry_is_normal(
     isolated_settings: str,
 ) -> None:
     dest = _FakeWindow(w=1180, h=860)
     mode = SettingsManager.restore_config_scanner_window_geometry(dest)
-    assert mode == SHOW_MODE_MAXIMIZED
+    assert mode == SHOW_MODE_NORMAL
 
 
-def test_window_defaults_to_live_push_and_maximized(isolated_settings: str) -> None:
+def test_window_defaults_to_live_push_and_normal(isolated_settings: str) -> None:
     try:
         from PySide6.QtWidgets import QApplication
     except ImportError as exc:
@@ -195,7 +195,7 @@ def test_window_defaults_to_live_push_and_maximized(isolated_settings: str) -> N
     from gui.config_scanner_window import ConfigScannerWindow
 
     win = ConfigScannerWindow()
-    assert win._cs_show_mode == SHOW_MODE_MAXIMIZED
+    assert win._cs_show_mode == SHOW_MODE_NORMAL
     assert win._should_open_live_push_on_launch() is True
     win._restore_b2u = Path("pack.b2u")
     assert win._should_open_live_push_on_launch() is False
@@ -217,3 +217,28 @@ def test_simple_shell_show_push_opens_panel(monkeypatch: pytest.MonkeyPatch) -> 
     shell.show_push()
     assert shell._push is not None
     assert shell._stack.currentWidget() is shell._push
+
+
+def test_dark_stylesheet_does_not_paint_top_level_windows() -> None:
+    from gui.theme import STYLESHEET
+
+    assert "QWidget:!window" in STYLESHEET
+    assert "QMainWindow {" not in STYLESHEET
+
+
+def test_ensure_native_resizable_frame_drops_fixed_size_hint() -> None:
+    try:
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QApplication, QMainWindow, QWIDGETSIZE_MAX
+    except ImportError as exc:
+        pytest.skip(str(exc))
+    QApplication.instance() or QApplication([])
+    from gui.win_title_bar import ensure_native_resizable_frame
+
+    win = QMainWindow()
+    win.setWindowFlags(win.windowFlags() | Qt.WindowType.MSWindowsFixedSizeDialogHint)
+    win.setMaximumSize(800, 600)
+    ensure_native_resizable_frame(win)
+    assert not (win.windowFlags() & Qt.WindowType.MSWindowsFixedSizeDialogHint)
+    assert win.maximumWidth() == QWIDGETSIZE_MAX
+    assert win.maximumHeight() == QWIDGETSIZE_MAX
