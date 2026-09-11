@@ -22,6 +22,11 @@ from config_scanner.machine_identity import (
     normalize_rel_path,
     postprocess_jurisdiction_xml_bytes,
 )
+from config_scanner.read_cache import (
+    cached_parse,
+    cached_resolve,
+    read_exe_bytes_cached,
+)
 from config_scanner.write_scope import _SERIALPORT_DIR_RE
 from network.lab_access import safe_join_under
 
@@ -825,7 +830,9 @@ def _xml_attr(el: ET.Element, *names: str) -> str:
 
 
 def _parse_xml(path: Path) -> ET.ElementTree:
-    return ET.parse(path)
+    # Memoised while a live-load read scope is open (same file is read by
+    # several recipe readers); plain ``ET.parse`` otherwise.
+    return cached_parse(path, ET.parse)
 
 
 def _xml_default_namespace(root: ET.Element) -> str | None:
@@ -1690,10 +1697,12 @@ def markets_accepted_by_onehand(goldclub: Path) -> frozenset[str] | None:
     path = onehand_exe_path(goldclub)
     if path is None:
         return None
-    try:
-        data = path.read_bytes()
-    except OSError:
-        return None
+    data = read_exe_bytes_cached(path)
+    if data is None:
+        try:
+            data = path.read_bytes()
+        except OSError:
+            return None
     found = {
         name for name in ONEHAND_TARGET_MARKETS if _ascii_ident_present(data, name)
     }
@@ -2784,7 +2793,15 @@ def _math_theme_names(goldclub: Path) -> list[str]:
 
 
 def _resolve_goldclub_rel(goldclub: Path, relative: str) -> Path | None:
-    """Resolve a relative Goldclub path; try case variants for SMB / Linux-ish trees."""
+    """Resolve a relative Goldclub path; try case variants for SMB / Linux-ish trees.
+
+    Memoised per ``(root, relative)`` while a live-load read scope is open -
+    the case-insensitive ``iterdir`` walk is several SMB round-trips.
+    """
+    return cached_resolve(Path(goldclub), relative, _resolve_goldclub_rel_uncached)
+
+
+def _resolve_goldclub_rel_uncached(goldclub: Path, relative: str) -> Path | None:
     root = Path(goldclub)
     direct = root / relative
     try:

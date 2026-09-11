@@ -532,6 +532,8 @@ class _ColumnBoard(QWidget):
 class _PushEmitter(QObject):
     progress = Signal(str)
     finished = Signal(object)
+    # Early result (recipe only) so the form paints before the slow reads end.
+    partial = Signal(object)
 
 
 class _FleetScanEmitter(QObject):
@@ -571,7 +573,11 @@ class _LoadRunnable(QRunnable):
             # Default .111 / "This PC" resolve to a local Goldclub root first;
             # explicit cabinet paths load as typed.
             self._emitter.finished.emit(
-                load_live_cabinet(self._target, prefer_local=True)
+                load_live_cabinet(
+                    self._target,
+                    prefer_local=True,
+                    on_partial=self._emitter.partial.emit,
+                )
             )
         except Exception as exc:  # noqa: BLE001
             self._emitter.finished.emit(
@@ -696,6 +702,7 @@ class LivePushPanel(QWidget):
         self._emitter.progress.connect(self._on_progress)
         self._emitter.finished.connect(self._on_finished)
         self._load_emitter = _PushEmitter()
+        self._load_emitter.partial.connect(self._on_load_partial)
         self._load_emitter.finished.connect(self._on_load_finished)
         self._dallas_emitter = _PushEmitter()
         self._dallas_emitter.progress.connect(self._on_progress)
@@ -1847,6 +1854,24 @@ class LivePushPanel(QWidget):
             return
         QThreadPool.globalInstance().start(_LoadRunnable(raw, self._load_emitter))
 
+    def _on_load_partial(self, outcome: object) -> None:
+        """Recipe is in; paint the form while licences / OneHand / math finish.
+
+        Stays busy (Apply disabled) until :meth:`_on_load_finished` brings the
+        market tokens and licence state the validation needs.
+        """
+        if not self._busy or not isinstance(outcome, LiveLoadOutcome):
+            return
+        if outcome.error or outcome.recipe is None or outcome.root is None:
+            return
+        self._loaded = outcome.recipe
+        self._goldclub = outcome.root
+        self._show_resolved_target(outcome.root)
+        self._fill_form(outcome.recipe)
+        self._status.setText(
+            f"Loaded {outcome.root} — checking licences, OneHand build and math…"
+        )
+
     def _on_load_finished(self, outcome: object) -> None:
         silent = self._silent_load
         self._silent_load = False
@@ -1873,10 +1898,14 @@ class LivePushPanel(QWidget):
         self._display_corruption = dict(outcome.display_corruption or {})
         self._set_onehand_build_label(outcome.onehand_build)
         if outcome.root is not None:
-            self._onehand_markets = markets_accepted_by_onehand(outcome.root)
+            # Read on the worker (OneHand.exe is ~9.5 MB over SMB); never
+            # re-scan it on the GUI thread.
+            self._onehand_markets = outcome.onehand_markets
             self._fill_market_combo(keep=outcome.recipe.jurisdiction.tag)
         self._fill_form(outcome.recipe)
-        self._update_ticket_hint(outcome.root)
+        self._update_ticket_hint(
+            outcome.root, printer_on=outcome.ticket_printer_active
+        )
         self._update_licence_ui(outcome.licence, goldclub=outcome.root)
         self._status.setText(outcome.status)
         self._refresh_changes()
@@ -1927,15 +1956,17 @@ class LivePushPanel(QWidget):
         label.setText(text)
         label.show()
 
-    def _update_ticket_hint(self, root) -> None:
+    def _update_ticket_hint(self, root, *, printer_on: bool | None = None) -> None:
         if root is None:
             self._ticket_hint.setText("")
             self._ticket_printer_status.setText("Load a cabinet to detect printer status.")
             return
-        try:
-            printer_on = read_ticket_printer_active(root)
-        except (OSError, TimeoutError, ValueError):
-            printer_on = False
+        if printer_on is None:
+            # Fallback for callers without a worker result (tests, reloads).
+            try:
+                printer_on = read_ticket_printer_active(root)
+            except (OSError, TimeoutError, ValueError):
+                printer_on = False
         offline = self._loaded.offline_enabled if self._loaded else None
         ticket_proto = (self._loaded.ticket_protocol or "").strip() if self._loaded else ""
         if printer_on:
