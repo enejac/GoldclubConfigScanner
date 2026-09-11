@@ -149,6 +149,7 @@ from config_scanner.slotlog_review import (
     review_slot_logs,
 )
 from config_scanner.net_gate import remote_path_available, unc_host
+from network.lab_access import discover_active_lab_fleet, priority_lab_scan_ips
 from config_scanner.slot_setup import (
     BILL_PROTOCOLS,
     BillToken,
@@ -529,6 +530,31 @@ class _PushEmitter(QObject):
     finished = Signal(object)
 
 
+class _FleetScanEmitter(QObject):
+    found = Signal(str)
+    finished = Signal(object)
+
+
+class _FleetScanRunnable(QRunnable):
+    """Probe 10.0.0.0/24 SMB so the IP dropdown lists cabinets that are up."""
+
+    def __init__(self, recent: list[str] | tuple[str, ...], emitter: _FleetScanEmitter) -> None:
+        super().__init__()
+        self.setAutoDelete(True)
+        self._recent = tuple(recent or ())
+        self._emitter = emitter
+
+    def run(self) -> None:
+        try:
+            live = discover_active_lab_fleet(
+                priority_hosts=priority_lab_scan_ips(self._recent),
+                on_found=self._emitter.found.emit,
+            )
+            self._emitter.finished.emit(live)
+        except Exception:
+            self._emitter.finished.emit([])
+
+
 class _LoadRunnable(QRunnable):
     def __init__(self, target: str, emitter: _PushEmitter) -> None:
         super().__init__()
@@ -678,6 +704,11 @@ class LivePushPanel(QWidget):
         self._onehand_markets: frozenset[str] | None = None
         self._dallas_busy = False
         self._slotlog_findings: list[SlotLogFinding] = []
+        self._fleet_scanning = False
+        self._fleet_ips: list[str] = []
+        self._fleet_emitter = _FleetScanEmitter()
+        self._fleet_emitter.found.connect(self._on_fleet_found)
+        self._fleet_emitter.finished.connect(self._on_fleet_finished)
         self._goldclub: Path | None = None
         self._display_corruption: dict[str, str] = {}
         self._last_backup_dir = ""
@@ -742,8 +773,8 @@ class LivePushPanel(QWidget):
         )
         self._cabinet.setToolTip(
             "Goldclub root on the EGM: type a UNC share (\\\\host\\slot), an IP, "
-            "or a local path (C:\\Goldclub / G:\\ when unlocked). Last successful "
-            "Load is remembered; the dropdown lists recent cabinets."
+            "or a local path (C:\\Goldclub / G:\\ when unlocked). The dropdown "
+            "lists cabinets that are up on the lab network (SMB) plus recent Loads."
         )
         saved = SettingsManager.get_live_push_target()
         recent = SettingsManager.get_live_push_recent()
@@ -1328,7 +1359,73 @@ class LivePushPanel(QWidget):
 
     def _begin_detect(self) -> None:
         self._fade_detect_status("Looking for Goldclub on C: and G:…", kind="info")
+        self._start_fleet_scan()
         QTimer.singleShot(160, self._finish_detect)
+
+    def _start_fleet_scan(self) -> None:
+        if self._fleet_scanning:
+            return
+        self._fleet_scanning = True
+        recent = SettingsManager.get_live_push_recent()
+        QThreadPool.globalInstance().start(
+            _FleetScanRunnable(recent, self._fleet_emitter)
+        )
+
+    def _on_fleet_found(self, ip: object) -> None:
+        text = str(ip or "").strip()
+        if text:
+            self._apply_fleet_ips([text])
+
+    def _on_fleet_finished(self, ips: object) -> None:
+        self._fleet_scanning = False
+        found: list[str] = []
+        if isinstance(ips, (list, tuple)):
+            found = [str(item).strip() for item in ips if str(item).strip()]
+        self._apply_fleet_ips(found)
+        if not found:
+            return
+        status = self._detect_status.text()
+        if "No Goldclub" in status:
+            self._fade_detect_status(
+                f"No Goldclub on this PC — {len(found)} cabinet(s) online. "
+                "Pick an IP from the dropdown or type the last digits and press Load.",
+                kind="ask",
+            )
+
+    def _apply_fleet_ips(self, ips: list[str]) -> None:
+        """Add live 10.0.0.x hosts to the Cabinet dropdown; keep the typed value."""
+        incoming = [ip.strip() for ip in ips if str(ip).strip()]
+        have = set(self._fleet_ips)
+        for ip in incoming:
+            if ip not in have:
+                self._fleet_ips.append(ip)
+                have.add(ip)
+        def _ip_key(item: str) -> tuple[int, ...]:
+            try:
+                return tuple(int(part) for part in item.split("."))
+            except ValueError:
+                return (999, 999, 999, 999)
+
+        self._fleet_ips.sort(key=_ip_key)
+        combo = getattr(self, "_cabinet", None)
+        if combo is None:
+            return
+        typed = combo.currentText()
+        edit = combo.lineEdit()
+        sel_start = edit.selectionStart() if edit is not None else -1
+        sel_len = len(edit.selectedText()) if edit is not None else 0
+        existing = {combo.itemText(i) for i in range(combo.count())}
+        combo.blockSignals(True)
+        try:
+            for ip in self._fleet_ips:
+                if ip not in existing:
+                    combo.addItem(ip)
+                    existing.add(ip)
+            combo.setEditText(typed)
+            if edit is not None and sel_len > 0 and sel_start >= 0:
+                edit.setSelection(sel_start, sel_len)
+        finally:
+            combo.blockSignals(False)
 
     def _finish_detect(self) -> None:
         saved = SettingsManager.get_live_push_target()
@@ -1361,6 +1458,13 @@ class LivePushPanel(QWidget):
         self._path.setFocus()
         if length:
             self._path.setSelection(start, length)
+        if self._fleet_ips:
+            self._fade_detect_status(
+                f"No Goldclub on this PC — {len(self._fleet_ips)} cabinet(s) online. "
+                "Pick an IP from the dropdown or type the last digits and press Load.",
+                kind="ask",
+            )
+            return
         self._fade_detect_status(
             "No Goldclub on this PC — type the cabinet's last IP digits and press Load.",
             kind="ask",
@@ -1643,6 +1747,8 @@ class LivePushPanel(QWidget):
             combo.addItem(item)
         combo.setEditText(current.strip())
         combo.blockSignals(False)
+        if self._fleet_ips:
+            self._apply_fleet_ips([])
 
     def _remember_cabinet(self, target: str) -> None:
         text = (target or "").strip()
