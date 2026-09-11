@@ -157,3 +157,77 @@ def test_lab_winrm_auth_is_ntlm_on_lab_lan() -> None:
     assert la.lab_winrm_authentication("10.0.0.98") == "Default"
     assert la.lab_winrm_authentication("10.0.0.111") == "Default"
     assert la.lab_winrm_authentication("8.8.8.8") == "Negotiate"
+
+
+def test_lab_lan_ip_from_text() -> None:
+    assert la.lab_lan_ip_from_text("10.0.0.76") == "10.0.0.76"
+    assert la.lab_lan_ip_from_text(r"\\10.0.0.90\c$\Goldclub") == "10.0.0.90"
+    assert la.lab_lan_ip_from_text(r"//10.0.0.98/slot") == "10.0.0.98"
+    assert la.lab_lan_ip_from_text("8.8.8.8") is None
+    assert la.lab_lan_ip_from_text(r"C:\Goldclub") is None
+
+
+def test_lab_lan_scan_ips_covers_subnet_minus_skip() -> None:
+    ips = la.lab_lan_scan_ips(skip=("10.0.0.1",))
+    assert "10.0.0.1" not in ips
+    assert "10.0.0.76" in ips
+    assert "10.0.0.254" in ips
+    assert "10.0.0.0" not in ips
+    assert "10.0.0.255" not in ips
+    assert len(ips) == 253
+
+
+def test_priority_lab_scan_ips_recent_then_named() -> None:
+    pri = la.priority_lab_scan_ips([r"\\10.0.0.76\c$\Goldclub"])
+    assert pri[0] == "10.0.0.76"
+    assert "10.0.0.111" in pri
+    assert "10.0.0.90" in pri
+
+
+def test_discover_active_lab_fleet_only_hosts_that_answer() -> None:
+    seen: list[str] = []
+
+    def probe(host: str) -> bool:
+        seen.append(host)
+        return host in {"10.0.0.76", "10.0.0.90"}
+
+    live = la.discover_active_lab_fleet(
+        hosts=("10.0.0.1", "10.0.0.76", "10.0.0.90", "10.0.0.200"),
+        probe=probe,
+        skip_hosts=(),
+        workers=4,
+    )
+    assert live == ["10.0.0.76", "10.0.0.90"]
+    assert "10.0.0.1" in seen
+    assert "10.0.0.200" in seen
+
+
+def test_discover_active_lab_fleet_skips_this_pc(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(la, "this_pc_lab_lan_ips", lambda: frozenset({"10.0.0.5"}))
+    live = la.discover_active_lab_fleet(
+        hosts=("10.0.0.5", "10.0.0.76"),
+        probe=lambda _host: True,
+        workers=2,
+    )
+    assert live == ["10.0.0.76"]
+
+
+def test_discover_priority_hosts_are_probed_first() -> None:
+    order: list[str] = []
+
+    def probe(host: str) -> bool:
+        order.append(host)
+        return host == "10.0.0.76"
+
+    live = la.discover_active_lab_fleet(
+        priority_hosts=("10.0.0.76",),
+        hosts=None,
+        skip_hosts=(),
+        probe=probe,
+        workers=8,
+    )
+    assert live == ["10.0.0.76"]
+    assert order[0] == "10.0.0.76"
+    assert "10.0.0.1" in order

@@ -900,3 +900,51 @@ def test_no_local_no_saved_prefills_lab_ip_with_last_octet_selected(
     assert panel._path.selectionStart() == len("10.0.0.")
     assert loaded == [], "prefill must not auto-load a guessed cabinet"
     assert "last IP digits" in panel._detect_status.text()
+
+
+def test_cabinet_dropdown_lists_detected_fleet_ips(qt_app, monkeypatch) -> None:
+    """Live 10.0.0.x hosts fill the Cabinet dropdown; typed/prefilled text stays."""
+    from gui.live_push_panel import LivePushPanel
+
+    monkeypatch.setattr("gui.live_push_panel.detect_local_live_cabinet", lambda: "")
+    monkeypatch.setattr("gui.live_push_panel.this_pc_live_target", lambda: None)
+    monkeypatch.setattr(
+        "gui.live_push_panel.LivePushPanel._load",
+        lambda self: None,
+    )
+    panel = LivePushPanel(autoload=False)
+    panel.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    panel.show()
+    qt_app.processEvents()
+    panel._finish_detect()
+    qt_app.processEvents()
+    assert panel._path.text() == "10.0.0.111"
+    panel._apply_fleet_ips(["10.0.0.90", "10.0.0.76"])
+    items = [panel._cabinet.itemText(i) for i in range(panel._cabinet.count())]
+    assert "10.0.0.76" in items
+    assert "10.0.0.90" in items
+    assert panel._path.text() == "10.0.0.111"
+    assert panel._path.selectedText() == "111"
+
+
+def test_fleet_scan_runnable_fills_cabinet_combo(qt_app, monkeypatch) -> None:
+    from PySide6.QtCore import QThreadPool
+
+    from gui.live_push_panel import LivePushPanel
+
+    monkeypatch.setattr(
+        "gui.live_push_panel.discover_active_lab_fleet",
+        lambda **_k: ["10.0.0.76", "10.0.0.112"],
+    )
+    panel = LivePushPanel(autoload=False)
+    panel.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    panel.show()
+    qt_app.processEvents()
+    panel._start_fleet_scan()
+    QThreadPool.globalInstance().waitForDone(3000)
+    qt_app.processEvents()
+    items = [panel._cabinet.itemText(i) for i in range(panel._cabinet.count())]
+    assert "10.0.0.76" in items
+    assert "10.0.0.112" in items
+    assert panel._path.text() == ""
+    assert not hasattr(panel, "_ip")
