@@ -5,6 +5,7 @@ Updated automatically when a PR is merged.
 
 ## 2026-09-11
 
+- Restore native move and resize on the Config Scanner window ([#49](https://github.com/enejac/GoldclubConfigScanner/pull/49))
 - Live Push: never paint red for values the running cabinet already proves ([#48](https://github.com/enejac/GoldclubConfigScanner/pull/48))
 - Auto-update a short changelog on every merged PR ([#22](https://github.com/enejac/GoldclubConfigScanner/pull/22))
 - Rebuild ConfigScanner.exe and portable zip (2026-09-10 11:48) ([#20](https://github.com/enejac/GoldclubConfigScanner/pull/20))
