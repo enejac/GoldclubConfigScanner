@@ -5,6 +5,7 @@ Updated automatically when a PR is merged.
 
 ## 2026-09-11
 
+- Snapshots: same Cabinet row as Live Push, one shared remembered cabinet ([#53](https://github.com/enejac/GoldclubConfigScanner/pull/53))
 - Live Push: cut cabinet load time (shared exe buffer, read cache, parallel stages) ([#52](https://github.com/enejac/GoldclubConfigScanner/pull/52))
 - Live Push: write settings even when the game cannot be stopped from t… ([#51](https://github.com/enejac/GoldclubConfigScanner/pull/51))
 - Rebuild ConfigScanner.exe from master 390c64c (2026-09-11 13:07) ([#50](https://github.com/enejac/GoldclubConfigScanner/pull/50))
