@@ -1547,3 +1547,16 @@ def test_commit_sas_only_heals_overlay_hostname_without_rewriting_setup(
     assert 'id="GCC_ST_20664_01"' in text
     assert (gold / "Services" / "aurum" / "config" / "AurumSetup.xml.bak-host-GST20664").is_file()
 
+
+
+def test_cabinet_ip_prefill_selects_last_octet() -> None:
+    from config_scanner.live_push import DEFAULT_CABINET_IP, cabinet_ip_prefill
+
+    assert DEFAULT_CABINET_IP == "10.0.0.111"
+    text, start, length = cabinet_ip_prefill()
+    assert text == "10.0.0.111"
+    assert text[start : start + length] == "111"
+    text, start, length = cabinet_ip_prefill("10.0.0.9")
+    assert (text[start : start + length], start) == ("9", 7)
+    assert cabinet_ip_prefill("") == ("", 0, 0)
+    assert cabinet_ip_prefill("host")[2] == 0

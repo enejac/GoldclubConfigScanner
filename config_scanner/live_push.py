@@ -1914,6 +1914,23 @@ def initial_live_cabinet_target(
     return ""
 
 
+DEFAULT_CABINET_IP = "10.0.0.111"
+
+
+def cabinet_ip_prefill(default_ip: str = DEFAULT_CABINET_IP) -> tuple[str, int, int]:
+    """Text to pre-fill the Cabinet field with when nothing else is known, plus
+    the (start, length) of its last octet so the caller can select it.
+
+    The operator then only types the last digits (``111`` -> ``98``) instead
+    of the whole address. Lab EGMs all sit on ``10.0.0.x``.
+    """
+    text = (default_ip or "").strip()
+    if not text or "." not in text:
+        return text, len(text), 0
+    start = text.rfind(".") + 1
+    return text, start, len(text) - start
+
+
 def merge_live_target_history(
     newest: str,
     recent: list[str] | tuple[str, ...] | None = None,

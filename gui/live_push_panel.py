@@ -76,6 +76,7 @@ from config_scanner.live_push import (
     currency_symbol_for,
     THIS_PC_GOLDCLUB,
     THIS_PC_MISSING_STATUS,
+    cabinet_ip_prefill,
     detect_local_live_cabinet,
     initial_live_cabinet_target,
     load_error_dialog_text,
@@ -791,34 +792,6 @@ class LivePushPanel(QWidget):
         self._detect_status.setStyleSheet("color: #9ecbff; font-weight: 600;")
         outer.addWidget(self._detect_status)
 
-        self._ip_row = QWidget()
-        ip_lay = QHBoxLayout(self._ip_row)
-        ip_lay.setContentsMargins(0, 0, 0, 0)
-        ip_lay.addWidget(QLabel("Cabinet IP:"))
-        self._ip = QLineEdit("")
-        self._ip.setPlaceholderText("10.0.0.x")
-        self._ip.setToolTip(
-            "Lab cabinet address. Connect tries \\\\IP\\c$\\Goldclub then \\\\IP\\slot."
-        )
-        self._ip.returnPressed.connect(self._connect_remote_ip)
-        ip_lay.addWidget(self._ip, stretch=1)
-        self._ip_connect = QPushButton("Connect")
-        self._ip_connect.setToolTip("Open the Goldclub share on that cabinet.")
-        self._ip_connect.clicked.connect(self._connect_remote_ip)
-        ip_lay.addWidget(self._ip_connect)
-        self._ip_row.hide()
-        outer.addWidget(self._ip_row)
-
-        self._use_remote_btn = QPushButton("Use a cabinet IP instead")
-        self._use_remote_btn.setFlat(True)
-        self._use_remote_btn.setStyleSheet("color: #9ecbff; text-align: left;")
-        self._use_remote_btn.setToolTip(
-            "Skip the local Goldclub on this PC and edit a remote cabinet."
-        )
-        self._use_remote_btn.clicked.connect(self._use_remote_instead)
-        self._use_remote_btn.hide()
-        outer.addWidget(self._use_remote_btn)
-
         quick = QHBoxLayout()
         quick.addWidget(QLabel("Market:"))
         self._preset = QComboBox()
@@ -1367,46 +1340,31 @@ class LivePushPanel(QWidget):
                 self._fade_detect_status(
                     f"Using last cabinet — {initial}", kind="ok"
                 )
-                self._ip_row.hide()
-                self._use_remote_btn.hide()
             else:
                 self._fade_detect_status(
-                    f"Using local Goldclub — {initial}", kind="ok"
+                    f"Using local Goldclub — {initial}. To edit another EGM, "
+                    "type its IP in the Cabinet field and Load.",
+                    kind="ok",
                 )
-                self._ip_row.hide()
-                self._use_remote_btn.show()
             self._autoload()
             return
-        self._path.clear()
+        self._prefill_cabinet_ip()
+
+    def _prefill_cabinet_ip(self) -> None:
+        """No local tree and nothing remembered: one field, lab prefix typed for you.
+
+        The Cabinet field gets ``10.0.0.111`` with the last octet selected, so
+        the operator only types the digits that differ and presses Enter/Load.
+        """
+        text, start, length = cabinet_ip_prefill()
+        self._path.setText(text)
+        self._path.setFocus()
+        if length:
+            self._path.setSelection(start, length)
         self._fade_detect_status(
-            "No Goldclub on this PC. Enter the cabinet IP to continue.",
+            "No Goldclub on this PC — type the cabinet's last IP digits and press Load.",
             kind="ask",
         )
-        self._ip_row.show()
-        self._use_remote_btn.hide()
-        self._ip.setFocus()
-
-    def _use_remote_instead(self) -> None:
-        self._ip_row.show()
-        self._use_remote_btn.hide()
-        self._fade_detect_status(
-            "Enter a cabinet IP. Local Goldclub stays unused until you Load it.",
-            kind="ask",
-        )
-        self._ip.setFocus()
-
-    def _connect_remote_ip(self) -> None:
-        typed = self._ip.text().strip() or self._path.text().strip()
-        if not typed:
-            QMessageBox.warning(self, "Cabinet IP", "Enter a cabinet IP (for example 10.0.0.98).")
-            return
-        target = resolve_live_target_from_user(typed, probe=True)
-        if not target:
-            QMessageBox.warning(self, "Cabinet IP", "That does not look like an IP or Goldclub path.")
-            return
-        self._path.setText(target)
-        self._fade_detect_status(f"Connecting to {target}…", kind="info")
-        self._load()
 
     def _live_field_widgets(self) -> list[tuple[str, QWidget]]:
         return [
@@ -1741,12 +1699,9 @@ class LivePushPanel(QWidget):
         if self._busy:
             return
         raw = self._path.text().strip()
-        if not raw and self._ip.text().strip():
-            self._connect_remote_ip()
-            return
         if not raw:
             self._warn_load(
-                "No local Goldclub found. Enter a cabinet IP or browse a folder."
+                "No local Goldclub found. Type a cabinet IP (10.0.0.x) or browse a folder."
             )
             return
         resolved = resolve_live_target_from_user(raw, probe=False)
@@ -3115,10 +3070,6 @@ class LivePushPanel(QWidget):
         cabinet = getattr(self, "_cabinet", None)
         if cabinet is not None:
             cabinet.setEnabled(not busy)
-        if getattr(self, "_ip_connect", None) is not None:
-            self._ip_connect.setEnabled(not busy)
-        if getattr(self, "_use_remote_btn", None) is not None:
-            self._use_remote_btn.setEnabled(not busy)
         spinner = getattr(self, "_load_spinner", None)
         if spinner is not None:
             spinner.set_active(busy)
