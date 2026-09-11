@@ -5,6 +5,7 @@ Updated automatically when a PR is merged.
 
 ## 2026-09-11
 
+- Screenshot button works while an 'Apply finished with errors' popup is open ([#54](https://github.com/enejac/GoldclubConfigScanner/pull/54))
 - Snapshots: same Cabinet row as Live Push, one shared remembered cabinet ([#53](https://github.com/enejac/GoldclubConfigScanner/pull/53))
 - Live Push: cut cabinet load time (shared exe buffer, read cache, parallel stages) ([#52](https://github.com/enejac/GoldclubConfigScanner/pull/52))
 - Live Push: write settings even when the game cannot be stopped from t… ([#51](https://github.com/enejac/GoldclubConfigScanner/pull/51))
