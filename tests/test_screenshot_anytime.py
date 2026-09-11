@@ -7,6 +7,26 @@ from pathlib import Path
 import pytest
 
 
+def _destroy(app, *widgets) -> None:
+    """Delete test windows now instead of leaving them to Python's cyclic GC.
+
+    A guard holds ``_win`` while the window owns the guard, so the pair only
+    dies when the GC happens to run - which crashed unrelated Qt tests
+    mid-layout once this module grew. Deleting the C++ side here leaves only
+    harmless Python shells behind."""
+    import shiboken6
+
+    for widget in widgets:
+        try:
+            widget.hide()
+        except RuntimeError:
+            continue
+        if shiboken6.isValid(widget):
+            shiboken6.delete(widget)
+    for _ in range(3):
+        app.processEvents()
+
+
 def _import_qt():
     pytest.importorskip("PySide6")
     try:
@@ -32,6 +52,19 @@ def _import_qt():
         QMessageBox,
         QPushButton,
     )
+
+
+def _hide_leftover_windows(app) -> None:
+    """QMessageBox is app-modal by default; a box left open by an earlier test
+    would block clicks in later ones, so start from a clean window list."""
+    for widget in list(app.topLevelWidgets()):
+        try:
+            if widget.isVisible():
+                widget.hide()
+        except RuntimeError:
+            continue
+    for _ in range(3):
+        app.processEvents()
 
 
 def test_is_screenshot_key_matches_global_shortcuts() -> None:
@@ -76,7 +109,12 @@ def test_corner_tool_sits_on_main_bottom_right_not_dialog() -> None:
     app = QApplication.instance() or QApplication([])
     win = QMainWindow()
     win.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
-    win.setGeometry(100, 80, 800, 600)
+    # Keep the frame inside the (possibly 800x600 offscreen) screen so the
+    # position is the plain bottom-right, not the on-screen clamp.
+    avail = app.primaryScreen().availableGeometry()
+    win.setGeometry(
+        avail.left() + 40, avail.top() + 40, avail.width() - 120, avail.height() - 120
+    )
     win.show()
     app.processEvents()
     pos = corner_tool_screen_pos(win, 90, 28, margin=8)
@@ -91,7 +129,7 @@ def test_corner_tool_sits_on_main_bottom_right_not_dialog() -> None:
     app.processEvents()
     dialog_top_right = QPoint(box.frameGeometry().right() - 90, box.frameGeometry().top() - 32)
     assert pos != dialog_top_right
-    win.close()
+    _destroy(app, box, win)
 
 
 def test_modal_does_not_inject_screenshot_into_message_box() -> None:
@@ -114,8 +152,9 @@ def test_modal_does_not_inject_screenshot_into_message_box() -> None:
         app.processEvents()
     assert box.findChild(QPushButton, TOOL_BUTTON_NAME) is None
     assert guard._tool.isVisible()
+    box.hide()
     guard.shutdown()
-    win.close()
+    _destroy(app, guard._tool, win)
 
 
 def test_hotkey_captures_while_warning_is_open(
@@ -150,8 +189,113 @@ def test_hotkey_captures_while_warning_is_open(
     app.processEvents()
     assert statuses
     assert "from-hotkey.png" in statuses[-1]
+    box.hide()
     guard.shutdown()
-    win.close()
+    _destroy(app, guard._tool, win)
+
+
+def test_corner_button_takes_real_click_while_app_modal_error_is_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: 'Apply finished with errors' (app-modal QMessageBox.warning)
+    blocked mouse input to the overlay, so its Screenshot button did nothing.
+    Drive the click through the window handle (the path Qt's modal block guards)."""
+    _QEvent, _QPoint, Qt, _QKeyEvent, QApplication, _QLabel, QMainWindow, QMessageBox, QPushButton = (
+        _import_qt()
+    )
+    from PySide6.QtCore import QTimer
+    from PySide6.QtTest import QTest
+
+    from gui.screenshot_hotkey import TOOL_BUTTON_NAME, AnytimeScreenshot
+
+    app = QApplication.instance() or QApplication([])
+    _hide_leftover_windows(app)
+    saved = tmp_path / "from-modal-click.png"
+    monkeypatch.setattr(
+        "gui.screenshot_hotkey.save_widget_screenshot",
+        lambda _widget=None: saved,
+    )
+    win = QMainWindow()
+    win.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    win.resize(800, 600)
+    statuses: list[str] = []
+    win.show_status = statuses.append  # type: ignore[method-assign]
+    win.show()
+    guard = AnytimeScreenshot(win)
+    box = QMessageBox(win)
+    box.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    box.setText("Wrote 0 file(s). ServerNotTrusted")
+    box.setStandardButtons(QMessageBox.StandardButton.Ok)
+    seen: dict[str, object] = {}
+
+    def click_overlay() -> None:
+        for _ in range(5):
+            app.processEvents()
+        seen["modality"] = box.windowModality()
+        seen["tool_visible"] = guard._tool.isVisible()
+        handle = guard._tool.windowHandle()
+        seen["transient_parent"] = handle.transientParent() if handle else None
+        button = guard._tool.findChild(QPushButton, TOOL_BUTTON_NAME)
+        QTest.mouseClick(
+            handle,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+            button.geometry().center(),
+        )
+        for _ in range(5):
+            app.processEvents()
+        box.accept()
+
+    QTimer.singleShot(50, click_overlay)
+    box.exec()  # QMessageBox.warning() uses exec -> ApplicationModal
+    app.processEvents()
+
+    assert seen["modality"] == Qt.WindowModality.ApplicationModal
+    assert seen["tool_visible"] is True
+    assert seen["transient_parent"] is not None
+    assert statuses, "overlay click was swallowed by the modal block"
+    assert "from-modal-click.png" in statuses[-1]
+    # Popup closed: overlay released and no longer tied to the dead dialog.
+    assert not guard._tool.isVisible()
+    assert guard._tool.windowHandle().transientParent() is None
+    guard.shutdown()
+    _destroy(app, guard._tool, win)
+
+
+def test_overlay_follows_topmost_of_stacked_modals() -> None:
+    _QEvent, _QPoint, Qt, _QKeyEvent, QApplication, _QLabel, QMainWindow, QMessageBox, _QPush = (
+        _import_qt()
+    )
+    from gui.screenshot_hotkey import AnytimeScreenshot
+
+    app = QApplication.instance() or QApplication([])
+    _hide_leftover_windows(app)
+    win = QMainWindow()
+    win.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    win.show()
+    guard = AnytimeScreenshot(win)
+    first = QMessageBox(win)
+    first.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    first.setModal(True)
+    first.show()
+    second = QMessageBox(win)
+    second.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    second.setModal(True)
+    second.show()
+    for _ in range(5):
+        app.processEvents()
+    handle = guard._tool.windowHandle()
+    assert handle.transientParent() == second.windowHandle()
+    second.hide()
+    for _ in range(5):
+        app.processEvents()
+    assert handle.transientParent() == first.windowHandle()
+    first.hide()
+    for _ in range(5):
+        app.processEvents()
+    assert handle.transientParent() is None
+    guard.shutdown()
+    _destroy(app, guard._tool, win)
 
 
 def test_window_and_hotkey_module_wire_anytime_capture() -> None:
