@@ -3301,6 +3301,58 @@ def _slot_target_is_local(scan_target: str) -> bool:
     return scan_target_is_local_machine(scan_target)
 
 
+_WINRM_UNREACHABLE_MARKERS = (
+    "servernottrusted",
+    "trustedhosts",
+    "psremotingtransportexception",
+    "winrm client cannot process the request",
+    "cannot connect to the destination",
+    "winrm inline timed out",
+    "winrm script timed out",
+    "access is denied",
+    "logon failure",
+    "the user name or password is incorrect",
+)
+
+
+def slot_stop_unreachable(detail: str) -> bool:
+    """True when the stop never reached the cabinet (WinRM trust / transport / logon).
+
+    Retrying, or trying to *start* the game over the same channel, cannot
+    work — but the SMB write path is independent, so settings can still go.
+    """
+    low = (detail or "").casefold()
+    return any(marker in low for marker in _WINRM_UNREACHABLE_MARKERS)
+
+
+def winrm_failure_hint(detail: str, host: str) -> str:
+    """One-line operator fix for the common WinRM-from-this-PC failures."""
+    low = (detail or "").casefold()
+    who = host or "the cabinet"
+    if "servernottrusted" in low or "trustedhosts" in low:
+        return (
+            f"This PC's WinRM client does not trust {who}. Run once as "
+            "Administrator: .\\Initialize-LabAccess.ps1 (or: Start-Service WinRM; "
+            f"Set-Item WSMan:\\localhost\\Client\\TrustedHosts -Value '{who}' "
+            "-Concatenate -Force)."
+        )
+    if (
+        "access is denied" in low
+        or "logon failure" in low
+        or "user name or password is incorrect" in low
+    ):
+        return (
+            f"WinRM logon to {who} was refused. Check the lab credential for "
+            f"that cabinet (cmdkey /add:{who})."
+        )
+    if "cannot connect to the destination" in low or "timed out" in low:
+        return (
+            f"WinRM (TCP 5985) on {who} did not answer. Enable-PSRemoting on the "
+            "cabinet, or restart the game there by hand."
+        )
+    return ""
+
+
 def run_slot_stack_kill(scan_target: str) -> tuple[bool, str]:
     """Stop OneHand / Bootstrap so slot XML can be written."""
     import time
@@ -3334,6 +3386,9 @@ def run_slot_stack_kill(scan_target: str) -> tuple[bool, str]:
         _lp_log(f"slot kill attempt={attempt} ok={ok} {detail[:400]}")
         if ok:
             return True, detail if detail else "OK"
+        if not local and slot_stop_unreachable(detail):
+            _lp_log("slot kill: WinRM never reached the cabinet, not retrying")
+            break
         if attempt < 3:
             time.sleep(2)
     return False, f"Slot stop failed: {last_detail}"
@@ -3720,33 +3775,21 @@ def commit_live_push(
         _lp_log(f"commit abort before stop: {msg}")
         return LivePushResult((), (), (msg,), False, False, msg)
 
+    slot_stop_failed = ""
     if use_slot:
         _emit(progress, "Stopping the slot game…")
         ok, stack_detail = run_slot_stack_kill(plan_src)
         stack_killed = ok
         if not ok:
-            if work_parent is None:
-                shutil.rmtree(parent, ignore_errors=True)
-            _emit(progress, "Slot stop failed — starting the game again…")
-            start_ok, start_detail = run_slot_stack_start(plan_src, dest=dest)
-            stack_detail = f"{stack_detail}\n{start_detail}".strip()
-            msg = (
-                "OneHand/Bootstrap is still running — settings were not written. "
-                f"{stack_detail} (log: {log_path})"
+            # The SMB write path does not depend on WinRM or on the game being
+            # down: OneHand reads these XMLs at start-up. Push the files anyway
+            # and tell the operator the game must be restarted on the cabinet.
+            slot_stop_failed = stack_detail
+            _lp_log(
+                "commit: slot stop failed, writing settings anyway: "
+                f"{_short_fail(stack_detail)}"
             )
-            if start_ok:
-                msg += " Game was started again."
-            else:
-                msg += f" Game did not restart: {_short_fail(start_detail)}"
-            _lp_log(f"commit abort: {msg}")
-            return LivePushResult(
-                (),
-                (),
-                (msg,),
-                False,
-                start_ok,
-                stack_detail,
-            )
+            _emit(progress, "Game stop failed — writing settings anyway…")
     elif plan is not None:
         _emit(progress, "Stopping the game (Kill-All)…")
         ok, stack_detail = run_stack_kill(plan)
@@ -3820,6 +3863,34 @@ def commit_live_push(
         if use_slot and slot_start_launcher(plan_src, dest) == "game-start"
         else "Bootstrap"
     )
+    # A stop that *reached* the cabinet but left the game up falls through to
+    # the normal post-write flow (hwsubsys -> stop again -> start). A dead WinRM
+    # channel, or a pending RAM clear with the game still up, cannot.
+    if (
+        use_slot
+        and slot_stop_failed
+        and not errors
+        and (slot_stop_unreachable(slot_stop_failed) or ramclear_reasons)
+    ):
+        host = unc_host_from_target(plan_src) or "the cabinet"
+        why = _short_fail(slot_stop_failed)
+        hint = winrm_failure_hint(slot_stop_failed, host)
+        need_rc = (
+            " RAM clear is still required ("
+            + ", ".join(ramclear_reasons)
+            + ") — run begin-ramclear on the cabinet."
+            if ramclear_reasons
+            else ""
+        )
+        head = (
+            f"Settings written ({len(written)} file(s)), but the game could not "
+            f"be stopped/restarted from this PC — restart OneHand on {host} for "
+            f"them to take effect. {why}{need_rc}"
+            if written
+            else f"Nothing was written and the game could not be stopped: {why}"
+        )
+        errors = (f"{head} {hint} (log: {log_path})".strip(),)
+        _lp_log(f"commit: slot stop failed outcome: {errors[0][:400]}")
     if (
         use_slot
         and ramclear_reasons
