@@ -13,7 +13,9 @@ from config_scanner.live_push import (
     THIS_PC_GOLDCLUB,
     THIS_PC_MISSING_STATUS,
     default_live_cabinet_target,
+    initial_live_cabinet_target,
     load_error_dialog_text,
+    merge_live_target_history,
     this_pc_live_target,
     goldclub_stack_kind,
     live_field_file_hover,
@@ -144,6 +146,41 @@ def test_default_live_target_prefers_local_goldclub(tmp_path: Path) -> None:
         remote=r"\\10.0.0.111\slot",
     )
     assert str(chosen).replace("\\", "/").rstrip("/") == str(gold).replace("\\", "/").rstrip("/")
+
+
+def test_initial_live_cabinet_target_saved_wins_over_local() -> None:
+    assert (
+        initial_live_cabinet_target(
+            saved=r"\\10.0.0.90\c$\Goldclub",
+            local=r"C:\Goldclub",
+        )
+        == r"\\10.0.0.90\c$\Goldclub"
+    )
+
+
+def test_initial_live_cabinet_target_uses_local_then_empty() -> None:
+    assert initial_live_cabinet_target(saved="  ", local="G:") == "G:"
+    assert initial_live_cabinet_target(saved="", local=None) == ""
+    assert initial_live_cabinet_target() == ""
+
+
+def test_merge_live_target_history_newest_first_deduped() -> None:
+    merged = merge_live_target_history(
+        r"\\10.0.0.98\c$\Goldclub",
+        [
+            r"\\10.0.0.90\c$\Goldclub",
+            r"//10.0.0.98/c$/Goldclub",
+            r"C:\Goldclub",
+            "",
+        ],
+        limit=3,
+    )
+    assert merged == [
+        r"\\10.0.0.98\c$\Goldclub",
+        r"\\10.0.0.90\c$\Goldclub",
+        r"C:\Goldclub",
+    ]
+    assert merge_live_target_history("", ["  ", r"C:\Goldclub"]) == [r"C:\Goldclub"]
 
 
 def test_default_live_target_empty_when_no_local(tmp_path: Path) -> None:
@@ -501,6 +538,12 @@ def test_live_push_chrome_has_tooltips() -> None:
     assert "delta" in src.casefold() or "differ from the cabinet" in src
     assert "_install_label_click_tips" in src
     assert "mouse_release_shows_tip" in src
+    assert r"\\host\slot  or  C:\Goldclub" in src
+    assert '("10.0.0.90"' not in src
+    assert '("10.0.0.98"' not in src
+    assert '("10.0.0.111"' not in src
+    assert "initial_live_cabinet_target" in src
+    assert "remember_live_push_target" in src
 
 
 def test_home_and_wizard_tooltips() -> None:

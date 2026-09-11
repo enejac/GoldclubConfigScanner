@@ -40,6 +40,21 @@ def qt_app() -> QApplication:
     return QApplication.instance() or QApplication([])
 
 
+@pytest.fixture(autouse=True)
+def _empty_live_push_memory(monkeypatch: pytest.MonkeyPatch):
+    """Layout tests must not pick up a leftover remembered cabinet path."""
+    monkeypatch.setattr(
+        "gui.live_push_panel.SettingsManager.get_live_push_target", lambda: ""
+    )
+    monkeypatch.setattr(
+        "gui.live_push_panel.SettingsManager.get_live_push_recent", lambda: []
+    )
+    monkeypatch.setattr(
+        "gui.live_push_panel.SettingsManager.remember_live_push_target",
+        lambda target, limit=8: [str(target).strip()] if str(target).strip() else [],
+    )
+
+
 def _board(qt_app: QApplication) -> _ColumnBoard:
     board = _ColumnBoard()
     for title, weight in PANEL_GROUPS:
@@ -800,3 +815,40 @@ def test_explicit_cabinet_path_is_not_swapped_for_local(
 
     assert panel._goldclub == explicit
     assert Path(panel._path.text()) == explicit
+
+
+def test_live_push_has_no_hardcoded_ip_chips(qt_app) -> None:
+    from PySide6.QtWidgets import QPushButton
+
+    from gui.live_push_panel import LivePushPanel
+
+    panel = LivePushPanel(autoload=False)
+    panel.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    panel.show()
+    qt_app.processEvents()
+    labels = {btn.text() for btn in panel.findChildren(QPushButton)}
+    assert "This PC" in labels
+    assert "10.0.0.90" not in labels
+    assert "10.0.0.98" not in labels
+    assert "10.0.0.111" not in labels
+    assert panel._cabinet.isEditable()
+    assert panel._path.placeholderText() == r"\\host\slot  or  C:\Goldclub"
+
+
+def test_autoload_skips_when_cabinet_path_empty(qt_app, monkeypatch) -> None:
+    from gui.live_push_panel import LivePushPanel
+
+    loaded: list[str] = []
+    monkeypatch.setattr("gui.live_push_panel.this_pc_live_target", lambda: None)
+    monkeypatch.setattr(
+        "gui.live_push_panel.LivePushPanel._load",
+        lambda self: loaded.append("load"),
+    )
+    panel = LivePushPanel(autoload=False)
+    panel.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    panel.show()
+    qt_app.processEvents()
+    assert panel._path.text() == ""
+    panel._autoload()
+    assert loaded == []
+    assert "remembered" in panel._status.text().casefold()
