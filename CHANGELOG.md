@@ -6,6 +6,7 @@ Updated automatically when a PR is merged.
 ## 2026-09-11
 
 - Auto-update a short changelog on every merged PR ([#22](https://github.com/enejac/GoldclubConfigScanner/pull/22))
+- Rebuild ConfigScanner.exe and portable zip (2026-09-10 11:48) ([#20](https://github.com/enejac/GoldclubConfigScanner/pull/20))
 
 ## 2026-09-10
 
