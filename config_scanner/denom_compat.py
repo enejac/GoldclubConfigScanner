@@ -901,10 +901,10 @@ def validate_denom_configuration(
     live_denoms = list(live.denomination_list or [])
     if not live_denoms:
         live_denoms, _ = read_mgconfig_denoms(root)
-    proposed_denoms = [int(x) for x in (proposed.denomination_list or [])]
-    if not proposed_denoms:
-        proposed_denoms = list(live_denoms)
-    denom_changed = not denomination_lists_equal(proposed_denoms, live_denoms)
+    # A change is what the game *plays*, not the catalog text: selector-off
+    # cabinets play only the first entry, so ``1`` vs ``1, 2, 5, ...`` is no change.
+    live_playable = playable_denoms_from_recipe(live, listed=list(live_denoms))
+    denom_changed = not denomination_lists_equal(playable, live_playable)
     leaf_dir: Path | None = None
     min_denom = min(playable) if playable else min(listed)
 
