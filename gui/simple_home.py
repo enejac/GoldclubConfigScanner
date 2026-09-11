@@ -453,6 +453,8 @@ class SimpleShell(QWidget):
                 self._stack.addWidget(self._push)
             self._stack.setCurrentWidget(self._push)
             self._push.ensure_started()
+            # Snapshots may have used another cabinet meanwhile.
+            self._push.sync_cabinet_from_settings()
         finally:
             from PySide6.QtCore import QTimer
 

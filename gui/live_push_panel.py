@@ -690,6 +690,7 @@ class LivePushPanel(QWidget):
         self._applying = False
         self._silent_load = False
         self._started = False
+        self._detect_finished = False
         self._closing = False
         self._catalog = live_push_catalog()
         self._emitter = _PushEmitter()
@@ -1434,6 +1435,7 @@ class LivePushPanel(QWidget):
             combo.blockSignals(False)
 
     def _finish_detect(self) -> None:
+        self._detect_finished = True
         saved = SettingsManager.get_live_push_target()
         local = detect_local_live_cabinet()
         initial = initial_live_cabinet_target(saved=saved, local=local)
@@ -1776,8 +1778,27 @@ class LivePushPanel(QWidget):
         text = (target or "").strip()
         if not text:
             return
-        recent = SettingsManager.remember_live_push_target(text)
+        from gui.cabinet_target_row import remember_shared_cabinet_target
+
+        # Shared with Snapshots: both screens open on the cabinet used last.
+        recent = remember_shared_cabinet_target(text)
         self._fill_cabinet_history(recent, current=text)
+
+    def sync_cabinet_from_settings(self) -> bool:
+        """Adopt the cabinet Snapshots used last and load it. True when changed."""
+        if not self._started or not self._detect_finished or self._busy:
+            return False
+        saved = SettingsManager.get_live_push_target().strip()
+        if not saved:
+            return False
+        current = self._path.text().strip()
+        if saved.casefold().rstrip("\\") == current.casefold().rstrip("\\"):
+            return False
+        self._fill_cabinet_history(SettingsManager.get_live_push_recent(), current=saved)
+        self._path.setText(saved)
+        self._fade_detect_status(f"Using last cabinet — {saved}", kind="ok")
+        self._autoload()
+        return True
 
     def _autoload(self) -> None:
         if self._busy:
