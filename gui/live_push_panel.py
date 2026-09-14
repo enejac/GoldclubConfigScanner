@@ -103,6 +103,7 @@ from config_scanner.live_push import (
     live_push_ramclear_reasons,
     live_push_restart_required_reasons,
     live_push_restart_required_text,
+    stack_detail_worth_showing,
     LIVE_PUSH_RAMCLEAR_RESTART_TITLE,
     LIVE_PUSH_RESTART_REQUIRED_TITLE,
     LIVE_PUSH_WRITE_AND_RESTART,
@@ -3567,7 +3568,9 @@ class LivePushPanel(QWidget):
         if result.stack_started:
             bits.append("Game started.")
         elif result.stack_detail:
-            bits.append(result.stack_detail.splitlines()[-1])
+            tail = result.stack_detail.splitlines()[-1]
+            if stack_detail_worth_showing(tail, result.errors):
+                bits.append(tail)
         text = " ".join(bits)
         if result.errors:
             QMessageBox.warning(
