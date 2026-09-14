@@ -2081,6 +2081,25 @@ def cabinet_ip_prefill(default_ip: str = DEFAULT_CABINET_IP) -> tuple[str, int, 
     return text, start, len(text) - start
 
 
+def is_scratch_cabinet_target(target: str) -> bool:
+    """True for a throwaway path (``%TEMP%``, pytest tmpdir) — never a cabinet.
+
+    Keeps a stray write out of the Cabinet field and drops one that is
+    already stored.
+    """
+    text = str(target or "").strip().replace("/", "\\")
+    if not text:
+        return False
+    key = text.rstrip("\\").casefold()
+    if "pytest-of-" in key:
+        return True
+    for scratch in (tempfile.gettempdir(), os.environ.get("TEMP", "")):
+        base = str(scratch or "").strip().replace("/", "\\").rstrip("\\").casefold()
+        if base and (key == base or key.startswith(base + "\\")):
+            return True
+    return False
+
+
 def merge_live_target_history(
     newest: str,
     recent: list[str] | tuple[str, ...] | None = None,
