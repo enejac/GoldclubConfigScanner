@@ -203,7 +203,8 @@ def live_match_field_stylesheet(palette: QPalette) -> str:
         f"background-color: {bg.name()}; "
         f"color: {fg.name()}; "
         f"border: 1px solid {accent.name()}; "
-        "border-radius: 4px;"
+        "border-radius: 4px; "
+        "padding: 3px 8px;"
     )
 
 
@@ -224,7 +225,8 @@ def live_changed_field_stylesheet(palette: QPalette) -> str:
         f"background-color: {bg.name()}; "
         f"color: {fg.name()}; "
         f"border: 1px solid {accent.name()}; "
-        "border-radius: 4px;"
+        "border-radius: 4px; "
+        "padding: 3px 8px;"
     )
 
 
@@ -245,7 +247,8 @@ def live_advisory_field_stylesheet(palette: QPalette) -> str:
         f"background-color: {bg.name()}; "
         f"color: {fg.name()}; "
         f"border: 1px dashed {accent.name()}; "
-        "border-radius: 4px;"
+        "border-radius: 4px; "
+        "padding: 3px 8px;"
     )
 
 
@@ -263,7 +266,8 @@ def live_invalid_field_stylesheet(palette: QPalette) -> str:
         f"background-color: {bg.name()}; "
         f"color: {fg.name()}; "
         f"border: 1px solid {accent.name()}; "
-        "border-radius: 4px;"
+        "border-radius: 4px; "
+        "padding: 3px 8px;"
     )
 
 

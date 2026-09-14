@@ -177,4 +177,8 @@ QStatusBar {{
     background-color: {COLOR_BG_ELEVATED};
     border-top: 1px solid {COLOR_BORDER};
 }}
+QCheckBox {{
+    spacing: 8px;
+    padding: 2px 4px;
+}}
 """
