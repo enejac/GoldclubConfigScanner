@@ -5,6 +5,7 @@ Updated automatically when a PR is merged.
 
 ## 2026-09-14
 
+- Live Push: read Language from jurisdiction_config + slot\languages (2.0.1/3.0.0 images) ([#57](https://github.com/enejac/GoldclubConfigScanner/pull/57))
 - Rebuild ConfigScanner.exe from master a9ef44f (2026-09-14 07:57) ([#56](https://github.com/enejac/GoldclubConfigScanner/pull/56))
 - Rebuild ConfigScanner.exe from master 8abecfd (2026-09-11 15:16) ([#55](https://github.com/enejac/GoldclubConfigScanner/pull/55))
 
