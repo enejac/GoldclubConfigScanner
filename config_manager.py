@@ -185,14 +185,22 @@ class SettingsManager:
 
     @staticmethod
     def get_config_scanner_game_drive() -> str:
+        from config_scanner.live_push import is_scratch_cabinet_target
+
         v = SettingsManager._s().value(_KEY_CONFIG_SCANNER_GAME_DRIVE, "D:")
         text = str(v).strip() if v is not None else "D:"
+        if is_scratch_cabinet_target(text):
+            return "D:"
         return text or "D:"
 
     @staticmethod
     def set_config_scanner_game_drive(game_drive: str) -> None:
+        from config_scanner.live_push import is_scratch_cabinet_target
+
         s = SettingsManager._s()
         text = str(game_drive).strip() or "D:"
+        if is_scratch_cabinet_target(text):
+            return
         s.setValue(_KEY_CONFIG_SCANNER_GAME_DRIVE, text)
         s.sync()
 
@@ -228,8 +236,11 @@ class SettingsManager:
     @staticmethod
     def get_live_push_target() -> str:
         """Last cabinet path that Live Push loaded successfully."""
+        from config_scanner.live_push import is_scratch_cabinet_target
+
         v = SettingsManager._s().value(_KEY_LIVE_PUSH_TARGET, "")
-        return str(v).strip() if v is not None else ""
+        text = str(v).strip() if v is not None else ""
+        return "" if is_scratch_cabinet_target(text) else text
 
     @staticmethod
     def set_live_push_target(target: str) -> None:
@@ -242,6 +253,8 @@ class SettingsManager:
         """Recent Live Push cabinet paths, newest first."""
         from config_scanner.live_push import merge_live_target_history
 
+        from config_scanner.live_push import is_scratch_cabinet_target
+
         v = SettingsManager._s().value(_KEY_LIVE_PUSH_RECENT, "[]")
         raw = str(v).strip() if v is not None else "[]"
         try:
@@ -250,17 +263,21 @@ class SettingsManager:
             data = []
         if not isinstance(data, list):
             return []
-        return merge_live_target_history("", data, limit=LIVE_PUSH_RECENT_LIMIT)
+        kept = [p for p in data if not is_scratch_cabinet_target(str(p))]
+        return merge_live_target_history("", kept, limit=LIVE_PUSH_RECENT_LIMIT)
 
     @staticmethod
     def remember_live_push_target(
         target: str, *, limit: int = LIVE_PUSH_RECENT_LIMIT
     ) -> list[str]:
         """Persist *target* as last-used and at the front of the recent list."""
-        from config_scanner.live_push import merge_live_target_history
+        from config_scanner.live_push import (
+            is_scratch_cabinet_target,
+            merge_live_target_history,
+        )
 
         newest = str(target).strip()
-        if not newest:
+        if not newest or is_scratch_cabinet_target(newest):
             return SettingsManager.get_live_push_recent()
         merged = merge_live_target_history(
             newest, SettingsManager.get_live_push_recent(), limit=limit

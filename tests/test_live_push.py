@@ -554,7 +554,7 @@ def test_live_push_chrome_has_tooltips() -> None:
     assert '("10.0.0.98"' not in src
     assert '("10.0.0.111"' not in src
     assert "initial_live_cabinet_target" in src
-    assert "remember_live_push_target" in src
+    assert "remember_shared_cabinet_target" in src
     assert "discover_active_lab_fleet" in src
     assert "_start_fleet_scan" in src
 
