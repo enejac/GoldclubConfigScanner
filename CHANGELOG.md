@@ -5,6 +5,7 @@ Updated automatically when a PR is merged.
 
 ## 2026-09-14
 
+- Rebuild ConfigScanner.exe from master a9ef44f (2026-09-14 07:57) ([#64](https://github.com/enejac/GoldclubConfigScanner/pull/64))
 - Snapshots: autoload the last Live Push cabinet so Create is ready, and drop flag combo chrome ([#63](https://github.com/enejac/GoldclubConfigScanner/pull/63))
 - Restore: make the live backup an off-by-default checkbox ([#62](https://github.com/enejac/GoldclubConfigScanner/pull/62))
 - Snapshots: Create without GUI freeze; drop placeholder banner and status-bar stamp ([#61](https://github.com/enejac/GoldclubConfigScanner/pull/61))
