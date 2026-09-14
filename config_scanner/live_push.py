@@ -31,8 +31,10 @@ from config_scanner.language_flags import COUNTRY_FLAG_LABEL, flags_snapshot
 from config_scanner.denom_compat import (
     apply_magic_wheel_for_denom,
     denom_combo_choices,
+    denomination_lists_equal,
     inspect_link2win_math,
     live_cabinet_math_gap,
+    playable_denoms_from_recipe,
     prefetch_link2win_math,
     validate_live_push_recipe,
     validate_live_push_warnings,
@@ -2049,13 +2051,63 @@ def load_error_dialog_text(error: str | None) -> str:
     return text or "Cannot load cabinet."
 
 
+def denoms_effectively_equal(live: SlotSetupRecipe, form: SlotSetupRecipe) -> bool:
+    """True when the form plays the same denoms the cabinet plays now.
+
+    With ``ShowDenominationSelector=false`` OneHand plays only the first entry
+    of mgconfig ``DenominationList``; the rest is the CS catalog. Typing ``1``
+    on a cabinet that lists ``1, 2, 5, ... 5000`` and plays 1c is therefore not
+    a change. Both lists empty, or the raw lists equal, is also equal.
+    """
+    live_list = [int(x) for x in (live.denomination_list or [])]
+    form_list = [int(x) for x in (form.denomination_list or [])]
+    if denomination_lists_equal(live_list, form_list):
+        return True
+    if not live_list or not form_list:
+        return False
+    return denomination_lists_equal(
+        playable_denoms_from_recipe(form), playable_denoms_from_recipe(live)
+    )
+
+
+def normalize_effective_denoms(
+    live: SlotSetupRecipe, form: SlotSetupRecipe
+) -> SlotSetupRecipe:
+    """Keep the cabinet's own denom catalog when the form only restates the live denom.
+
+    Returns *form* unchanged when denoms differ. Otherwise copies the live
+    ``DenominationList`` / ``CreditRateValues`` onto *form* so Apply does not
+    shrink a working catalog to a single value and nothing is marked changed.
+    """
+    if not denoms_effectively_equal(live, form):
+        return form
+    live_list = [int(x) for x in (live.denomination_list or [])]
+    form_list = [int(x) for x in (form.denomination_list or [])]
+    if denomination_lists_equal(live_list, form_list):
+        return form
+    form.denomination_list = list(live_list)
+    form.credit_rate_values = list(live.credit_rate_values or live_list)
+    return form
+
+
 def live_field_matches(live: SlotSetupRecipe, form: SlotSetupRecipe) -> dict[str, bool]:
-    """True for each snapshot label whose form value still equals the cabinet."""
+    """True for each snapshot label whose form value still equals the cabinet.
+
+    ``Denoms (cents)`` compares what the game plays, not the raw catalog text.
+    """
     old = dict(recipe_snapshot_rows(live))
     new = dict(recipe_snapshot_rows(form))
-    return {label: old.get(label) == new.get(label) for label in old}
+    out = {label: old.get(label) == new.get(label) for label in old}
+    if "Denoms (cents)" in out and not out["Denoms (cents)"]:
+        out["Denoms (cents)"] = denoms_effectively_equal(live, form)
+    return out
 
 
+LIVE_FIELD_TOOLTIP_ADVISORY = (
+    "Amber: a scanner rule disagrees with the running cabinet, which already "
+    "has this value and the game is up. Not blocking -- nothing is written for "
+    "this field unless you change it."
+)
 LIVE_FIELD_TOOLTIP_MATCH = (
     "Green: matches the live cabinet. No change will be written for this field."
 )
@@ -2564,6 +2616,100 @@ def live_field_validation_errors(errors: list[str]) -> dict[str, str]:
     return out
 
 
+def live_baseline_validation_errors(
+    live: SlotSetupRecipe, goldclub: Path | str
+) -> list[str]:
+    """Validation errors the *running* cabinet raises against itself.
+
+    ``validate(live, live)`` cannot describe a broken push -- nothing is
+    proposed. Anything it returns is a scanner rule that disagrees with a
+    cabinet whose game is up, so those messages are advisory, never red.
+    """
+    try:
+        return list(validate_live_push_recipe(live, live, Path(goldclub)))
+    except Exception as exc:  # noqa: BLE001
+        _lp_log(f"live baseline validation failed: {exc}")
+        return []
+
+
+def split_live_proven_errors(
+    errors: Sequence[str],
+    *,
+    baseline: Sequence[str],
+    matches: dict[str, bool],
+) -> tuple[list[str], list[str]]:
+    """Split validation errors into ``(blocking, advisory)``.
+
+    An error is advisory when the running cabinet already triggers the same
+    message *and* every form field it maps to still equals the cabinet. The
+    operator is not proposing anything the game has not already proven. A
+    message the live cabinet does not raise, or one attached to a field the
+    operator changed, stays blocking (red).
+    """
+    base = set(baseline)
+    blocking: list[str] = []
+    advisory: list[str] = []
+    for err in errors:
+        if err in base:
+            labels = list(live_field_validation_errors([err]).keys())
+            if not labels or all(matches.get(label, True) for label in labels):
+                advisory.append(err)
+                continue
+        blocking.append(err)
+    return blocking, advisory
+
+
+def validate_live_push_blocking(
+    live: SlotSetupRecipe,
+    proposed: SlotSetupRecipe,
+    goldclub: Path | str,
+    *,
+    baseline: Sequence[str] | None = None,
+) -> tuple[list[str], list[str]]:
+    """``(blocking, advisory)`` for a Live Push proposal.
+
+    Blocking errors stop Apply and paint red. Advisory ones are rules the
+    cabinet already lives with (see :func:`live_baseline_validation_errors`).
+    Pass a cached *baseline* to skip re-validating the live recipe.
+    """
+    root = Path(goldclub)
+    errors = list(validate_live_push_recipe(live, proposed, root))
+    if not errors:
+        return [], []
+    base = (
+        list(baseline)
+        if baseline is not None
+        else live_baseline_validation_errors(live, root)
+    )
+    if not base:
+        return errors, []
+    return split_live_proven_errors(
+        errors, baseline=base, matches=live_field_matches(live, proposed)
+    )
+
+
+def split_display_corruption(
+    live_scan: dict[str, str],
+    form_scan: dict[str, str],
+    *,
+    matches: dict[str, bool],
+) -> tuple[dict[str, str], dict[str, str]]:
+    """``(red, advisory)`` for display-text findings.
+
+    The live-file scan describes the cabinet as it runs today, so it is
+    always advisory. A form value is red only when the operator changed that
+    field; an unchanged form value merely restates the cabinet.
+    """
+    red: dict[str, str] = {}
+    advisory: dict[str, str] = dict(live_scan)
+    for label, reason in form_scan.items():
+        if matches.get(label, False):
+            advisory.setdefault(label, reason)
+        else:
+            red[label] = reason
+    return red, advisory
+
+
 def collect_live_invalid_field_labels(
     live: SlotSetupRecipe,
     form: SlotSetupRecipe,
@@ -2726,10 +2872,13 @@ def live_field_highlight_state(
     editable: bool,
     cabinet_loaded: bool,
     invalid_reason: str = "",
+    advisory_reason: str = "",
 ) -> str:
-    """Return ``match``, ``changed``, ``editable``, ``invalid``, or ``none``."""
+    """Return ``match``, ``changed``, ``editable``, ``invalid``, ``advisory`` or ``none``."""
     if invalid_reason:
         return "invalid"
+    if advisory_reason:
+        return "advisory"
     if not editable:
         return "none"
     if matches_live:
@@ -2766,6 +2915,8 @@ def live_field_tooltip(
         else:
             base = "Red: invalid — this value cannot be applied."
         parts.append(f"{base} {detail}".strip())
+    elif state == "advisory":
+        parts.append(f"{LIVE_FIELD_TOOLTIP_ADVISORY} {detail}".strip())
     elif state == "match":
         parts.append(LIVE_FIELD_TOOLTIP_MATCH)
     elif state == "changed":

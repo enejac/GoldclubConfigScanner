@@ -99,7 +99,6 @@ from config_scanner.egm_ui_labels import (
     game_may_already_be_up_hint,
     incomplete_undo_cancel_status,
     incomplete_undo_point_body,
-    live_exe_version_for_target,
     live_exe_version_tooltip,
     format_live_sw_banner,
     resolve_game_kind,
@@ -116,7 +115,6 @@ from config_scanner.egm_ui_labels import (
     undo_backup_step_line,
     uses_trial_keypad,
     undo_missing_binaries_warning,
-    welcome_panel_create_step,
     write_scope_combo_tooltip,
     write_scope_description,
     write_scope_label,
@@ -150,6 +148,7 @@ from gui.config_scanner_worker import (
     schedule_load_snapshots,
     schedule_prepare_scan_target,
     schedule_validate_scan_target,
+    schedule_live_exe_version,
     schedule_scan,
     schedule_set_baseline,
     schedule_stack_restart,
@@ -553,6 +552,7 @@ class ConfigScannerTabWidget(QFrame):
         self._emitter.apply_change_finished.connect(self._on_apply_change_finished)
         self._emitter.apply_file_finished.connect(self._on_apply_file_finished)
         self._emitter.target_validated.connect(self._on_target_validated)
+        self._emitter.live_version_ready.connect(self._on_live_version_ready)
 
         self._snapshots: list[SnapshotInfo] = []
         self._last_report_path: Path | None = None
@@ -566,6 +566,8 @@ class ConfigScannerTabWidget(QFrame):
         self._target_valid = False
         self._validate_seq = 0
         self._validate_pending = ""
+        self._live_version_seq = 0
+        self._game_kind_cache = None
         self._validate_timer = QTimer(self)
         self._validate_timer.setSingleShot(True)
         self._validate_timer.timeout.connect(self._run_target_validation)
@@ -831,9 +833,7 @@ class ConfigScannerTabWidget(QFrame):
         live_row = QHBoxLayout()
         live_row.setContentsMargins(2, 2, 2, 0)
         live_row.setSpacing(8)
-        self._live_sw_label = QLabel(
-            format_live_sw_banner(None, kind=self._game_kind())
-        )
+        self._live_sw_label = QLabel("")
         self._live_sw_label.setObjectName("liveGameVersion")
         self._live_sw_label.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
@@ -841,6 +841,7 @@ class ConfigScannerTabWidget(QFrame):
         self._live_sw_label.setStyleSheet(
             "QLabel#liveGameVersion { font-weight: 700; font-size: 15px; }"
         )
+        self._apply_live_sw_banner(None)
         live_row.addWidget(self._live_sw_label, stretch=1)
         root.addLayout(live_row)
 
@@ -1596,13 +1597,24 @@ class ConfigScannerTabWidget(QFrame):
         return self._current_write_scope().value
 
     def _game_kind(self, profile_id: str | None = None) -> str:
+        """Slot vs roulette from the Cabinet path now, not after async validate.
+
+        Waiting for the scan-target check left Snapshots on the roulette
+        default (placeholder Ruleta banner) while the box already held a Slot
+        Goldclub root. ``resolve_game_kind`` prefers OneHand over leftover
+        Ruleta.exe. Memoised so toolbar setup does not re-stat the share.
+        """
         target = ""
-        if getattr(self, "_target_valid", False) and hasattr(self, "_drive_edit"):
+        if hasattr(self, "_drive_edit"):
             target = self._drive_edit.text().strip()
-        return resolve_game_kind(
-            profile_id=profile_id or getattr(self._service, "profile_id", None),
-            scan_target=target or None,
-        )
+        pid = profile_id or getattr(self._service, "profile_id", None)
+        cache_key = ((pid or "").casefold(), target.casefold())
+        cached = getattr(self, "_game_kind_cache", None)
+        if cached is not None and cached[0] == cache_key:
+            return cached[1]
+        kind = resolve_game_kind(profile_id=pid, scan_target=target or None)
+        self._game_kind_cache = (cache_key, kind)
+        return kind
 
     def _populate_write_scope_combo(self, kind: str) -> None:
         if not self._widget_is_alive(getattr(self, "_write_scope_combo", None)):
@@ -2222,27 +2234,6 @@ class ConfigScannerTabWidget(QFrame):
         self._replace_changes_content()
 
         if result is None:
-            kind = self._game_kind()
-            empty = QLabel(
-                "<p style='font-size:15px; margin:24px 12px 12px 12px;'>"
-                "<b>Config Scanner</b> — save a machine, put it back later."
-                "</p>"
-                "<ol style='margin:8px 12px 8px 28px; color:#cccccc; line-height:1.5;'>"
-                "<li>Set the <b>Machine</b> path (or Auto-detect)</li>"
-                f"<li>Click <b>Create full snapshot</b> — saves config "
-                f"{welcome_panel_create_step(kind)}</li>"
-                "<li>To go back: select that snapshot and click "
-                "<b>Restore snapshot</b> (live config is saved first so you can undo)</li>"
-                "</ol>"
-                "<p style='margin:12px 12px; color:gray;'>"
-                "Open the Snapshots drawer for Compare, config-only restore, and refresh. "
-                "Serialport maps and the live licence file are never overwritten."
-                "</p>"
-            )
-            empty.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
-            empty.setWordWrap(True)
-            empty.setTextFormat(Qt.TextFormat.RichText)
-            self._changes_layout.addWidget(empty)
             self._changes_layout.addStretch(1)
             self._changes_scroll.verticalScrollBar().setValue(0)
             return
@@ -2599,22 +2590,52 @@ class ConfigScannerTabWidget(QFrame):
         if status_note:
             self._append_status(status_note, force=True)
 
+    def _apply_live_sw_banner(self, version: str | None) -> None:
+        """Show the exe line only when ProductVersion was actually read."""
+        if not hasattr(self, "_live_sw_label"):
+            return
+        if not (version or "").strip():
+            self._live_sw_label.setText("")
+            self._live_sw_label.setVisible(False)
+            self._live_sw_label.setToolTip("")
+            return
+        kind = self._game_kind()
+        text = format_live_sw_banner(version, kind=kind)
+        self._live_sw_label.setText(text)
+        self._live_sw_label.setVisible(True)
+        target = ""
+        if hasattr(self, "_drive_edit"):
+            target = self._drive_edit.text().strip()
+        self._live_sw_label.setToolTip(live_exe_version_tooltip(target, kind=kind))
+
     def _refresh_live_game_version(self) -> None:
-        """Show the live game exe ProductVersion for the current scan target."""
+        """Show the live game exe ProductVersion for the current scan target.
+
+        The PE read of OneHand.exe over SMB is done off the UI thread. Doing it
+        here froze Advanced after Auto-detect so Create full snapshot never ran.
+        """
         if not hasattr(self, "_live_sw_label"):
             return
         target = self._drive_edit.text().strip()
-        kind = self._game_kind()
-        version = None
-        if self._target_valid and target:
-            try:
-                version = live_exe_version_for_target(
-                    target, kind=kind, profile_id=self._service.profile_id
-                )
-            except OSError:
-                version = None
-        self._live_sw_label.setText(format_live_sw_banner(version, kind=kind))
-        self._live_sw_label.setToolTip(live_exe_version_tooltip(target, kind=kind))
+        self._apply_live_sw_banner(None)
+        if not self._target_valid or not target:
+            return
+        self._live_version_seq += 1
+        seq = self._live_version_seq
+        schedule_live_exe_version(
+            self._pool,
+            target,
+            self._service.profile_id,
+            self._emitter,
+            seq=seq,
+        )
+
+    def _on_live_version_ready(self, target: str, version: str, seq: int = -1) -> None:
+        if seq >= 0 and seq != self._live_version_seq:
+            return
+        if (target or "").strip() != self._drive_edit.text().strip():
+            return
+        self._apply_live_sw_banner(version or None)
 
     def _refresh_live_ruleta_version(self) -> None:
         """Backward-compatible alias."""
@@ -3779,7 +3800,8 @@ class ConfigScannerTabWidget(QFrame):
 
     def _refresh_action_enabled(self) -> None:
         busy = self._busy
-        can_scan = (not busy) and self._target_valid
+        has_target = bool(self._drive_edit.text().strip())
+        can_scan = (not busy) and has_target
         self._scan_btn.setEnabled(can_scan)
         if hasattr(self, "_create_snapshot_btn"):
             self._create_snapshot_btn.setEnabled(can_scan)
@@ -3791,10 +3813,9 @@ class ConfigScannerTabWidget(QFrame):
             self._scan_action.setEnabled(can_scan)
         if hasattr(self, "_compare_latest_action"):
             self._compare_latest_action.setEnabled(not busy)
-        if not self._target_valid and not busy:
+        if not has_target and not busy:
             self._scan_btn.setToolTip(
-                "Scan & compare is disabled until a valid machine path is set "
-                "(local image or \\10.0.0.90\\c$\\Goldclub)."
+                "Enter a cabinet path (or Auto-detect), then Create full snapshot."
             )
         elif busy and self._busy_op == "scan":
             self._scan_btn.setToolTip("Scan in progress…")
@@ -3912,6 +3933,7 @@ class ConfigScannerTabWidget(QFrame):
             )
 
     def _on_drive_text_changed(self, _text: str = "") -> None:
+        self._game_kind_cache = None
         text = self._drive_edit.text().strip()
         if not text:
             self._target_valid = False
@@ -3953,6 +3975,8 @@ class ConfigScannerTabWidget(QFrame):
         from gui.thin_progress import set_app_busy
 
         set_app_busy(True, (id(self), "validate"))
+        # Kind from the Cabinet path — no GUI-thread SMB (that froze Create).
+        self._game_kind_cache = None
         schedule_validate_scan_target(
             self._pool, self._service, text, self._emitter, seq=seq
         )
@@ -3971,8 +3995,9 @@ class ConfigScannerTabWidget(QFrame):
         if self._target_valid:
             self._validate_pending = current
         self._update_scan_status_ui()
-        # Detection just settled: re-resolve slot vs roulette before the enabled
-        # pass, so roulette-only actions are hidden before they are re-enabled.
+        # Detection just settled: drop the memo and re-resolve slot vs roulette
+        # before the enabled pass, so roulette-only actions stay hidden.
+        self._game_kind_cache = None
         self._refresh_egm_ui_strings()
         self._refresh_action_enabled()
         if self._target_valid:
@@ -4186,7 +4211,7 @@ class ConfigScannerTabWidget(QFrame):
         self._start_live_scan(compare_after=False, include_software=True)
 
     def _start_live_scan(self, *, compare_after: bool, include_software: bool) -> None:
-        if self._busy or not self._target_valid:
+        if self._busy or not self._drive_edit.text().strip():
             return
         self._clear_pending_write_state()
         self._pending_scan_and_compare = compare_after

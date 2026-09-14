@@ -179,11 +179,15 @@ def scan_saved_software_status(count: int, *, kind: GameKind) -> str:
 
 
 def format_live_sw_banner(version: str | None, *, kind: GameKind) -> str:
-    exe = game_exe_name(kind)
+    """Toolbar line for the live exe. Empty until a real ProductVersion is known.
+
+    Never return ``Running: Ruleta.exe unknown`` (or OneHand unknown) — that
+    is a default-roulette placeholder, not a cabinet read.
+    """
     ver = (version or "").strip()
     if not ver:
-        return f"Running: {exe} unknown"
-    return f"Running: {exe} {ver}"
+        return ""
+    return f"Running: {game_exe_name(kind)} {ver}"
 
 
 def live_exe_version_tooltip(target: str, *, kind: GameKind) -> str:

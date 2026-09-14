@@ -23,7 +23,7 @@ from gui.single_instance import (
     try_acquire_config_scanner_lock,
 )
 
-from gui.app_branding import apply_window_branding, status_bar_brand_pixmap
+from gui.app_branding import apply_window_branding
 from gui.app_logging import get_logger
 from gui.companion_pack_panel import CompanionApplyPanel
 from gui.config_scanner_tab import ConfigScannerTabWidget
@@ -120,10 +120,6 @@ class ConfigScannerWindow(QMainWindow):
         sb.setSizeGripEnabled(True)
         self.setStatusBar(sb)
 
-        brand = QLabel()
-        brand.setPixmap(status_bar_brand_pixmap(size=18))
-        sb.addWidget(brand)
-        sb.addWidget(QLabel(program_title()))
         self._status = QLabel("Ready")
         sb.addWidget(self._status, stretch=1)
         self._screenshot_btn = QPushButton("Screenshot")

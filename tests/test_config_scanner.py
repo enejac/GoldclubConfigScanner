@@ -1949,8 +1949,8 @@ def test_live_ruleta_exe_version_and_banner(tmp_path: Path) -> None:
         live_ruleta_exe_version_for_target,
     )
 
-    assert format_live_ruleta_sw_banner(None) == "Running: Ruleta.exe unknown"
-    assert format_live_ruleta_sw_banner("  ") == "Running: Ruleta.exe unknown"
+    assert format_live_ruleta_sw_banner(None) == ""
+    assert format_live_ruleta_sw_banner("  ") == ""
     assert format_live_ruleta_sw_banner("10.2.0.876") == (
         "Running: Ruleta.exe 10.2.0.876"
     )
