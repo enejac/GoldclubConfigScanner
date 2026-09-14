@@ -5,6 +5,7 @@ Updated automatically when a PR is merged.
 
 ## 2026-09-14
 
+- Say the dead WinRM channel once, not four times ([#73](https://github.com/enejac/GoldclubConfigScanner/pull/73))
 - Exit Config Scanner on window close so it does not stay in Task Manager ([#72](https://github.com/enejac/GoldclubConfigScanner/pull/72))
 - Live Push: reload OneHand for cashout and keep Apply status on the panel ([#71](https://github.com/enejac/GoldclubConfigScanner/pull/71))
 - Live Push: add Cashless to the Cashout button list ([#70](https://github.com/enejac/GoldclubConfigScanner/pull/70))
