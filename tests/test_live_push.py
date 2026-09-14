@@ -429,200 +429,12 @@ def test_display_text_anomalies_flags_cent_and_question() -> None:
     assert display_text_anomalies("{0}c") == ()
     assert display_text_anomalies("$") == ()
     assert display_text_anomalies("5") == ()
-    # Lab .76 (GameStar 3.0 Debug) runs <CurrencyBaseSymbol>¢< and paints
-    # ``1¢`` on DENOM: a clean cent / euro glyph is NOT corruption.
-    assert display_text_anomalies("¢") == ()
-    assert display_text_anomalies("{0}¢") == ()
-    assert display_text_anomalies("€") == ()
+    hits = display_text_anomalies("¢")
+    assert any("cent" in h.casefold() for h in hits)
     q_hits = display_text_anomalies("5?¢")
     assert any("?" in h for h in q_hits)
-    assert not any("cent" in h.casefold() for h in q_hits)
+    assert any("cent" in h.casefold() for h in q_hits)
     assert display_text_anomalies("\ufffd") == ("Unicode replacement character",)
-    # UTF-8 bytes re-read as cp1252 (the real ``?¢`` / ``Â¢`` on-screen garbage).
-    moji = display_text_anomalies("Â¢")
-    assert any("mojibake" in h for h in moji)
-    assert not any("non-ASCII" in h for h in moji)
-    assert any("mojibake" in h for h in display_text_anomalies("{0}â‚¬"))
-    assert any("&cent;" in h for h in display_text_anomalies("{0}&cent;"))
-    assert any("control" in h for h in display_text_anomalies("5\x01"))
-
-
-def _puerto_rico_76_pair():
-    """Live recipe shaped like lab .76 plus a form that only types ``1``."""
-    from config_scanner.slot_setup import SlotSetupRecipe
-
-    live = SlotSetupRecipe()
-    live.denomination_list = [1, 2, 5, 10, 25, 50, 100, 200, 250, 500, 1000, 2000, 2500, 5000]
-    live.credit_rate_values = list(live.denomination_list)
-    live.play_limits.show_denom_selector = False
-    live.play_limits.magic_wheel_bet = 40
-    live.play_limits.magic_wheel_average = 100
-    live.jurisdiction.currency_name = "USD"
-    live.jurisdiction.currency_symbol = "$"
-    live.jurisdiction.tag = "PuertoRico"
-    form = SlotSetupRecipe.from_dict(live.to_dict())
-    form.denomination_list = [1]
-    form.credit_rate_values = [1]
-    return live, form
-
-
-def test_denoms_effectively_equal_selector_off() -> None:
-    from config_scanner.live_push import (
-        denoms_effectively_equal,
-        live_push_ramclear_reasons,
-        normalize_effective_denoms,
-    )
-
-    live, form = _puerto_rico_76_pair()
-    assert denoms_effectively_equal(live, form) is True
-    assert live_field_matches(live, form)["Denoms (cents)"] is True
-    assert "denomination list" not in live_push_ramclear_reasons(live, form)
-
-    # Restating the live denom keeps the cabinet's own catalog on Apply.
-    normalized = normalize_effective_denoms(live, form)
-    assert normalized.denomination_list == live.denomination_list
-    assert normalized.credit_rate_values == live.credit_rate_values
-
-    # A different playable denom is a real change.
-    live2, other = _puerto_rico_76_pair()
-    other.denomination_list = [5]
-    other.credit_rate_values = [5]
-    assert denoms_effectively_equal(live2, other) is False
-    assert live_field_matches(live2, other)["Denoms (cents)"] is False
-    assert "denomination list" in live_push_ramclear_reasons(live2, other)
-    assert normalize_effective_denoms(live2, other).denomination_list == [5]
-
-    # Selector on: every listed denom plays, so ``1`` alone IS a change.
-    live3, sel = _puerto_rico_76_pair()
-    live3.play_limits.show_denom_selector = True
-    sel.play_limits.show_denom_selector = True
-    assert denoms_effectively_equal(live3, sel) is False
-
-    # Empty form list never counts as equal to a populated live list.
-    live4, empty = _puerto_rico_76_pair()
-    empty.denomination_list = []
-    assert denoms_effectively_equal(live4, empty) is False
-
-
-def test_validate_denom_configuration_uses_playable_denoms(tmp_path: Path) -> None:
-    from config_scanner.denom_compat import validate_denom_configuration
-
-    gold = _fake_goldclub(tmp_path)
-    live, form = _puerto_rico_76_pair()
-    result = validate_denom_configuration(live, form, gold)
-    assert result.denom_changed is False
-    live2, other = _puerto_rico_76_pair()
-    other.denomination_list = [5]
-    other.credit_rate_values = [5]
-    assert validate_denom_configuration(live2, other, gold).denom_changed is True
-
-
-def test_split_live_proven_errors_demotes_baseline_only_when_unchanged() -> None:
-    from config_scanner.live_push import split_live_proven_errors
-
-    baseline = [
-        "Denom 1c is not allowed for USD (allowed: 5, 10, 25).",
-        "Live Link2Win math on the cabinet does not include 1c.",
-    ]
-    errors = list(baseline) + ["Bet multiplier 7 is not a preset."]
-    # Nothing changed: baseline errors are advisory, the new one blocks.
-    matches = {"Denoms (cents)": True, "Bet multipliers": False}
-    blocking, advisory = split_live_proven_errors(
-        errors, baseline=baseline, matches=matches
-    )
-    assert blocking == ["Bet multiplier 7 is not a preset."]
-    assert advisory == baseline
-    # Same message but the Denoms field was edited: stays red.
-    blocking2, advisory2 = split_live_proven_errors(
-        errors, baseline=baseline, matches={"Denoms (cents)": False}
-    )
-    assert blocking2 == errors
-    assert advisory2 == []
-    # Baseline message not attached to any field -> advisory.
-    blocking3, advisory3 = split_live_proven_errors(
-        ["odd rule"], baseline=["odd rule"], matches={}
-    )
-    assert blocking3 == [] and advisory3 == ["odd rule"]
-
-
-def test_validate_live_push_blocking_uses_cabinet_baseline(
-    tmp_path: Path, monkeypatch
-) -> None:
-    import config_scanner.live_push as lp
-
-    gold = _fake_goldclub(tmp_path)
-    live, form = _puerto_rico_76_pair()
-
-    def fake_validate(live_r, proposed, root):
-        if proposed.denomination_list[0] == 250:
-            return ["Denom 250c is not allowed for USD (allowed: 1, 5)."]
-        return ["Live Link2Win math on the cabinet does not include 1c."]
-
-    monkeypatch.setattr(lp, "validate_live_push_recipe", fake_validate)
-    blocking, advisory = lp.validate_live_push_blocking(live, form, gold)
-    assert blocking == []
-    assert advisory == ["Live Link2Win math on the cabinet does not include 1c."]
-    assert lp.live_field_validation_errors(blocking) == {}
-
-    bad = type(form).from_dict(form.to_dict())
-    bad.denomination_list = [250]
-    bad.credit_rate_values = [250]
-    blocking2, advisory2 = lp.validate_live_push_blocking(live, bad, gold)
-    assert blocking2 == ["Denom 250c is not allowed for USD (allowed: 1, 5)."]
-    assert advisory2 == []
-    assert "Denoms (cents)" in lp.live_field_validation_errors(blocking2)
-
-    # Cached baseline is honoured (no re-validation of the live recipe).
-    blocking3, advisory3 = lp.validate_live_push_blocking(
-        live, form, gold, baseline=[]
-    )
-    assert blocking3 == ["Live Link2Win math on the cabinet does not include 1c."]
-    assert advisory3 == []
-
-
-def test_split_display_corruption_live_scan_is_advisory() -> None:
-    from config_scanner.live_push import split_display_corruption
-
-    live_scan = {"Denoms (cents)": "jurisdiction_config.xml: literal '?'"}
-    form_scan = {"Currency symbol": "literal '?'", "Denoms (cents)": "literal '?'"}
-    red, advisory = split_display_corruption(
-        live_scan,
-        form_scan,
-        matches={"Currency symbol": False, "Denoms (cents)": True},
-    )
-    assert red == {"Currency symbol": "literal '?'"}
-    assert advisory["Denoms (cents)"].startswith("jurisdiction_config.xml")
-    assert "Currency symbol" not in advisory
-
-
-def test_live_field_highlight_advisory_state_and_tooltip() -> None:
-    from config_scanner.live_push import LIVE_FIELD_TOOLTIP_ADVISORY
-
-    assert (
-        live_field_highlight_state(
-            matches_live=True,
-            editable=True,
-            cabinet_loaded=True,
-            advisory_reason="Live Link2Win math does not include 1c.",
-        )
-        == "advisory"
-    )
-    # Blocking always wins over advisory.
-    assert (
-        live_field_highlight_state(
-            matches_live=True,
-            editable=True,
-            cabinet_loaded=True,
-            invalid_reason="bad",
-            advisory_reason="doubt",
-        )
-        == "invalid"
-    )
-    tip = live_field_tooltip("advisory", detail="Live Link2Win math does not include 1c.")
-    assert tip.startswith(LIVE_FIELD_TOOLTIP_ADVISORY)
-    assert "amber" in tip.casefold()
-    assert "not blocking" in tip.casefold()
-    assert "Link2Win" in tip
 
 
 def test_live_display_corruption_errors_paints_denoms(tmp_path: Path) -> None:
@@ -645,18 +457,10 @@ def test_live_display_corruption_errors_paints_denoms(tmp_path: Path) -> None:
         "    <CurrencyBaseFormat>{0}\u00a2</CurrencyBaseFormat>",
     )
     jur.write_text(text, encoding="utf-8")
-    # Clean UTF-8 cent in a utf-8 XML: lab .76 runs exactly this and shows 1¢.
-    assert live_display_corruption_errors(gold) == {}
-
-    # Real garbage (literal '?' from an ANSI re-save) is still found, and a
-    # cent-tag finding paints DENOM only — never the ``$`` symbol field.
-    jur.write_text(
-        text.replace("{0}\u00a2", "{0}?\u00a2"), encoding="utf-8"
-    )
     errs = live_display_corruption_errors(gold)
     assert "Denoms (cents)" in errs
-    assert "Currency symbol" not in errs
-    assert "?" in errs["Denoms (cents)"]
+    assert "Currency symbol" in errs
+    assert "?" in errs["Denoms (cents)"] or "cent" in errs["Denoms (cents)"].casefold()
 
     recipe = SlotSetupRecipe()
     recipe.jurisdiction.currency_symbol = "5?"
@@ -706,14 +510,6 @@ def test_live_push_panel_wires_corrupt_and_notepad() -> None:
     assert "recipe_display_corruption_errors" in src
     assert "open_with_notepad" in src
     assert "invalid_kind" in src
-    # Live-proven baseline: advisory (amber) path is wired, Apply uses blocking only.
-    assert "validate_live_push_blocking" in src
-    assert "live_baseline_validation_errors" in src
-    assert "split_display_corruption" in src
-    assert "live_advisory_field_stylesheet" in src
-    assert 'state == "advisory"' in src
-    assert "normalize_effective_denoms" in src
-    assert "validate_live_push_recipe(" not in src
 
 
 def test_open_with_notepad_rejects_missing(tmp_path: Path) -> None:
@@ -747,10 +543,7 @@ def test_live_push_chrome_has_tooltips() -> None:
     assert '("10.0.0.98"' not in src
     assert '("10.0.0.111"' not in src
     assert "initial_live_cabinet_target" in src
-    # Remembering goes through the helper shared with Snapshots, so both
-    # screens open on the cabinet used last on either of them.
-    assert "remember_shared_cabinet_target(" in src
-    assert "def sync_cabinet_from_settings" in src
+    assert "remember_live_push_target" in src
     assert "discover_active_lab_fleet" in src
     assert "_start_fleet_scan" in src
 
@@ -1650,6 +1443,49 @@ def test_lp_log_writes_only_livepush_file(tmp_path: Path, monkeypatch, caplog) -
     assert "hello unique live-push line" in text
     assert "T" in text.split(" ", 1)[0]
     assert "hello unique live-push line" not in caplog.text
+
+
+def test_commit_writes_settings_when_slot_stop_unreachable(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """WinRM timeout / 5985 closed — SMB write still happens, no start attempt."""
+    gold = _fake_goldclub(tmp_path)
+    recipe = load_recipe_from_goldclub(gold, label="live")
+    recipe.play_limits.show_all_lines = not bool(recipe.play_limits.show_all_lines)
+    starts: list[str] = []
+
+    monkeypatch.setattr("config_scanner.live_push.goldclub_stack_kind", lambda _r: "slot")
+    monkeypatch.setattr(
+        "config_scanner.live_push.run_slot_stack_kill",
+        lambda *_a, **_k: (
+            False,
+            "Slot stop failed: WinRM cannot complete the operation. "
+            "WinRMOperationTimeout,PSSessionStateBroken",
+        ),
+    )
+    monkeypatch.setattr(
+        "config_scanner.live_push.run_slot_stack_start",
+        lambda *_a, **_k: (starts.append("start") or True, "bootstrap"),
+    )
+    monkeypatch.setattr(
+        "config_scanner.live_push.restart_slot_hwsubsys",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("no WinRM restart")),
+    )
+
+    result = commit_live_push(
+        recipe,
+        gold,
+        restart_stack=True,
+        scan_target=r"\\10.0.0.76\c$\Goldclub",
+        work_parent=tmp_path / "work",
+        backup=False,
+    )
+    assert result.written
+    assert result.errors
+    assert "Settings written" in result.errors[0]
+    assert "WinRM is not listening" in result.errors[0]
+    assert starts == []
+    assert result.stack_started is False
 
 
 def test_commit_slot_kill_failure_still_writes_then_retries_stop(

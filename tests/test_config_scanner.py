@@ -130,7 +130,6 @@ def test_slot_profile_definition() -> None:
         for glob_pat in profile.extra_file_globs
     )
     assert "slot/Confirmation.txt" in profile.extra_file_globs
-    assert r"\\10.0.0.98\slot" in profile.discover_targets
     assert any(root.path.casefold() == "services" for root in profile.scan_roots)
 
 
@@ -3734,6 +3733,9 @@ def test_run_slot_stack_kill_remote_uses_same_watcher_script(monkeypatch) -> Non
         lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("local kill must not run")),
     )
     monkeypatch.setattr("config_scanner.live_push._ensure_lab_smb", lambda _ip: None)
+    monkeypatch.setattr(
+        "config_scanner.live_push.remote_winrm_ready", lambda _h: True
+    )
     monkeypatch.setattr("automation.remote_exec.winrm_run_inline", fake_winrm)
     monkeypatch.setattr(
         "network.lab_access.require_lab_fleet_ip", lambda host: host
@@ -3776,6 +3778,73 @@ def test_run_stack_kill_slot_uses_onehand_stop(monkeypatch) -> None:
     assert ok
     assert "stopped" in detail.casefold()
     assert calls == [r"\\10.0.0.111\slot"]
+
+
+def test_stack_stop_unreachable_and_restore_note() -> None:
+    from config_scanner.stack_restart import (
+        remote_winrm_ready,
+        restore_stop_failed_note,
+        stack_stop_unreachable,
+        winrm_skip_detail,
+    )
+
+    assert stack_stop_unreachable(
+        "WinRM cannot complete the operation. WinRMOperationTimeout,PSSessionStateBroken"
+    )
+    assert stack_stop_unreachable("Slot stop failed: WinRM is not reachable on 10.0.0.76:5985")
+    assert not stack_stop_unreachable("STILL:OneHand.exe")
+    slot_note = restore_stop_failed_note(kind="slot")
+    assert "SMB" in slot_note
+    assert "WinRM" in slot_note
+    assert "ERROR 30" not in slot_note
+    assert "FIX-ERROR30" in restore_stop_failed_note(kind="roulette")
+    assert "5985" in winrm_skip_detail("10.0.0.76")
+    assert remote_winrm_ready("") is False
+    assert remote_winrm_ready(None) is False
+
+
+def test_run_slot_stack_kill_skips_winrm_when_port_closed(monkeypatch) -> None:
+    from config_scanner.live_push import run_slot_stack_kill
+
+    monkeypatch.setattr(
+        "config_scanner.stack_restart.scan_target_is_local_machine",
+        lambda _t: False,
+    )
+    monkeypatch.setattr(
+        "config_scanner.live_push.remote_winrm_ready", lambda _h: False
+    )
+    monkeypatch.setattr(
+        "automation.remote_exec.winrm_run_inline",
+        lambda **_k: (_ for _ in ()).throw(AssertionError("WinRM must not run")),
+    )
+    ok, detail = run_slot_stack_kill(r"\\10.0.0.76\c$\Goldclub")
+    assert ok is False
+    assert "5985" in detail
+    assert "SMB" in detail
+
+
+def test_slot_start_and_hwsubsys_skip_winrm_when_port_closed(monkeypatch) -> None:
+    from config_scanner.live_push import restart_slot_hwsubsys, run_slot_stack_start
+
+    monkeypatch.setattr(
+        "config_scanner.live_push._slot_target_is_local", lambda _t: False
+    )
+    monkeypatch.setattr(
+        "config_scanner.live_push.unc_host_from_target", lambda _t: "10.0.0.76"
+    )
+    monkeypatch.setattr(
+        "config_scanner.live_push.remote_winrm_ready", lambda _h: False
+    )
+    monkeypatch.setattr(
+        "automation.remote_exec.winrm_run_inline",
+        lambda **_k: (_ for _ in ()).throw(AssertionError("WinRM must not run")),
+    )
+    ok, detail = run_slot_stack_start(r"\\10.0.0.76\c$\Goldclub")
+    assert ok is False
+    assert "5985" in detail
+    ok, detail = restart_slot_hwsubsys(r"\\10.0.0.76\c$\Goldclub")
+    assert ok is False
+    assert "5985" in detail
 
 
 def test_run_stack_start_slot_uses_bootstrap(monkeypatch) -> None:

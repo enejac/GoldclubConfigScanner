@@ -29,12 +29,9 @@ from config_scanner.bill_tokens_view import format_bill_notes_snapshot
 from config_scanner.build_version import OneHandBuildInfo, detect_onehand_build
 from config_scanner.denom_compat import (
     apply_magic_wheel_for_denom,
-    bet_multiplier_preset_labels,
     denom_combo_choices,
-    denomination_lists_equal,
     inspect_link2win_math,
     live_cabinet_math_gap,
-    playable_denoms_from_recipe,
     prefetch_link2win_math,
     validate_live_push_recipe,
     validate_live_push_warnings,
@@ -74,10 +71,13 @@ from config_scanner.slot_setup import (
 )
 from config_scanner.stack_restart import (
     plan_stack_restart,
+    remote_winrm_ready,
     run_stack_kill,
     run_stack_start,
     running_on_egm,
+    stack_stop_unreachable,
     unc_host_from_target,
+    winrm_skip_detail,
 )
 
 ProgressFn = Callable[[str], None]
@@ -694,10 +694,13 @@ def wait_for_dallas_from_hardware(
     )
 
 
-# Derived from jurisdictions.json so the dropdown cannot offer a list
-# Apply will reject. Link2Win game-pack ``Bet`` rows are denom coverage,
-# not this list.
-BET_MULTIPLIER_PRESETS: tuple[str, ...] = bet_multiplier_preset_labels()
+BET_MULTIPLIER_PRESETS: tuple[str, ...] = (
+    "1, 2, 3, 4, 5, 8, 10, 12, 15",
+    "1, 2, 3, 4, 5",
+    "4, 8, 12",
+    "1, 2, 5, 10",
+    "1, 5, 10, 20",
+)
 
 CURRENCY_SYMBOL_CHOICES: tuple[str, ...] = (
     "$",
@@ -1382,6 +1385,8 @@ def live_push_ramclear_reasons(
     When ``aurum_currency`` is provided (including empty string), a mismatch
     against the form jurisdiction currency is also a ramclear reason.
     """
+    from config_scanner.denom_compat import denomination_lists_equal
+
     reasons: list[str] = []
     live_c = (
         live.jurisdiction.currency_name or live.hardware_currency_name or ""
@@ -1404,8 +1409,9 @@ def live_push_ramclear_reasons(
             else:
                 reasons.append(f"Aurum currency missing → set {form_c}")
 
+    live_denoms = list(live.denomination_list or [])
     form_denoms = [int(x) for x in (form.denomination_list or [])]
-    if form_denoms and not denoms_effectively_equal(live, form):
+    if form_denoms and not denomination_lists_equal(form_denoms, live_denoms):
         reasons.append("denomination list")
 
     form_mults = list(form.play_limits.bet_multipliers or [])
@@ -1427,6 +1433,11 @@ def run_slot_ramclear(scan_target: str) -> tuple[bool, str]:
         _repair_ramclear,
         build_context,
     )
+
+    if not _slot_target_is_local(scan_target):
+        host = unc_host_from_target(scan_target) or ""
+        if not remote_winrm_ready(host):
+            return False, winrm_skip_detail(host)
 
     try:
         ctx = build_context(scan_target, "slot")
@@ -1512,6 +1523,8 @@ def restart_slot_hwsubsys(scan_target: str) -> tuple[bool, str]:
         if local:
             return _run_local_powershell(script, timeout=150)
         host = unc_host_from_target(scan_target) or ""
+        if not remote_winrm_ready(host):
+            return False, winrm_skip_detail(host)
         from automation.remote_exec import winrm_run_inline
         from network.lab_access import require_lab_fleet_ip
 
@@ -1639,7 +1652,7 @@ def live_push_catalog() -> dict[str, tuple[str, ...]]:
         "languages": _unique(languages),
         "markets": ordered_live_markets(_unique(markets)),
         "denoms": _unique(denoms),
-        "bet_multipliers": bet_multiplier_preset_labels(),
+        "bet_multipliers": BET_MULTIPLIER_PRESETS,
         "symbols": CURRENCY_SYMBOL_CHOICES,
         "magic_wheel_limits": tuple(str(v) for v in MAGIC_WHEEL_LIMITS),
         "jackpot_layouts": JACKPOT_LAYOUTS,
@@ -2034,65 +2047,15 @@ def load_error_dialog_text(error: str | None) -> str:
     return text or "Cannot load cabinet."
 
 
-def denoms_effectively_equal(live: SlotSetupRecipe, form: SlotSetupRecipe) -> bool:
-    """True when the form plays the same denoms the cabinet plays now.
-
-    With ``ShowDenominationSelector=false`` OneHand plays only the first entry
-    of mgconfig ``DenominationList``; the rest is the CS catalog. Typing ``1``
-    on a cabinet that lists ``1, 2, 5, ... 5000`` and plays 1c is therefore not
-    a change. Both lists empty, or the raw lists equal, is also equal.
-    """
-    live_list = [int(x) for x in (live.denomination_list or [])]
-    form_list = [int(x) for x in (form.denomination_list or [])]
-    if denomination_lists_equal(live_list, form_list):
-        return True
-    if not live_list or not form_list:
-        return False
-    return denomination_lists_equal(
-        playable_denoms_from_recipe(form), playable_denoms_from_recipe(live)
-    )
-
-
-def normalize_effective_denoms(
-    live: SlotSetupRecipe, form: SlotSetupRecipe
-) -> SlotSetupRecipe:
-    """Keep the cabinet's own denom catalog when the form only restates the live denom.
-
-    Returns *form* unchanged when denoms differ. Otherwise copies the live
-    ``DenominationList`` / ``CreditRateValues`` onto *form* so Apply does not
-    shrink a working catalog to a single value and nothing is marked changed.
-    """
-    if not denoms_effectively_equal(live, form):
-        return form
-    live_list = [int(x) for x in (live.denomination_list or [])]
-    form_list = [int(x) for x in (form.denomination_list or [])]
-    if denomination_lists_equal(live_list, form_list):
-        return form
-    form.denomination_list = list(live_list)
-    form.credit_rate_values = list(live.credit_rate_values or live_list)
-    return form
-
-
 def live_field_matches(live: SlotSetupRecipe, form: SlotSetupRecipe) -> dict[str, bool]:
-    """True for each snapshot label whose form value still equals the cabinet.
-
-    ``Denoms (cents)`` compares what the game plays, not the raw catalog text.
-    """
+    """True for each snapshot label whose form value still equals the cabinet."""
     old = dict(recipe_snapshot_rows(live))
     new = dict(recipe_snapshot_rows(form))
-    out = {label: old.get(label) == new.get(label) for label in old}
-    if "Denoms (cents)" in out and not out["Denoms (cents)"]:
-        out["Denoms (cents)"] = denoms_effectively_equal(live, form)
-    return out
+    return {label: old.get(label) == new.get(label) for label in old}
 
 
 LIVE_FIELD_TOOLTIP_MATCH = (
     "Green: matches the live cabinet. No change will be written for this field."
-)
-LIVE_FIELD_TOOLTIP_ADVISORY = (
-    "Amber: a scanner rule disagrees with the running cabinet, which already "
-    "has this value and the game is up. Not blocking — nothing is written for "
-    "this field unless you change it."
 )
 LIVE_FIELD_TOOLTIP_CHANGED = (
     "Orange: editable in Live Push and your value differs from the live cabinet. "
@@ -2137,11 +2100,8 @@ LIVE_OPTION_HELP: dict[str, str] = {
         "Link2WinBonusMath.json already contains that denom (red if it does not)."
     ),
     "Bet multipliers": (
-        "Bet steps written to each slot theme MathSettings.xml "
-        "(not RouletteGame or Link2WinFeature). Must match an approved "
-        "market setup (currently 1,2,3,4,5,8,10,12,15). Country-pack "
-        "Link2Win Bet/Denom rows only gate denoms — they do not restrict "
-        "these steps if a title cannot play them."
+        "Bet multiplier list offered to the player. Must match an approved bet "
+        "setup for the selected denoms / market."
     ),
     "Magic wheel limit": (
         "Maximum money the magic wheel can award. Written to "
@@ -2366,10 +2326,8 @@ for _name in STANDARD_DOOR_SWITCH_NAMES:
 # Tags OneHand paints on the game DENOM / credit labels. UTF-8 cent or a
 # leftover '?' here is what shows as ``5?¢`` on cabinet.
 _DISPLAY_TEXT_TAGS: dict[str, tuple[str, ...]] = {
-    # Base (cent) tags are the DENOM label only. ``Currency symbol`` in the
-    # form is <CurrencySymbol> ($); a cent-tag finding must not paint it.
-    "CurrencyBaseSymbol": ("Denoms (cents)",),
-    "CurrencyBaseFormat": ("Denoms (cents)",),
+    "CurrencyBaseSymbol": ("Denoms (cents)", "Currency symbol"),
+    "CurrencyBaseFormat": ("Denoms (cents)", "Currency symbol"),
     "CurrencyShortSymbol": ("Currency symbol",),
     "CurrencyShortFormat": ("Currency", "Denoms (cents)"),
     "CurrencyLongFormat": ("Currency", "Denoms (cents)"),
@@ -2392,45 +2350,31 @@ _DISPLAY_TAG_PATTERN = re.compile(
 )
 
 
-# UTF-8 bytes re-read as ANSI (cp1252): ``¢`` -> ``Â¢``, ``€`` -> ``â‚¬``.
-_MOJIBAKE_RE = re.compile("[\u00c2\u00c3][\u0080-\u00bf]|\u00e2[\u0080-\u00bf\u20ac\u201a\u0192]")
-
-# Latin-1 currency glyphs a valid UTF-8 jurisdiction_config may carry. .NET
-# honours the XML encoding declaration, so these are read correctly; lab
-# .76 (GameStar 3.0 Debug) paints ``1¢`` on DENOM with <CurrencyBaseSymbol>¢<.
-_CLEAN_CURRENCY_GLYPHS = frozenset("\u00a2\u00a3\u00a5\u20ac")
-
-
 def display_text_anomalies(text: str) -> tuple[str, ...]:
-    """Reasons a live XML / form string will render as garbage on OneHand.
-
-    Only *evidence* of corruption counts: replacement char, literal ``?``,
-    undefined ``&cent;`` entity, control chars, or mojibake (``Â¢``). A clean
-    ``¢`` / ``€`` is not corruption — a working cabinet proved that.
-    """
+    """Reasons a live XML / form string will render as garbage on OneHand."""
     raw = text if text is not None else ""
     if raw == "":
         return ()
     reasons: list[str] = []
     if "\ufffd" in raw:
         reasons.append("Unicode replacement character")
-    if _MOJIBAKE_RE.search(raw):
-        reasons.append("mojibake (UTF-8 bytes read as ANSI, shows as Â¢ / â‚¬)")
+    if "\u00a2" in raw or "¢" in raw:
+        reasons.append("UTF-8 cent sign (shows as ?¢ on DENOM)")
     if "?" in raw:
         reasons.append("literal '?'")
     low = raw.casefold()
-    if "&cent;" in low:
-        reasons.append("undefined XML entity &cent; (parser error)")
+    if "&cent;" in low or "&#162;" in low or "&#xa2;" in low:
+        reasons.append("HTML cent entity (shows as ?¢ on DENOM)")
     if any(ord(ch) < 32 and ch not in "\t\n\r" for ch in raw):
         reasons.append("control character")
     extras = [
         ch
         for ch in raw
-        if ord(ch) > 127 and ch not in _CLEAN_CURRENCY_GLYPHS and ch != "\ufffd"
+        if ord(ch) > 127 and ch not in ("\u00a2", "¢", "\ufffd")
     ]
-    if extras and not _MOJIBAKE_RE.search(raw):
+    if extras:
         shown = "".join(dict.fromkeys(extras))[:6]
-        reasons.append(f"non-ASCII {shown!r} (check the DENOM label renders it)")
+        reasons.append(f"non-ASCII {shown!r} (OneHand reads ANSI)")
     return tuple(reasons)
 
 
@@ -2608,100 +2552,6 @@ def live_field_validation_errors(errors: list[str]) -> dict[str, str]:
     return out
 
 
-def live_baseline_validation_errors(
-    live: SlotSetupRecipe, goldclub: Path | str
-) -> list[str]:
-    """Validation errors the *running* cabinet raises against itself.
-
-    ``validate(live, live)`` cannot describe a broken push — nothing is
-    proposed. Anything it returns is a scanner rule that disagrees with a
-    cabinet whose game is up, so those messages are advisory, never red.
-    """
-    try:
-        return list(validate_live_push_recipe(live, live, Path(goldclub)))
-    except Exception as exc:  # noqa: BLE001
-        _lp_log(f"live baseline validation failed: {exc}")
-        return []
-
-
-def split_live_proven_errors(
-    errors: Sequence[str],
-    *,
-    baseline: Sequence[str],
-    matches: dict[str, bool],
-) -> tuple[list[str], list[str]]:
-    """Split validation errors into ``(blocking, advisory)``.
-
-    An error is advisory when the running cabinet already triggers the same
-    message *and* every form field it maps to still equals the cabinet. The
-    operator is not proposing anything the game has not already proven. A
-    message the live cabinet does not raise, or one attached to a field the
-    operator changed, stays blocking (red).
-    """
-    base = set(baseline)
-    blocking: list[str] = []
-    advisory: list[str] = []
-    for err in errors:
-        if err in base:
-            labels = list(live_field_validation_errors([err]).keys())
-            if not labels or all(matches.get(label, True) for label in labels):
-                advisory.append(err)
-                continue
-        blocking.append(err)
-    return blocking, advisory
-
-
-def validate_live_push_blocking(
-    live: SlotSetupRecipe,
-    proposed: SlotSetupRecipe,
-    goldclub: Path | str,
-    *,
-    baseline: Sequence[str] | None = None,
-) -> tuple[list[str], list[str]]:
-    """``(blocking, advisory)`` for a Live Push proposal.
-
-    Blocking errors stop Apply and paint red. Advisory ones are rules the
-    cabinet already lives with (see :func:`live_baseline_validation_errors`).
-    Pass a cached *baseline* to skip re-validating the live recipe.
-    """
-    root = Path(goldclub)
-    errors = list(validate_live_push_recipe(live, proposed, root))
-    if not errors:
-        return [], []
-    base = (
-        list(baseline)
-        if baseline is not None
-        else live_baseline_validation_errors(live, root)
-    )
-    if not base:
-        return errors, []
-    return split_live_proven_errors(
-        errors, baseline=base, matches=live_field_matches(live, proposed)
-    )
-
-
-def split_display_corruption(
-    live_scan: dict[str, str],
-    form_scan: dict[str, str],
-    *,
-    matches: dict[str, bool],
-) -> tuple[dict[str, str], dict[str, str]]:
-    """``(red, advisory)`` for display-text findings.
-
-    The live-file scan describes the cabinet as it runs today, so it is
-    always advisory. A form value is red only when the operator changed that
-    field; an unchanged form value merely restates the cabinet.
-    """
-    red: dict[str, str] = {}
-    advisory: dict[str, str] = dict(live_scan)
-    for label, reason in form_scan.items():
-        if matches.get(label, False):
-            advisory.setdefault(label, reason)
-        else:
-            red[label] = reason
-    return red, advisory
-
-
 def collect_live_invalid_field_labels(
     live: SlotSetupRecipe,
     form: SlotSetupRecipe,
@@ -2862,17 +2712,10 @@ def live_field_highlight_state(
     editable: bool,
     cabinet_loaded: bool,
     invalid_reason: str = "",
-    advisory_reason: str = "",
 ) -> str:
-    """Return ``match``, ``changed``, ``editable``, ``invalid``, ``advisory`` or ``none``.
-
-    ``advisory`` (amber) is a scanner doubt about the cabinet it cannot prove
-    — the game runs with this value. It never blocks Apply.
-    """
+    """Return ``match``, ``changed``, ``editable``, ``invalid``, or ``none``."""
     if invalid_reason:
         return "invalid"
-    if advisory_reason:
-        return "advisory"
     if not editable:
         return "none"
     if matches_live:
@@ -2909,8 +2752,6 @@ def live_field_tooltip(
         else:
             base = "Red: invalid — this value cannot be applied."
         parts.append(f"{base} {detail}".strip())
-    elif state == "advisory":
-        parts.append(f"{LIVE_FIELD_TOOLTIP_ADVISORY} {detail}".strip())
     elif state == "match":
         parts.append(LIVE_FIELD_TOOLTIP_MATCH)
     elif state == "changed":
@@ -3454,9 +3295,13 @@ def slot_stop_unreachable(detail: str) -> bool:
 
     Retrying, or trying to *start* the game over the same channel, cannot
     work — but the SMB write path is independent, so settings can still go.
+    Covers both Live Push transport markers and the restore-side
+    ``stack_stop_unreachable`` set (5985 closed / OperationTimeout).
     """
     low = (detail or "").casefold()
-    return any(marker in low for marker in _WINRM_UNREACHABLE_MARKERS)
+    if any(marker in low for marker in _WINRM_UNREACHABLE_MARKERS):
+        return True
+    return stack_stop_unreachable(detail)
 
 
 def winrm_failure_hint(detail: str, host: str) -> str:
@@ -3479,7 +3324,14 @@ def winrm_failure_hint(detail: str, host: str) -> str:
             f"WinRM logon to {who} was refused. Check the lab credential for "
             f"that cabinet (cmdkey /add:{who})."
         )
-    if "cannot connect to the destination" in low or "timed out" in low:
+    if (
+        "cannot connect to the destination" in low
+        or "timed out" in low
+        or "winrmoperationtimeout" in low
+        or "winrm cannot complete the operation" in low
+        or "winrm is not reachable" in low
+        or "no listener" in low
+    ):
         return (
             f"WinRM (TCP 5985) on {who} did not answer. Enable-PSRemoting on the "
             "cabinet, or restart the game there by hand."
@@ -3495,12 +3347,16 @@ def run_slot_stack_kill(scan_target: str) -> tuple[bool, str]:
     _lp_log(f"slot kill local={local} target={scan_target!r}")
     if local:
         _arm_slot_bootstrap_watchdog(scan_target)
+    host = "" if local else (unc_host_from_target(scan_target) or "")
+    if host and not remote_winrm_ready(host):
+        detail = f"Slot stop failed: {winrm_skip_detail(host)}"
+        _lp_log(detail)
+        return False, detail
     last_detail = ""
     for attempt in range(1, 4):
         if local:
             ok, detail = _run_local_powershell(_SLOT_KILL_SCRIPT, timeout=90)
         else:
-            host = unc_host_from_target(scan_target) or ""
             try:
                 from automation.remote_exec import winrm_run_inline
                 from network.lab_access import require_lab_fleet_ip
@@ -3550,6 +3406,10 @@ def run_slot_stack_start(
         _lp_log(f"slot start local result ok={ok} {detail}")
         return ok, detail if ok else f"Slot start failed: {detail}"
     host = unc_host_from_target(scan_target) or ""
+    if not remote_winrm_ready(host):
+        detail = winrm_skip_detail(host)
+        _lp_log(f"slot start skipped: {detail}")
+        return False, f"Slot start failed: {detail}"
     try:
         from automation.remote_exec import winrm_run_inline
         from network.lab_access import require_lab_fleet_ip
@@ -3909,6 +3769,7 @@ def commit_live_push(
         _lp_log(f"commit abort before stop: {msg}")
         return LivePushResult((), (), (msg,), False, False, msg)
 
+    stop_failed = ""
     slot_stop_failed = ""
     if use_slot:
         _emit(progress, "Stopping the slot game…")
@@ -3928,17 +3789,26 @@ def commit_live_push(
         _emit(progress, "Stopping the game (Kill-All)…")
         ok, stack_detail = run_stack_kill(plan)
         if not ok:
-            if work_parent is None:
-                shutil.rmtree(parent, ignore_errors=True)
-            return LivePushResult(
-                (),
-                (),
-                (stack_detail or "Kill-All failed",),
-                False,
-                False,
-                stack_detail,
-            )
-        stack_killed = True
+            if stack_stop_unreachable(stack_detail):
+                stop_failed = stack_detail
+                _lp_log(
+                    "commit: Kill-All unreachable, writing settings anyway: "
+                    f"{stack_detail[:400]}"
+                )
+                _emit(progress, "Game stop failed — writing settings anyway…")
+            else:
+                if work_parent is None:
+                    shutil.rmtree(parent, ignore_errors=True)
+                return LivePushResult(
+                    (),
+                    (),
+                    (stack_detail or "Kill-All failed",),
+                    False,
+                    False,
+                    stack_detail,
+                )
+        else:
+            stack_killed = True
 
     try:
         if backup and staged_files:
@@ -3989,6 +3859,25 @@ def commit_live_push(
         if sections is not None and "licence" not in sections:
             sections = frozenset(set(sections) | {"licence"})
 
+    if (
+        stop_failed
+        and written
+        and not errors
+        and stack_stop_unreachable(stop_failed)
+    ):
+        host = unc_host_from_target(plan_src) or "the cabinet"
+        game = "OneHand" if use_slot else "the GoldClub stack"
+        errors = (
+            f"Settings written ({len(written)} file(s)), but the game could not "
+            f"be stopped/restarted from this PC — WinRM is not listening on "
+            f"{host}. Restart {game} there for them to take effect "
+            f"(log: {log_path}).",
+        )
+        _lp_log(
+            "commit: skip restart after unreachable stop: "
+            f"{stop_failed[:200]}"
+        )
+
     stack_started = False
     ramclear_ran = False
     ramclear_detail = ""
@@ -4016,10 +3905,15 @@ def commit_live_push(
             if ramclear_reasons
             else ""
         )
+        listen = (
+            f" WinRM is not listening on {host}."
+            if stack_stop_unreachable(slot_stop_failed)
+            else ""
+        )
         head = (
             f"Settings written ({len(written)} file(s)), but the game could not "
             f"be stopped/restarted from this PC — restart OneHand on {host} for "
-            f"them to take effect. {why}{need_rc}"
+            f"them to take effect.{listen} {why}{need_rc}"
             if written
             else f"Nothing was written and the game could not be stopped: {why}"
         )

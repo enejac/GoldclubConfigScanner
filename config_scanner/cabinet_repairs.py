@@ -182,8 +182,11 @@ def _truthy(value: str | None) -> bool:
 def run_probe(ctx: RepairContext, script: str, *, timeout: int = 60) -> dict[str, str]:
     """Run a read-only PowerShell probe on the cabinet and parse KEY=VALUE output."""
     if ctx.is_remote:
+        from config_scanner.stack_restart import remote_winrm_ready, winrm_skip_detail
         from automation.remote_exec import winrm_run_inline
 
+        if not remote_winrm_ready(ctx.host):
+            raise RepairError(winrm_skip_detail(str(ctx.host)))
         result = winrm_run_inline(ip=str(ctx.host), script=script, timeout=timeout)
         if result.returncode != 0 and not result.stdout.strip():
             raise RepairError(
@@ -998,8 +1001,16 @@ def _repair_ramclear(ctx: RepairContext) -> RepairOutcome:
         f"-path '{task_dir}' 2>&1"
     )
     if ctx.is_remote:
+        from config_scanner.stack_restart import remote_winrm_ready, winrm_skip_detail
         from automation.remote_exec import winrm_run_inline
 
+        if not remote_winrm_ready(ctx.host):
+            return RepairOutcome(
+                repair_id="slot_ramclear_pending",
+                title=_TITLE_RAMCLEAR,
+                ok=False,
+                detail=winrm_skip_detail(str(ctx.host)),
+            )
         result = winrm_run_inline(ip=str(ctx.host), script=command, timeout=900)
         code = result.returncode
         output = "\n".join(p for p in (result.stdout, result.stderr) if p.strip())

@@ -78,7 +78,10 @@ from config_scanner.report import (
 )
 from config_scanner.stack_restart import (
     plan_stack_restart,
+    remote_winrm_ready,
+    restore_stop_failed_note,
     should_autostart_after_write,
+    winrm_skip_detail,
 )
 from config_scanner.service import (
     CompareResult,
@@ -841,9 +844,10 @@ class ConfigScannerTabWidget(QFrame):
         live_row.addWidget(self._live_sw_label, stretch=1)
         root.addLayout(live_row)
 
-        from gui.thin_progress import make_thin_busy_progress
+        from gui.thin_progress import attach_app_busy_bar, make_thin_busy_progress
 
         self._scan_progress = make_thin_busy_progress(self)
+        attach_app_busy_bar(self._scan_progress)
         root.addWidget(self._scan_progress)
 
         self._rollback_banner = QFrame()
@@ -3139,56 +3143,11 @@ class ConfigScannerTabWidget(QFrame):
                         )
                         return
             else:
-                self._clear_pending_write_state()
-                self._set_busy(False)
-                self._append_status("FAIL: " + detail, force=True)
-                hint = ""
-                host = (plan.host if plan is not None else None) or None
-                if is_slot:
-                    hint = (
-                        "\n\nStop OneHand/Bootstrap on the cabinet "
-                        "(or retry after WinRM is available), then restore again."
-                    )
-                    if "TrustedHosts" in detail or "ServerNotTrusted" in detail:
-                        from config_scanner.stack_restart import scan_target_is_local_machine
-
-                        target = self._drive_edit.text().strip()
-                        if scan_target_is_local_machine(target):
-                            hint = (
-                                "\n\nThis PC is the cabinet but restore tried WinRM "
-                                "instead of a local stop. Update Config Scanner and retry."
-                            )
-                elif host:
-                    from automation.cabinet_elevate import bootstrap_hint
-
-                    hint = "\n\n" + bootstrap_hint(host)
-                elif "GCI-ELEVATE-NOW" not in detail:
-                    hint = (
-                        "\n\nStop the GoldClub stack on the cabinet, then retry "
-                        "Restore to machine."
-                    )
-                stop_what = (
-                    "OneHand/Bootstrap could not be stopped on the cabinet"
-                    if is_slot
-                    else "GoldClub stack could not be stopped on the cabinet"
+                self._append_status(
+                    "Game stop failed — writing snapshot over SMB. " + detail,
+                    force=True,
                 )
-                QMessageBox.critical(
-                    self,
-                    "Config Scanner — restore blocked",
-                    f"{stop_what}, so "
-                    "software files would stay locked during restore.\n\n"
-                    f"{detail}{hint}",
-                )
-                return
-            target = self._drive_edit.text().strip()
-            self._set_busy(True, op="scan")
-            schedule_scan(
-                self._pool,
-                self._service,
-                target,
-                self._emitter,
-                include_software=self._pending_include_software,
-            )
+            self._begin_pre_restore_scan()
             return
         if phase == "start":
             self._set_busy(False)
@@ -3334,11 +3293,8 @@ class ConfigScannerTabWidget(QFrame):
                 else "Config Scanner — restore complete"
             )
             if wrote and self._pending_stack_plan is not None and not self._stack_killed_ok:
-                body += (
-                    "\n\nThe GoldClub stack was not stopped (Kill-All failed). "
-                    "Config was still written. Run FIX-ERROR30-LOOP.cmd from "
-                    "GoldClub Admin Shell, or reboot, if settings do not appear."
-                )
+                kind = getattr(self._pending_stack_plan, "kind", "") or self._game_kind()
+                body += "\n\n" + restore_stop_failed_note(kind=kind)
             if wrote and self._stack_killed_ok and self._pending_stack_plan is not None:
                 if will_autostart:
                     self._pending_restore_title = title
@@ -3649,9 +3605,12 @@ class ConfigScannerTabWidget(QFrame):
             self._target_row.remember(text)
 
     def _schedule_startup_auto_detect(self) -> None:
+        from gui.thin_progress import set_app_busy
+
         saved_target = self._drive_edit.text().strip() or shared_cabinet_target(
             fallback=SettingsManager.get_config_scanner_game_drive()
         )
+        set_app_busy(True, (id(self), "startup"))
         schedule_startup_auto_detect(self._pool, self._service, saved_target, self._emitter)
 
     def _run_auto_detect(self, *, silent: bool) -> None:
@@ -3672,6 +3631,9 @@ class ConfigScannerTabWidget(QFrame):
         if self._auto_detect_only:
             self._set_busy(False)
             self._auto_detect_only = False
+        from gui.thin_progress import set_app_busy
+
+        set_app_busy(False, (id(self), "startup"))
         if ok and result is not None:
             self._apply_detect_result(result)
             from config_scanner.build_version import DiscoverResult
@@ -3688,6 +3650,18 @@ class ConfigScannerTabWidget(QFrame):
             else:
                 QMessageBox.warning(self, "Config Scanner", message)
 
+    def _begin_pre_restore_scan(self) -> None:
+        """Presave live config, then write the pending snapshot over SMB."""
+        target = self._drive_edit.text().strip()
+        self._set_busy(True, op="scan")
+        schedule_scan(
+            self._pool,
+            self._service,
+            target,
+            self._emitter,
+            include_software=self._pending_include_software,
+        )
+
     def _on_scan_target_ready(self, target: str) -> None:
         cleaned = target.rstrip("\\")
         self._drive_edit.blockSignals(True)
@@ -3699,9 +3673,19 @@ class ConfigScannerTabWidget(QFrame):
         self._remember_valid_target()
         self._refresh_live_ruleta_version()
         if self._pending_write_snapshot and self._pending_stack_plan is not None:
+            plan = self._pending_stack_plan
+            host = (getattr(plan, "host", None) or "").strip()
+            if getattr(plan, "mode", "") == "remote" and host and not remote_winrm_ready(host):
+                self._stack_killed_ok = False
+                self._append_status(
+                    "WinRM not listening — writing snapshot over SMB. "
+                    + winrm_skip_detail(host),
+                    force=True,
+                )
+                self._begin_pre_restore_scan()
+                return
             self._pending_stack_phase = "kill"
             self._set_busy(True, op="stack_kill")
-            plan = self._pending_stack_plan
             if getattr(plan, "kind", "roulette") == "slot":
                 self._append_status(
                     "Stopping OneHand / Bootstrap before restore …", force=True
@@ -3755,16 +3739,19 @@ class ConfigScannerTabWidget(QFrame):
         super().resizeEvent(event)
 
     def refresh_snapshots(self) -> None:
+        from gui.thin_progress import set_app_busy
+
+        set_app_busy(True, (id(self), "snapshots"))
         schedule_load_snapshots(self._pool, self._service, self._emitter)
 
     def _persist_drive(self) -> None:
         SettingsManager.set_config_scanner_game_drive(self._drive_edit.text().strip())
 
     def _set_scan_progress_active(self, active: bool) -> None:
-        """Toggle indeterminate animation without changing layout geometry."""
-        from gui.thin_progress import set_thin_busy_progress_active
+        """Toggle the reserved busy line (local + app-wide) without layout jump."""
+        from gui.thin_progress import set_app_busy
 
-        set_thin_busy_progress_active(self._scan_progress, active)
+        set_app_busy(active, (id(self), "tab"))
 
     def _set_busy(self, busy: bool, op: str | None = None) -> None:
         self._busy = busy
@@ -3931,10 +3918,16 @@ class ConfigScannerTabWidget(QFrame):
             self._validate_timer.stop()
             self._update_scan_status_ui()
             self._refresh_action_enabled()
+            self._refresh_live_game_version()
+            return
+        # Same path we already accepted (or are already checking): ignore
+        # echo from combo rebuilds. A real edit changes the string.
+        if text == self._validate_pending:
             return
         if self._target_valid:
             self._target_valid = False
             self._refresh_action_enabled()
+            self._refresh_live_game_version()
         self._append_status("Checking scan target…")
         self._validate_timer.start(400)
 
@@ -3957,6 +3950,9 @@ class ConfigScannerTabWidget(QFrame):
         if not text:
             self._on_target_validated("", False, seq)
             return
+        from gui.thin_progress import set_app_busy
+
+        set_app_busy(True, (id(self), "validate"))
         schedule_validate_scan_target(
             self._pool, self._service, text, self._emitter, seq=seq
         )
@@ -3964,10 +3960,16 @@ class ConfigScannerTabWidget(QFrame):
     def _on_target_validated(self, path: str, valid: bool, seq: int = -1) -> None:
         if seq >= 0 and seq != self._validate_seq:
             return
+        from gui.thin_progress import set_app_busy
+
+        set_app_busy(False, (id(self), "validate"))
+        set_app_busy(False, (id(self), "startup"))
         current = self._drive_edit.text().strip()
         if path != current:
             return
         self._target_valid = bool(valid and current)
+        if self._target_valid:
+            self._validate_pending = current
         self._update_scan_status_ui()
         # Detection just settled: re-resolve slot vs roulette before the enabled
         # pass, so roulette-only actions are hidden before they are re-enabled.
@@ -4111,6 +4113,9 @@ class ConfigScannerTabWidget(QFrame):
             )
 
     def _on_snapshots_loaded(self, payload: object) -> None:
+        from gui.thin_progress import set_app_busy
+
+        set_app_busy(False, (id(self), "snapshots"))
         if not isinstance(payload, SnapshotLoadResult):
             return
         self._apply_snapshot_list(payload.snapshots)
@@ -4162,6 +4167,9 @@ class ConfigScannerTabWidget(QFrame):
         self._start_compare(baseline, target)
 
     def _on_snapshots_load_failed(self, message: str) -> None:
+        from gui.thin_progress import set_app_busy
+
+        set_app_busy(False, (id(self), "snapshots"))
         self._pending_scan_and_compare = False
         self._pending_create_snapshot = False
         QMessageBox.warning(self, "Config Scanner", message)

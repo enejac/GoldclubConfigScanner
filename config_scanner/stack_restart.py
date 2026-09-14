@@ -21,6 +21,66 @@ _PS_ARGS = ("-NoProfile", "-ExecutionPolicy", "Bypass", "-File")
 _REMOTE_KILL = r"D:\usb_scripts\roulette\Kill-All.ps1"
 _REMOTE_RUN = r"D:\usb_scripts\roulette\Run-FullStack.ps1"
 
+# WinRM never opened (firewall / service down). Snapshot restore and Live Push
+# still write over SMB — do not treat this as "files would stay locked".
+_WINRM_UNREACHABLE_MARKERS = (
+    "winrm cannot complete the operation",
+    "winrmoperationtimeout",
+    "pssessionstatebroken",
+    "servernottrusted",
+    "the winrm client cannot process the request",
+    "the client cannot connect",
+    "winrm is not reachable",
+    "no listener",
+)
+
+
+def stack_stop_unreachable(detail: str) -> bool:
+    """True when the cabinet never accepted a WinRM session (not a local kill miss)."""
+    text = (detail or "").casefold()
+    return any(marker in text for marker in _WINRM_UNREACHABLE_MARKERS)
+
+
+def winrm_listener_reachable(host: str, *, timeout_sec: float = 1.2) -> bool:
+    """TCP probe of WinRM HTTP (5985). Closed = skip Invoke-Command."""
+    from network.lab_access import probe_tcp_port
+
+    ip = (host or "").strip()
+    if not ip:
+        return False
+    return probe_tcp_port(ip, 5985, timeout_sec=timeout_sec)
+
+
+def winrm_skip_detail(host: str) -> str:
+    """Operator text when the cabinet has SMB but no WinRM listener."""
+    ip = (host or "").strip() or "the cabinet"
+    return (
+        f"WinRM is not reachable on {ip}:5985. "
+        "SMB can still write. Restart the game on the cabinet."
+    )
+
+
+def remote_winrm_ready(host: str | None) -> bool:
+    """True only when *host* already accepts WinRM. Never enables the service."""
+    ip = (host or "").strip()
+    return bool(ip and winrm_listener_reachable(ip))
+
+
+def restore_stop_failed_note(*, kind: str = "roulette") -> str:
+    """Shown after a snapshot was written even though the game did not stop."""
+    if (kind or "").casefold() == "slot":
+        return (
+            "OneHand/Bootstrap could not be stopped from this PC "
+            "(WinRM is not listening on the cabinet). "
+            "The snapshot was still written over SMB. "
+            "Restart the game on the cabinet for software files to reload."
+        )
+    return (
+        "The GoldClub stack was not stopped (Kill-All failed). "
+        "Config was still written. Run FIX-ERROR30-LOOP.cmd from "
+        "GoldClub Admin Shell, or reboot, if settings do not appear."
+    )
+
 
 @dataclass(frozen=True)
 class StackRestartPlan:
@@ -324,6 +384,8 @@ def run_stack_kill(plan: StackRestartPlan) -> tuple[bool, str]:
         host = (plan.host or "").strip()
         if not host:
             return False, "Remote stack stop requires a cabinet host."
+        if not remote_winrm_ready(host):
+            return False, winrm_skip_detail(host)
         ok, detail = _run_remote_one(
             host,
             plan.kill_ps1,
@@ -372,6 +434,8 @@ def run_stack_start(
         host = (plan.host or "").strip()
         if not host:
             return False, "Remote stack start requires a cabinet host."
+        if not remote_winrm_ready(host):
+            return False, winrm_skip_detail(host)
         ok, detail = _run_remote_one(
             host,
             plan.run_ps1,
@@ -457,6 +521,8 @@ def _verify_slot_stopped_after_kill(
     blob = ""
     try:
         if host:
+            if not remote_winrm_ready(host):
+                return True, f"{kill_detail}; verify skipped ({winrm_skip_detail(host)})"
             from automation.remote_exec import winrm_run_inline
             from network.lab_access import ensure_lab_smb_credential, require_lab_fleet_ip
 
@@ -534,6 +600,8 @@ def _run_remote_one(
     timeout: int,
     script_args: list[str] | None = None,
 ) -> tuple[bool, str]:
+    if not remote_winrm_ready(host):
+        return False, winrm_skip_detail(host)
     name = _script_basename(script_path)
     if name == "kill-all.ps1" or label == "Kill-All":
         from automation.cabinet_elevate import run_remote_kill_all_elevated
