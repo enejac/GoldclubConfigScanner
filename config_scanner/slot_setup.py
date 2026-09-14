@@ -16,6 +16,12 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from config_scanner.language_flags import (
+    LanguageFlagSetting,
+    apply_language_flags,
+    language_flags_from_raw,
+    read_language_flags,
+)
 from config_scanner.machine_identity import (
     is_jurisdiction_config_path,
     merge_xml_bytes_preserving_identity,
@@ -277,6 +283,7 @@ class JurisdictionSettings:
     currency_name: str = ""
     currency_symbol: str = ""
     magic_wheel_money_limit: int | None = None
+    language_flags: list[LanguageFlagSetting] = field(default_factory=list)
 
 
 @dataclass
@@ -561,6 +568,7 @@ class SlotSetupRecipe:
                 if j_raw.get("magic_wheel_money_limit") is not None
                 else None
             ),
+            language_flags=language_flags_from_raw(j_raw.get("language_flags")),
         )
         mg_raw = data.get("mg_identity") or {}
         mg_identity = MgIdentitySettings(
@@ -1474,6 +1482,7 @@ def read_jurisdiction_settings(goldclub: Path) -> JurisdictionSettings:
             limit = _find_desc(root, "MoneyLimit")
             if limit is not None and (limit.text or "").strip().isdigit():
                 out.magic_wheel_money_limit = int((limit.text or "").strip())
+        out.language_flags = read_language_flags(goldclub)
     return out
 
 
@@ -1945,6 +1954,8 @@ def patch_jurisdiction_config(
         if display is None:
             display = _ensure_child(root, "DenominationDisplay")
         _set_text(display, "SingleDenomination", str(int(single_denomination)))
+    if settings.language_flags:
+        apply_language_flags(root, settings.language_flags)
     _write_jurisdiction_config(tree, dest)
 
 
@@ -3710,6 +3721,7 @@ def build_config_pack(
         or want_jur_mw
         or single_denom is not None
         or language_for_pack
+        or recipe.jurisdiction.language_flags
     ):
         jsrc = live / _JURISDICTION_REL
         create_pack = not dedicated_magicwheel_file_exists(live)

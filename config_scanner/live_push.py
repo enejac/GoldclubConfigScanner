@@ -27,6 +27,7 @@ from pathlib import Path
 
 from config_scanner.bill_tokens_view import format_bill_notes_snapshot
 from config_scanner.build_version import OneHandBuildInfo, detect_onehand_build
+from config_scanner.language_flags import COUNTRY_FLAG_LABEL, flags_snapshot
 from config_scanner.denom_compat import (
     apply_magic_wheel_for_denom,
     denom_combo_choices,
@@ -1330,6 +1331,7 @@ _LABEL_SECTIONS: dict[str, frozenset[str]] = {
     "Currency symbol": frozenset({"mgconfig", "jurisdiction"}),
     "Culture": frozenset({"mgconfig", "jurisdiction"}),
     "Language": frozenset({"mgconfig", "jurisdiction"}),
+    COUNTRY_FLAG_LABEL: frozenset({"jurisdiction"}),
     "Market": frozenset({"mgconfig", "jurisdiction"}),
     "Denoms (cents)": frozenset(
         {"mgconfig", "jurisdiction", "link2win", "magicwheel", "math"}
@@ -2084,7 +2086,16 @@ LIVE_OPTION_HELP: dict[str, str] = {
         "Initial game language. On 2.0.1+ images this is the first entry of "
         "jurisdiction_config <Languages> and the list offers only the "
         "translations installed in slot\\languages on this cabinet; older "
-        "images use mgconfig <Language>."
+        "images use mgconfig <Language>. This is not the picture on the "
+        f"console button — use {COUNTRY_FLAG_LABEL} for that."
+    ),
+    COUNTRY_FLAG_LABEL: (
+        "Picture on the console language button (jurisdiction_config "
+        "Languages / TexturePath). Filenames are language tokens "
+        "(flag_spanish.png or .dds) and often do not match the country in "
+        "the bitmap — Puerto Rico packs commonly wire Spanish to a PR flag. "
+        "Pick by the thumbnail. First language in the list is still the "
+        "Language row (the default), not this picture."
     ),
     "Market": (
         "Target market / jurisdiction tag (mgconfig TargetMarket). Choosing a "
@@ -2256,6 +2267,7 @@ LIVE_FIELD_CONFIG_RELS: dict[str, tuple[str, ...]] = {
     "Currency symbol": (_JURISDICTION_REL, _MGCONFIG_REL),
     "Culture": (_JURISDICTION_REL,),
     "Language": (_JURISDICTION_REL, _MGCONFIG_REL),
+    COUNTRY_FLAG_LABEL: (_JURISDICTION_REL,),
     "Market": (_MGCONFIG_REL, _JURISDICTION_REL),
     "Denoms (cents)": (
         _MGCONFIG_REL,
@@ -2614,6 +2626,8 @@ def _revert_live_push_label(
         out.jurisdiction.culture_name = live.jurisdiction.culture_name
     elif label == "Language":
         out.mg_identity.language = live.mg_identity.language
+    elif label == COUNTRY_FLAG_LABEL:
+        out.jurisdiction.language_flags = list(live.jurisdiction.language_flags)
     elif label == "Market":
         out.jurisdiction.tag = live.jurisdiction.tag
     elif label == "Denoms (cents)":
@@ -3482,6 +3496,7 @@ def recipe_snapshot_rows(recipe: SlotSetupRecipe) -> tuple[tuple[str, str], ...]
         ("Currency symbol", recipe.jurisdiction.currency_symbol or "—"),
         ("Culture", recipe.jurisdiction.culture_name or "—"),
         ("Language", recipe.mg_identity.language or "—"),
+        (COUNTRY_FLAG_LABEL, flags_snapshot(recipe.jurisdiction.language_flags)),
         ("Market", recipe.jurisdiction.tag or "—"),
         ("Denoms (cents)", _fmt_list(recipe.denomination_list)),
         ("Bet multipliers", _fmt_list(pl.bet_multipliers or (
@@ -3549,9 +3564,12 @@ def overlay_jurisdiction_recipe(
         setattr(out.sas, field, getattr(live.sas, field, True))
     out.door_switches = live.door_switches
     live_mw = live.jurisdiction.magic_wheel_money_limit
+    live_flags = list(live.jurisdiction.language_flags)
     out.jurisdiction = preset_copy.jurisdiction
     if out.jurisdiction.magic_wheel_money_limit is None:
         out.jurisdiction.magic_wheel_money_limit = live_mw
+    if not out.jurisdiction.language_flags:
+        out.jurisdiction.language_flags = live_flags
     if not out.jurisdiction.currency_symbol:
         out.jurisdiction.currency_symbol = currency_symbol_for(
             out.jurisdiction.currency_name

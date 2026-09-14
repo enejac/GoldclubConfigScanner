@@ -20,7 +20,7 @@ from gui.live_push_panel import (  # noqa: E402
 
 # Market / denoms first, peripherals next, licence last (add_box order).
 PANEL_GROUPS = (
-    ("Currency / market", 5),
+    ("Currency / market", 6),
     ("Denoms / bets", 2),
     ("Magic wheel", 5),
     ("Jackpots", 4),

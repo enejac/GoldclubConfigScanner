@@ -59,6 +59,15 @@ def test_recipe_change_lines_lists_only_diffs() -> None:
 def test_overlay_keeps_live_dallas_and_sas_address(tmp_path: Path) -> None:
     gold = _fake_goldclub(tmp_path)
     live = load_recipe_from_goldclub(gold, label="live")
+    from config_scanner.language_flags import LanguageFlagSetting
+
+    live.jurisdiction.language_flags = [
+        LanguageFlagSetting(
+            "Spanish",
+            r"data\GameStarColors\1080p\Red\console\languageBtn\flag_spanish.dds",
+            r"data\GameStarColors\1080p\Red\console\languageBtn\flag_spanish_pressed.dds",
+        )
+    ]
     live.sas.address = 9
     live.sas.bonusing_controler = False
     live.door_switches.enabled = False
@@ -78,6 +87,7 @@ def test_overlay_keeps_live_dallas_and_sas_address(tmp_path: Path) -> None:
     assert merged.jurisdiction.magic_wheel_money_limit == 5000
     assert merged.play_limits.jackpot_receipt_layout == "jackpotreceipt0"
     assert merged.denomination_list == live.denomination_list
+    assert merged.jurisdiction.language_flags == live.jurisdiction.language_flags
 
 
 def test_catalog_has_ready_currencies_and_locale_defaults() -> None:
@@ -413,6 +423,7 @@ def test_live_option_help_covers_core_fields() -> None:
         "Bill protocol",
         "Bill notes",
         "Dallas key",
+        "Country flag",
         "Display layout",
         "Credit limit",
         "Offline ticket",
