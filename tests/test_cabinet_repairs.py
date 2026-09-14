@@ -190,6 +190,74 @@ def test_aurum_diagnose_not_applicable_without_config(tmp_path):
     assert finding.status == cr.STATUS_NOT_APPLICABLE
 
 
+_AURUM_NS_PLACEHOLDER = """<?xml version='1.0' encoding='utf-8'?>
+<ns0:AurumSetupData xmlns:ns0="http://tempuri.org/AurumConfiguration.xsd">
+  <ns0:Network>
+    <ns0:NetworkHostName>GST!!MachineName!!</ns0:NetworkHostName>
+    <ns0:Configs>
+      <ns0:ServiceURI>http://GST!!MachineName!!:50010/GM2AU</ns0:ServiceURI>
+      <ns0:Subscribers>
+        <ns0:MessengerURI>http://GST!!MachineName!!:50011/SASControler1</ns0:MessengerURI>
+      </ns0:Subscribers>
+      <ns0:EgmsDevices>
+        <ns0:EgmId>GCC_ST_20664_01</ns0:EgmId>
+        <ns0:CabinetConfig>
+          <ns0:CabinetSerialNumber>20664</ns0:CabinetSerialNumber>
+        </ns0:CabinetConfig>
+      </ns0:EgmsDevices>
+    </ns0:Configs>
+  </ns0:Network>
+</ns0:AurumSetupData>
+"""
+
+
+def test_aurum_rewrite_sees_namespaced_placeholder_host(tmp_path):
+    # Live packs write <ns0:NetworkHostName>GST!!MachineName!!</ns0:…>.
+    # The old bare-tag scan treated that as "already GST22377" and skipped.
+    root = tmp_path / "Goldclub"
+    cfg = root / "services" / "aurum" / "config"
+    cfg.mkdir(parents=True)
+    setup = cfg / "AurumSetup.xml"
+    setup.write_text(_AURUM_NS_PLACEHOLDER, encoding="utf-8")
+
+    changed, detail = cr.rewrite_aurum_host_tokens(setup, "GST22377")
+    assert changed, detail
+    assert "GST!!MachineName!!" in detail
+    text = setup.read_text(encoding="utf-8")
+    assert "GST!!MachineName!!" not in text
+    assert "<ns0:NetworkHostName>GST22377</ns0:NetworkHostName>" in text
+    assert "http://GST22377:50010/GM2AU" in text
+    assert "http://GST22377:50011/SASControler1" in text
+    assert "GCC_ST_20664_01" in text
+    assert "20664" in text
+    backup = cfg / "AurumSetup.xml.bak-host-GST_MachineName"
+    assert backup.is_file()
+    assert "GST!!MachineName!!" in backup.read_text(encoding="utf-8")
+
+
+def test_aurum_diagnose_flags_namespaced_placeholder(tmp_path, monkeypatch):
+    root = tmp_path / "Goldclub"
+    cfg = root / "services" / "aurum" / "config"
+    cfg.mkdir(parents=True)
+    (cfg / "AurumSetup.xml").write_text(_AURUM_NS_PLACEHOLDER, encoding="utf-8")
+    monkeypatch.setattr(cr, "_cabinet_machine_name", lambda ctx: "GST22377")
+    finding = cr._diagnose_aurum_hostname(_ctx(root))
+    assert finding.status == cr.STATUS_BROKEN
+    assert "GST!!MachineName!!" in finding.detail
+
+
+def test_aurum_rewrite_does_not_claim_already_ok_when_host_tag_missing(tmp_path):
+    root = tmp_path / "Goldclub"
+    cfg = root / "services" / "aurum" / "config"
+    cfg.mkdir(parents=True)
+    setup = cfg / "AurumSetup.xml"
+    setup.write_text("<AurumSetup><Network/></AurumSetup>\n", encoding="utf-8")
+    changed, detail = cr.rewrite_aurum_host_tokens(setup, "GST22377")
+    assert not changed
+    assert "already targets" not in detail
+    assert "no NetworkHostName" in detail
+
+
 # ------------------------------------------------------------------ MUX / SAS
 
 
