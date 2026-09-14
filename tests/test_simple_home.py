@@ -84,6 +84,8 @@ def test_simple_home_wiring() -> None:
     assert "show_already_running_warning" in window
     assert "Screenshot" in window
     assert "save_widget_screenshot" in window
+    assert "status_bar_brand_pixmap" not in window
+    assert "sb.addWidget(QLabel(program_title()))" not in window
     assert "def _sync_commit_button" in (
         Path(__file__).resolve().parents[1] / "gui" / "live_push_panel.py"
     ).read_text(encoding="utf-8")

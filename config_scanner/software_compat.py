@@ -109,10 +109,9 @@ def live_ruleta_exe_version_for_target(scan_target: str) -> str | None:
 
 def format_live_ruleta_sw_banner(version: str | None) -> str:
     """Toolbar text showing which Ruleta.exe is on the scan target."""
-    ver = (version or "").strip()
-    if not ver:
-        return "Running: Ruleta.exe unknown"
-    return f"Running: Ruleta.exe {ver}"
+    from config_scanner.egm_ui_labels import format_live_sw_banner
+
+    return format_live_sw_banner(version, kind="roulette")
 
 
 def snapshot_profile_is_slot(snapshot_info: BuildInfo | None) -> bool:

@@ -41,6 +41,10 @@ def test_create_full_snapshot_is_a_toolbar_action() -> None:
     assert "_on_create_snapshot_clicked" in SRC
     assert "_start_live_scan(compare_after=False, include_software=True)" in SRC
     assert "_start_live_scan(compare_after=True, include_software=False)" in SRC
+    start_scan = SRC.split("def _start_live_scan", 1)[1].split("def ", 1)[0]
+    assert "not self._target_valid" not in start_scan
+    assert "not self._drive_edit.text().strip()" in start_scan
+    assert "can_scan = (not busy) and has_target" in SRC
     assert "_pending_create_snapshot" in SRC
     assert "_finish_create_full_snapshot" in SRC
     assert 'QPushButton("Restore snapshot")' in SRC
@@ -196,7 +200,7 @@ def test_live_game_version_banner_is_bold() -> None:
     assert "format_live_sw_banner" in SRC
     assert "_refresh_live_game_version" in SRC
     assert "font-weight: 700" in SRC
-    assert "live_exe_version_for_target" in SRC
+    assert "schedule_live_exe_version" in SRC
 
 
 def test_pre_restore_undo_point_captures_ruleta_binaries() -> None:
