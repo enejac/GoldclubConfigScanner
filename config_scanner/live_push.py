@@ -770,7 +770,62 @@ CELEBRATION_LIMITS: tuple[str, ...] = ("LockAndHandpay", "Handpay", "Ticket")
 CASHOUT_MODES: tuple[str, ...] = ("Ticket", "Handpay")
 DEFAULT_BETS: tuple[str, ...] = ("Minimum", "Maximum", "Last")
 
-_SLOT_KILL_SCRIPT = textwrap.dedent(
+# Start Aurum if Live Push / a filtered goldclub token left it down.
+# game-start.exe does not start the service. LockGameWhenNoComms is inert
+# until Aurum reloads SASsetupData. Same snippet on WinRM and local EGM.
+_ENSURE_AURUM_PS = textwrap.dedent(
+    r"""
+    function Ensure-GoldClubAurumRunning {
+        $svc = Get-Service -Name 'GoldClub.Aurum.Services' -ErrorAction SilentlyContinue
+        if (-not $svc) { return }
+        if ($svc.Status -eq 'Running') { return }
+        Start-Service -Name $svc.Name -ErrorAction SilentlyContinue
+        $deadline = (Get-Date).AddSeconds(20)
+        do {
+            $svc.Refresh()
+            if ($svc.Status -eq 'Running') { return }
+            Start-Sleep -Milliseconds 400
+        } while ((Get-Date) -lt $deadline)
+        cmd /c 'schtasks /Run /TN "GoldClub-Ensure-HwStack" /I' 2>$null | Out-Null
+        $deadline = (Get-Date).AddSeconds(40)
+        do {
+            $svc = Get-Service -Name 'GoldClub.Aurum.Services' -ErrorAction SilentlyContinue
+            if ($svc -and $svc.Status -eq 'Running') { return }
+            Start-Sleep -Milliseconds 500
+        } while ((Get-Date) -lt $deadline)
+    }
+    Ensure-GoldClubAurumRunning
+    """
+).strip()
+
+
+def _slot_kill_aurum_block(*, stop_aurum: bool) -> str:
+    if stop_aurum:
+        return textwrap.dedent(
+            """
+            # Stop Aurum so it cannot rewrite SASsetupData (LockGameWhenNoComms)
+            # from in-memory state while Live Push is writing the file.
+            $aurum = Get-Service -Name 'GoldClub.Aurum.Services' -ErrorAction SilentlyContinue
+            if ($aurum) { Stop-Service -Name $aurum.Name -Force -ErrorAction SilentlyContinue }
+            Start-Sleep -Seconds 2
+            """
+        ).strip()
+    return textwrap.dedent(
+        """
+        # Pre-start kill: leave Aurum Running so LockGameWhenNoComms stays live.
+        # game-start.exe does not start GoldClub.Aurum.Services.
+        """
+    ).strip()
+
+
+def _slot_kill_script(*, stop_aurum: bool = True) -> str:
+    return _SLOT_KILL_SCRIPT_TEMPLATE.replace(
+        "__AURUM_BLOCK__",
+        _slot_kill_aurum_block(stop_aurum=stop_aurum),
+    )
+
+
+_SLOT_KILL_SCRIPT_TEMPLATE = textwrap.dedent(
     """
     $ErrorActionPreference = 'SilentlyContinue'
     # Start-SlotGameWatch.exe is a stub: it launches powershell.exe -File
@@ -922,11 +977,7 @@ _SLOT_KILL_SCRIPT = textwrap.dedent(
         if (-not $p) { break }
         Start-Sleep -Milliseconds 400
     }
-    # Stop Aurum so it cannot rewrite SASsetupData (LockGameWhenNoComms) from
-    # in-memory state while Live Push is writing the file.
-    $aurum = Get-Service -Name 'GoldClub.Aurum.Services' -ErrorAction SilentlyContinue
-    if ($aurum) { Stop-Service -Name $aurum.Name -Force -ErrorAction SilentlyContinue }
-    Start-Sleep -Seconds 2
+    __AURUM_BLOCK__
     Stop-SlotWatchers
     $names = @('Bootstrap','Start-SlotGameWatch','BiOS2','OneHand','game-start')
     Stop-Named $names
@@ -947,6 +998,8 @@ _SLOT_KILL_SCRIPT = textwrap.dedent(
     exit 0
     """
 ).strip()
+
+_SLOT_KILL_SCRIPT = _slot_kill_script(stop_aurum=True)
 
 
 @dataclass(frozen=True)
@@ -1152,7 +1205,7 @@ def _slot_start_script(
             throw 'OneHand did not start after Bootstrap'
         }
         """
-    head = textwrap.dedent(
+    head = _ENSURE_AURUM_PS + "\n" + textwrap.dedent(
         f"""
         $ErrorActionPreference = 'Stop'
         $exe = $null
@@ -1222,6 +1275,7 @@ def _slot_bootstrap_watchdog_script(
                 if (Test-Path -LiteralPath $c) {{ $exe = $c; break }}
             }}
             if (-not $exe) {{ exit 1 }}
+            __ENSURE_AURUM__
             $dir = Split-Path -Parent $exe
             try {{
                 $user = 'goldclub'
@@ -1241,7 +1295,7 @@ def _slot_bootstrap_watchdog_script(
         }}
         exit 0
         """
-    ).strip()
+    ).strip().replace("__ENSURE_AURUM__", _ENSURE_AURUM_PS)
 
 
 def _arm_slot_bootstrap_watchdog(
@@ -1633,11 +1687,26 @@ def restart_slot_hwsubsys(scan_target: str) -> tuple[bool, str]:
             Start-Sleep -Milliseconds 400
             if ($hw) { $hw.Refresh() }
         } while ((Get-Date) -lt $deadline)
+        $au = Get-Service -Name 'GoldClub.Aurum.Services' -ErrorAction SilentlyContinue
+        if ($au) {
+            $auDeadline = (Get-Date).AddSeconds(20)
+            do {
+                if ($au.Status -eq 'Running') { break }
+                Start-Service -Name $au.Name -ErrorAction SilentlyContinue
+                Start-Sleep -Milliseconds 400
+                $au.Refresh()
+            } while ((Get-Date) -lt $auDeadline)
+            $notes.Add("GoldClub.Aurum.Services wait=$([string]$au.Status)")
+        }
         if ($hw -and $hw.Status -eq 'Running') {
             Start-Sleep -Seconds 12
         }
         $blob = ($notes -join '; ')
         if ($hw) { $blob = $blob + '; wait=' + [string]$hw.Status }
+        if ($au -and $au.Status -ne 'Running') {
+            Write-Output ($blob + '; Aurum not Running')
+            exit 1
+        }
         if (-not $hw) {
             Write-Output ($blob + '; hardware subsystem not installed')
             exit 0
@@ -3651,12 +3720,22 @@ def winrm_failure_hint(detail: str, host: str) -> str:
     return ""
 
 
-def run_slot_stack_kill(scan_target: str) -> tuple[bool, str]:
-    """Stop OneHand / Bootstrap so slot XML can be written."""
+def run_slot_stack_kill(
+    scan_target: str, *, stop_aurum: bool = True
+) -> tuple[bool, str]:
+    """Stop OneHand / Bootstrap so slot XML can be written.
+
+    ``stop_aurum`` is True for the pre-write kill so Aurum cannot rewrite
+    SASsetupData. False for the pre-start kill: Aurum already reloaded the
+    file, and game-start does not bring the service back.
+    """
     import time
 
+    script = _slot_kill_script(stop_aurum=stop_aurum)
     local = _slot_target_is_local(scan_target)
-    _lp_log(f"slot kill local={local} target={scan_target!r}")
+    _lp_log(
+        f"slot kill local={local} stop_aurum={stop_aurum} target={scan_target!r}"
+    )
     if local:
         _arm_slot_bootstrap_watchdog(scan_target)
     host = "" if local else (unc_host_from_target(scan_target) or "")
@@ -3667,7 +3746,7 @@ def run_slot_stack_kill(scan_target: str) -> tuple[bool, str]:
     last_detail = ""
     for attempt in range(1, 4):
         if local:
-            ok, detail = _run_local_powershell(_SLOT_KILL_SCRIPT, timeout=90)
+            ok, detail = _run_local_powershell(script, timeout=90)
         else:
             try:
                 from automation.remote_exec import winrm_run_inline
@@ -3676,7 +3755,7 @@ def run_slot_stack_kill(scan_target: str) -> tuple[bool, str]:
                 ip = require_lab_fleet_ip(host)
                 _ensure_lab_smb(ip)
                 result = winrm_run_inline(
-                    ip=ip, script=_SLOT_KILL_SCRIPT, timeout=120
+                    ip=ip, script=script, timeout=120
                 )
             except Exception as exc:  # noqa: BLE001
                 _lp_log(f"slot kill remote exception {exc}")
@@ -4270,9 +4349,9 @@ def commit_live_push(
 
     if use_slot and effective_restart and not errors:
         _emit(progress, f"Ensuring game is stopped before {start_noun}…")
-        ok_stop, stop_detail = run_slot_stack_kill(plan_src)
+        ok_stop, stop_detail = run_slot_stack_kill(plan_src, stop_aurum=False)
         stack_detail = f"{stack_detail}\n{stop_detail}".strip()
-        _lp_log(f"pre-start kill ok={ok_stop} {stop_detail[:400]}")
+        _lp_log(f"pre-start kill ok={ok_stop} stop_aurum=False {stop_detail[:400]}")
         if not ok_stop:
             errors = (
                 "Settings written, but OneHand/Bootstrap was still running — "

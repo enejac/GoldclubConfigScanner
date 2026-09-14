@@ -1445,8 +1445,9 @@ def test_commit_slot_uses_bootstrap_not_ruleta(tmp_path: Path, monkeypatch) -> N
 
     monkeypatch.setattr("config_scanner.live_push.goldclub_stack_kind", lambda _r: "slot")
 
-    def _kill(_target):
+    def _kill(_target, *, stop_aurum=True):
         order.append("slot-kill")
+        order.append(f"stop_aurum={stop_aurum}")
         return True, "stopped"
 
     def _start(_target, dest=None):
@@ -1472,7 +1473,14 @@ def test_commit_slot_uses_bootstrap_not_ruleta(tmp_path: Path, monkeypatch) -> N
         work_parent=tmp_path / "work",
     )
     assert result.ok
-    assert order == ["slot-kill", "hwsubsys", "slot-kill", "slot-start"]
+    assert order == [
+        "slot-kill",
+        "stop_aurum=True",
+        "hwsubsys",
+        "slot-kill",
+        "stop_aurum=False",
+        "slot-start",
+    ]
     assert result.stack_killed is True
     assert result.stack_started is True
     assert result.written
@@ -1536,6 +1544,7 @@ def test_restart_slot_hwsubsys_script_uses_goldclub_service_name() -> None:
     assert "Get-Service -Name 'HWSubsys'" not in src
     assert "exit 1" in src
     assert "Start-Sleep -Seconds 12" in src
+    assert "Stop-Service -Name $aurum.Name" in lp._SLOT_KILL_SCRIPT
     assert "Start-SlotGameWatch" in lp._SLOT_KILL_SCRIPT
     assert "Start-SlotGameWatch.ps1" in lp._SLOT_KILL_SCRIPT
     assert "Stop-SlotWatchers" in lp._SLOT_KILL_SCRIPT
@@ -1552,10 +1561,21 @@ def test_restart_slot_hwsubsys_script_uses_goldclub_service_name() -> None:
     assert "return $false" not in lp._SLOT_KILL_SCRIPT
     src_hw = inspect.getsource(lp.restart_slot_hwsubsys)
     assert "hardware subsystem not installed" in src_hw
+    assert "Aurum not Running" in src_hw
+    assert "GoldClub.Aurum.Services wait=" in src_hw
+    write_kill = lp._slot_kill_script(stop_aurum=True)
+    keep_kill = lp._slot_kill_script(stop_aurum=False)
+    assert "Stop-Service -Name $aurum.Name" in write_kill
+    assert "Stop-Service -Name $aurum.Name" not in keep_kill
+    assert "leave Aurum Running" in keep_kill
+    start = lp._slot_start_script((r"G:\slot\game-start.exe",), launcher="game-start")
+    assert "Ensure-GoldClubAurumRunning" in start
+    assert "GoldClub-Ensure-HwStack" in start
     wd = lp._slot_bootstrap_watchdog_script((r"G:\Bootstrap.exe",))
     assert lp._SLOT_WATCHDOG_MARKER in wd
     assert "ConfigScanner" in wd
     assert r"G:\Bootstrap.exe" in wd
+    assert "Ensure-GoldClubAurumRunning" in wd
     src_local = inspect.getsource(lp._run_local_powershell)
     assert "-EncodedCommand" in src_local
     assert '"-Command"' not in src_local

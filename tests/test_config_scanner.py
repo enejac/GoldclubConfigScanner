@@ -3706,6 +3706,13 @@ def test_run_slot_stack_kill_local_skips_winrm(monkeypatch) -> None:
     assert "OneHand" in calls[0]
     assert "Stop-SlotWatchers" in calls[0]
     assert "Start-SlotGameWatch.ps1" in calls[0]
+    assert "Stop-Service -Name $aurum.Name" in calls[0]
+
+    calls.clear()
+    ok, detail = run_slot_stack_kill(r"\\10.0.0.111\slot", stop_aurum=False)
+    assert ok is True
+    assert "Stop-Service -Name $aurum.Name" not in calls[0]
+    assert "leave Aurum Running" in calls[0]
 
 
 def test_run_slot_stack_kill_remote_uses_same_watcher_script(monkeypatch) -> None:

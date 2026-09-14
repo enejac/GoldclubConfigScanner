@@ -80,15 +80,26 @@ function Get-HwSubsysRunning {
     return [bool]($svc -and $svc.Status -eq 'Running')
 }
 
+function Get-AurumRunning {
+    $svc = Get-Service -Name 'GoldClub.Aurum.Services' -ErrorAction SilentlyContinue
+    return [bool]($svc -and $svc.Status -eq 'Running')
+}
+
+function Get-HwStackReady {
+    return (Get-HwSubsysRunning) -and (Get-AurumRunning)
+}
+
 function Invoke-HwStackReady {
     param([switch]$Restart)
     if (Test-ProcessUp @('OneHand', 'BiOS2')) {
         Write-WatchLog 'skip HW bounce - OneHand or BiOS2 still running'
-        return (Get-HwSubsysRunning)
+        return (Get-HwStackReady)
     }
     # The ONSTART task is registered with -Restart, so any schtasks /Run
-    # tears down HWSubsys. Live Push already bounced it: do not kick again.
-    if ((Get-HwSubsysRunning) -and -not $Restart) {
+    # tears down HWSubsys. Live Push already bounced it: do not kick again
+    # when HW and Aurum are both up. Aurum down + HW up used to skip and
+    # leave LockGameWhenNoComms inert.
+    if ((Get-HwStackReady) -and -not $Restart) {
         Write-WatchLog 'HWSubsys already Running - skip bounce'
         return $true
     }
@@ -96,7 +107,7 @@ function Invoke-HwStackReady {
     cmd /c "schtasks /Run /TN `"$HwTask`" /I" 2>&1 | ForEach-Object { Write-WatchLog ("  " + $_) }
     $sw = [Diagnostics.Stopwatch]::StartNew()
     while ($sw.Elapsed.TotalSeconds -lt $HwWaitSec) {
-        if (Get-HwSubsysRunning) {
+        if (Get-HwStackReady) {
             Write-WatchLog 'HWSubsys Running'
             if ($Restart) {
                 Write-WatchLog 'settle 12s after HW bounce'
