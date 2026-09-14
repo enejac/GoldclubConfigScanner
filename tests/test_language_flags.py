@@ -247,6 +247,9 @@ def test_country_flag_editor_shows_thumbnail(tmp_path: Path) -> None:
     assert spanish.count() == 2
     assert spanish.currentText() == "flag_spanish.png"
     assert not spanish.itemIcon(0).isNull()
+    assert spanish.hasFrame() is False
+    assert spanish.iconSize().height() <= 20
+    assert "border: 0px" in spanish.styleSheet()
     english_idx = next(
         i for i in range(spanish.count()) if spanish.itemText(i) == "flag_english.png"
     )

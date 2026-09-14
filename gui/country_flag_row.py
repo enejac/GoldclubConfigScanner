@@ -24,7 +24,19 @@ from config_scanner.language_flags import (
     resolve_theme_texture,
 )
 
-_ICON = QSize(40, 36)
+_ICON = QSize(28, 20)
+_COMBO_SHEET = (
+    "QComboBox#csCountryFlagCombo {"
+    " border: 0px;"
+    " padding: 0px;"
+    " min-height: 0px;"
+    " background: transparent;"
+    "}"
+    "QComboBox#csCountryFlagCombo::drop-down {"
+    " border: 0px;"
+    " width: 14px;"
+    "}"
+)
 
 
 def flag_pixmap(path: Path | None, size: QSize = _ICON) -> QPixmap:
@@ -74,7 +86,7 @@ class CountryFlagsEditor(QWidget):
         self._combos: list[QComboBox] = []
         self._root = QVBoxLayout(self)
         self._root.setContentsMargins(0, 0, 0, 0)
-        self._root.setSpacing(4)
+        self._root.setSpacing(1)
         self._empty = QLabel("No console flag on this cabinet")
         self._empty.setObjectName("csCountryFlagEmpty")
         self._empty.setStyleSheet("color: #888;")
@@ -111,8 +123,14 @@ class CountryFlagsEditor(QWidget):
 
     def setStyleSheet(self, sheet: str) -> None:  # noqa: N802
         super().setStyleSheet(sheet)
+        # Live Push paints a field border on this widget. Keep each flag
+        # combo frameless so the rows stay short.
+        self._apply_combo_chrome()
+
+    def _apply_combo_chrome(self) -> None:
         for combo in self._combos:
-            combo.setStyleSheet(sheet)
+            combo.setFrame(False)
+            combo.setStyleSheet(_COMBO_SHEET)
 
     def _rebuild(self) -> None:
         while self._root.count():
@@ -130,11 +148,15 @@ class CountryFlagsEditor(QWidget):
             row = QWidget(self)
             layout = QHBoxLayout(row)
             layout.setContentsMargins(0, 0, 0, 0)
-            layout.setSpacing(8)
+            layout.setSpacing(6)
             caption = QLabel(flag.state_name)
-            caption.setMinimumWidth(64)
+            caption.setMinimumWidth(56)
             combo = QComboBox()
+            combo.setObjectName("csCountryFlagCombo")
+            combo.setFrame(False)
             combo.setIconSize(_ICON)
+            combo.setMaximumHeight(max(_ICON.height(), 22))
+            combo.setStyleSheet(_COMBO_SHEET)
             combo.setSizePolicy(
                 QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
             )

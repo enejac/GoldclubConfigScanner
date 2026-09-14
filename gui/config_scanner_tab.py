@@ -635,7 +635,7 @@ class ConfigScannerTabWidget(QFrame):
         self._detect_btn.clicked.connect(self._on_detect_drive)
         toolbar.addWidget(self._detect_btn)
         self._create_snapshot_btn = QPushButton("Create full snapshot")
-        self._create_snapshot_btn.setObjectName("primary")
+        self._create_snapshot_btn.setObjectName("snapshotCreate")
         self._create_snapshot_btn.setToolTip(
             create_full_snapshot_tooltip(self._game_kind())
         )
@@ -1051,6 +1051,8 @@ class ConfigScannerTabWidget(QFrame):
         self._validate_pending = self._drive_edit.text().strip()
         QTimer.singleShot(0, self._run_target_validation)
         self._refresh_egm_ui_strings()
+        # Path is set before textChanged is connected; enable Create now.
+        self._refresh_action_enabled()
         logger.info(
             "ConfigScannerTabWidget.__init__ done snapshots_dir=%s",
             self._service.get_snapshots_dir(),
@@ -3631,7 +3633,7 @@ class ConfigScannerTabWidget(QFrame):
         if not self._startup_detect_done:
             self._startup_detect_done = True
             self._target_row.start_fleet_scan()
-            QTimer.singleShot(0, self._schedule_startup_auto_detect)
+            QTimer.singleShot(0, self._autoload_or_detect)
             return
         self.sync_cabinet_from_settings()
 
@@ -3661,6 +3663,18 @@ class ConfigScannerTabWidget(QFrame):
         text = self._drive_edit.text().strip()
         if text:
             self._target_row.remember(text)
+
+    def _autoload_or_detect(self) -> None:
+        """Same as Live Push: load the remembered cabinet; detect only if empty."""
+        target = self._drive_edit.text().strip() or shared_cabinet_target(
+            fallback=SettingsManager.get_config_scanner_game_drive()
+        )
+        if target:
+            if self._drive_edit.text().strip() != target:
+                self._drive_edit.setText(target)
+            self._on_target_load_requested(target)
+            return
+        self._schedule_startup_auto_detect()
 
     def _schedule_startup_auto_detect(self) -> None:
         from gui.thin_progress import set_app_busy
