@@ -5,6 +5,7 @@ Updated automatically when a PR is merged.
 
 ## 2026-09-14
 
+- Live Push: give door labels and checkbox text a bit of margin ([#67](https://github.com/enejac/GoldclubConfigScanner/pull/67))
 - Live Push: warn when Apply needs a stack restart or RAM clear ([#66](https://github.com/enejac/GoldclubConfigScanner/pull/66))
 - Rebuild ConfigScanner.exe from master a9ef44f (2026-09-14 07:57) ([#64](https://github.com/enejac/GoldclubConfigScanner/pull/64))
 - Snapshots: autoload the last Live Push cabinet so Create is ready, and drop flag combo chrome ([#63](https://github.com/enejac/GoldclubConfigScanner/pull/63))
