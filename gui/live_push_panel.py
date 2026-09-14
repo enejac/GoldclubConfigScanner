@@ -99,7 +99,13 @@ from config_scanner.live_push import (
     canonicalize_live_field_label,
     resolve_live_field_config_files,
     live_push_catalog,
+    live_push_ramclear_notice,
     live_push_ramclear_reasons,
+    live_push_restart_required_reasons,
+    live_push_restart_required_text,
+    LIVE_PUSH_RAMCLEAR_RESTART_TITLE,
+    LIVE_PUSH_RESTART_REQUIRED_TITLE,
+    LIVE_PUSH_WRITE_AND_RESTART,
     load_live_cabinet,
     market_combo_label,
     ordered_live_markets,
@@ -1254,9 +1260,9 @@ class LivePushPanel(QWidget):
         self._restart = QCheckBox("Restart game after write")
         self._restart.setChecked(True)
         self._restart.setToolTip(
-            "After writing configs: stop OneHand if needed, then start Bootstrap "
-            "(Debug) or slot\\game-start.exe (Release) so the new settings take "
-            "effect. Turn off only if you will restart manually."
+            "The game only reads these settings when it starts. Leave this on so "
+            "Apply stops the game, writes the files, then starts it again. If you "
+            "turn it off, Apply warns you and asks before writing."
         )
         self._restart.toggled.connect(self._sync_commit_button)
         self._full_pack = QCheckBox("Write full pack")
@@ -3201,10 +3207,47 @@ class LivePushPanel(QWidget):
         else:
             self._commit.setText("Apply")
             self._commit.setToolTip(
-                "Write the orange (changed) fields to the cabinet without restarting "
-                "the game. Turn on Restart game after write if you want the game started. "
+                "Write the orange (changed) fields. The running game will keep the "
+                "old settings, so Apply will ask you to write and restart. "
                 "Red fields block Apply."
             )
+
+    def _confirm_restart_required(
+        self,
+        *,
+        kind: str,
+        lines: list[str],
+        ramclear_why: tuple[str, ...],
+        full_pack: bool,
+        backup: bool,
+        push_licences: bool,
+    ) -> bool:
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle(
+            LIVE_PUSH_RAMCLEAR_RESTART_TITLE
+            if ramclear_why
+            else LIVE_PUSH_RESTART_REQUIRED_TITLE
+        )
+        full = live_push_restart_required_text(
+            kind=kind,
+            change_lines=lines,
+            ramclear_reasons=ramclear_why,
+            full_pack=full_pack,
+            backup=backup,
+            push_licences=push_licences,
+        )
+        lead, _sep, rest = full.partition("\n\n")
+        box.setText(lead)
+        if rest:
+            box.setInformativeText(rest)
+        write_btn = box.addButton(
+            LIVE_PUSH_WRITE_AND_RESTART, QMessageBox.ButtonRole.AcceptRole
+        )
+        box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(write_btn)
+        box.exec()
+        return box.clickedButton() is write_btn
 
     def _commit_clicked(self) -> None:
         if self._busy:
@@ -3252,60 +3295,78 @@ class LivePushPanel(QWidget):
         ramclear_why = live_push_ramclear_reasons(
             live, after, aurum_currency=aurum_code
         )
+        restart_reasons = live_push_restart_required_reasons(
+            live,
+            after,
+            full_pack=full_pack,
+            push_licences=push_licences,
+            goldclub=root,
+        )
+        skip_apply_confirm = False
+        if not restart and restart_reasons:
+            if not self._confirm_restart_required(
+                kind=kind,
+                lines=lines,
+                ramclear_why=ramclear_why,
+                full_pack=full_pack,
+                backup=backup,
+                push_licences=push_licences,
+            ):
+                return
+            self._restart.setChecked(True)
+            self._sync_commit_button()
+            restart = True
+            skip_apply_confirm = True
         force_restart = bool(ramclear_why) and kind == "slot"
         effective_restart = restart or force_restart
-        if effective_restart and kind == "slot":
-            extra = (
-                "\n\nOneHand will stop, the files will be written, then Bootstrap "
-                "(Debug) or slot\\game-start.exe (Release) starts. "
-                "Windows will not reboot."
-            )
-            if force_restart and not restart:
-                extra += (
-                    "\n(Restart is required because a RAM clear will run.)"
+        if not skip_apply_confirm:
+            if effective_restart and kind == "slot":
+                extra = (
+                    "\n\nOneHand will stop, the files will be written, then Bootstrap "
+                    "(Debug) or slot\\game-start.exe (Release) starts. "
+                    "Windows will not reboot."
                 )
-        elif effective_restart:
-            extra = (
-                "\n\nThe game will stop, the files will be written, then the stack starts again. "
-                "Windows will not reboot."
+                if force_restart and not restart:
+                    extra += (
+                        "\n(Restart is required because a RAM clear will run.)"
+                    )
+            elif effective_restart:
+                extra = (
+                    "\n\nThe game will stop, the files will be written, then the stack starts again. "
+                    "Windows will not reboot."
+                )
+            else:
+                extra = "\n\nFiles will be written. The game will not be restarted."
+            if full_pack:
+                extra += "\n\nFull pack: all Live Push config files will be rewritten."
+            else:
+                extra += "\n\nDelta: only files for the listed changes will be written."
+            if backup:
+                extra += "\nA backup of those live files is taken first."
+            if push_licences:
+                extra += (
+                    "\n\nMissing licence XML / licence.dll will be copied next to "
+                    "OneHand (existing licence files are not overwritten)."
+                )
+            warns = validate_live_push_warnings(live, after, root)
+            if warns:
+                extra += "\n\nNote:\n• " + "\n• ".join(warns[:4])
+            _blocking, advisories = self._validation_split(live, after)
+            if advisories:
+                extra += (
+                    "\n\nScanner doubts (the cabinet already runs with these; "
+                    "not blocking):\n• " + "\n• ".join(advisories[:4])
+                )
+            if ramclear_why and kind == "slot":
+                extra += "\n\n" + live_push_ramclear_notice(ramclear_why)
+            body = (
+                "Write these settings?\n\n• " + "\n• ".join(lines) + extra
+                if lines
+                else "Write the full Live Push pack?" + extra
             )
-        else:
-            extra = "\n\nFiles will be written. The game will not be restarted."
-        if full_pack:
-            extra += "\n\nFull pack: all Live Push config files will be rewritten."
-        else:
-            extra += "\n\nDelta: only files for the listed changes will be written."
-        if backup:
-            extra += "\nA backup of those live files is taken first."
-        if push_licences:
-            extra += (
-                "\n\nMissing licence XML / licence.dll will be copied next to "
-                "OneHand (existing licence files are not overwritten)."
-            )
-        warns = validate_live_push_warnings(live, after, root)
-        if warns:
-            extra += "\n\nNote:\n• " + "\n• ".join(warns[:4])
-        _blocking, advisories = self._validation_split(live, after)
-        if advisories:
-            extra += (
-                "\n\nScanner doubts (the cabinet already runs with these; "
-                "not blocking):\n• " + "\n• ".join(advisories[:4])
-            )
-        if ramclear_why and kind == "slot":
-            extra += (
-                "\n\nRAM clear will run after write (required for: "
-                + ", ".join(ramclear_why)
-                + "). This clears meters / NVRAM trial state. HWSubsys is "
-                "restarted before Bootstrap."
-            )
-        body = (
-            "Write these settings?\n\n• " + "\n• ".join(lines) + extra
-            if lines
-            else "Write the full Live Push pack?" + extra
-        )
-        reply = QMessageBox.question(self, "Apply to cabinet", body)
-        if reply != QMessageBox.StandardButton.Yes:
-            return
+            reply = QMessageBox.question(self, "Apply to cabinet", body)
+            if reply != QMessageBox.StandardButton.Yes:
+                return
         self._set_busy(True)
         self._status.setText("Starting…")
         runnable = _CommitRunnable(
