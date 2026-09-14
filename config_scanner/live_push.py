@@ -17,7 +17,10 @@ import shutil
 import subprocess
 import tempfile
 import textwrap
+import threading
+import time
 from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -34,6 +37,7 @@ from config_scanner.denom_compat import (
     validate_live_push_warnings,
 )
 from config_scanner.jurisdiction import load_jurisdictions
+from config_scanner.read_cache import run_in_scope, scoped_read_cache
 from config_scanner.slot_licence import (
     LiveLicenceStatus,
     inspect_live_licences,
@@ -50,11 +54,15 @@ from config_scanner.slot_setup import (
     leftover_jurisdiction_single_denomination,
     load_recipe_from_goldclub,
     iter_magicwheel_setting_rels,
+    markets_accepted_by_onehand,
     math_settings_rels,
     merge_play_limits,
     missing_display_mode_assets,
     normalize_mei_bill_tokens_for_currency,
     read_display_mode,
+    read_ticket_printer_active,
+    CabinetLanguages,
+    read_cabinet_languages,
     recipe_from_jurisdiction_profile,
     sas_channel_flags_differ,
     LIMIT_SETUP_FIELDS,
@@ -1321,7 +1329,7 @@ _LABEL_SECTIONS: dict[str, frozenset[str]] = {
     "Currency": frozenset({"mgconfig", "jurisdiction", "hardware", "aurum"}),
     "Currency symbol": frozenset({"mgconfig", "jurisdiction"}),
     "Culture": frozenset({"mgconfig", "jurisdiction"}),
-    "Language": frozenset({"mgconfig"}),
+    "Language": frozenset({"mgconfig", "jurisdiction"}),
     "Market": frozenset({"mgconfig", "jurisdiction"}),
     "Denoms (cents)": frozenset(
         {"mgconfig", "jurisdiction", "link2win", "magicwheel", "math"}
@@ -2073,7 +2081,10 @@ LIVE_OPTION_HELP: dict[str, str] = {
         "(e.g. en-TT, en-JM)."
     ),
     "Language": (
-        "Game language code in mgconfig (empty on many images means default English)."
+        "Initial game language. On 2.0.1+ images this is the first entry of "
+        "jurisdiction_config <Languages> and the list offers only the "
+        "translations installed in slot\\languages on this cabinet; older "
+        "images use mgconfig <Language>."
     ),
     "Market": (
         "Target market / jurisdiction tag (mgconfig TargetMarket). Choosing a "
@@ -2244,7 +2255,7 @@ LIVE_FIELD_CONFIG_RELS: dict[str, tuple[str, ...]] = {
     "Currency": (_MGCONFIG_REL, _JURISDICTION_REL, _HARDWARE_CONFIG_REL),
     "Currency symbol": (_JURISDICTION_REL, _MGCONFIG_REL),
     "Culture": (_JURISDICTION_REL,),
-    "Language": (_MGCONFIG_REL,),
+    "Language": (_JURISDICTION_REL, _MGCONFIG_REL),
     "Market": (_MGCONFIG_REL, _JURISDICTION_REL),
     "Denoms (cents)": (
         _MGCONFIG_REL,
@@ -2855,16 +2866,36 @@ def goldclub_stack_kind(root: Path | str) -> str:
     return "unknown"
 
 
+_SMB_READY_LOCK = threading.Lock()
+_SMB_READY_HOSTS: set[str] = set()
+
+
+def forget_lab_smb_session(host: str) -> None:
+    """Drop the 'session already open' memo so the next probe reconnects."""
+    with _SMB_READY_LOCK:
+        _SMB_READY_HOSTS.discard((host or "").strip().casefold())
+
+
 def _ensure_lab_smb(host: str) -> None:
-    """Silent SMB test/test for any lab-LAN cabinet. Does not use WinRM."""
+    """Silent SMB test/test for any lab-LAN cabinet. Does not use WinRM.
+
+    A successful session is remembered per host for this process so the
+    ``cmdkey`` spawn + ``WNetAddConnection2`` handshake runs once, not once
+    per probe candidate on every Load. A logon failure clears the memo.
+    """
     host = (host or "").strip()
     if not host:
         return
+    key = host.casefold()
+    with _SMB_READY_LOCK:
+        if key in _SMB_READY_HOSTS:
+            return
     try:
         from network.lab_access import ensure_lab_smb_credential, is_lab_lan_ip
 
-        if is_lab_lan_ip(host):
-            ensure_lab_smb_credential(host)
+        if is_lab_lan_ip(host) and ensure_lab_smb_credential(host):
+            with _SMB_READY_LOCK:
+                _SMB_READY_HOSTS.add(key)
     except Exception:  # noqa: BLE001
         return
 
@@ -2927,6 +2958,7 @@ def _probe_live_goldclub(
         )
 
         if host and is_smb_logon_failure(exc) and retry_auth:
+            forget_lab_smb_session(host)
             drop_lab_smb_sessions(host)
             return _probe_live_goldclub(raw, host, retry_auth=False)
         if host and is_smb_logon_failure(exc):
@@ -2943,59 +2975,161 @@ class LiveLoadOutcome:
     licence: LiveLicenceStatus | None = None
     display_corruption: dict[str, str] = field(default_factory=dict)
     onehand_build: OneHandBuildInfo | None = None
+    # TargetMarket tokens compiled into this OneHand.exe (None = unknown /
+    # not a slot). Read on the worker so the GUI thread never touches SMB.
+    onehand_markets: frozenset[str] | None = None
+    ticket_printer_active: bool = False
+    # slot\languages catalog + jurisdiction_config <Languages> of this root.
+    languages: CabinetLanguages | None = None
+    # True for the early callback that carries only ``root`` + ``recipe``.
+    partial: bool = False
 
 
-def load_live_cabinet(target: str, *, prefer_local: bool = False) -> LiveLoadOutcome:
+# Worker threads for one Load. SMB is latency-bound, so independent reads
+# overlap well; more than this just queues on the single SMB session.
+LIVE_LOAD_WORKERS = 6
+
+
+def _load_status_text(root: Path, kind: str, recipe: SlotSetupRecipe) -> str:
+    if kind == "slot":
+        disp = recipe.display_mode or read_display_mode(root)
+        disp_s = f"{disp}-screen" if disp else "unknown"
+        return (
+            f"Loaded {root} ({disp_s} layout). "
+            "Apply will stop OneHand, write, then start Bootstrap."
+        )
+    if kind == "roulette":
+        return f"Loaded {root}. Apply will Kill-All, write, then Run-FullStack."
+    return f"Loaded {root}. No game restart plan — Apply will write files only."
+
+
+def _timed(label: str, timings: dict[str, float], fn: Callable[..., object]):
+    """Wrap *fn* so its wall time lands in *timings* under *label*."""
+
+    def _run(*args, **kwargs):
+        started = time.perf_counter()
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            timings[label] = time.perf_counter() - started
+
+    return _run
+
+
+def _format_timings(timings: dict[str, float]) -> str:
+    return " ".join(
+        f"{name}={secs * 1000:.0f}ms"
+        for name, secs in sorted(timings.items(), key=lambda kv: -kv[1])
+    )
+
+
+def load_live_cabinet(
+    target: str,
+    *,
+    prefer_local: bool = False,
+    on_partial: Callable[[LiveLoadOutcome], None] | None = None,
+) -> LiveLoadOutcome:
     """Load a cabinet recipe. Never raises — dead shares return an error string.
 
     With *prefer_local*, the shipped ``\\\\10.0.0.111\\slot`` default and the
     ``This PC`` path are first resolved against local Goldclub roots.
+
+    Once the Goldclub root is known, the independent reads (recipe, licences,
+    OneHand build, market tokens, printer flag, math prefetch, display-text
+    scan) run concurrently on a small pool and share one read cache, so a
+    file or the 9.5 MB ``OneHand.exe`` crosses the SMB link once. *on_partial*
+    (if given) fires as soon as the recipe alone is ready with a
+    ``partial=True`` outcome so the form can paint while the rest finishes.
     """
+    timings: dict[str, float] = {}
+    total_started = time.perf_counter()
     try:
         target, swapped = resolve_live_load_target(target, prefer_local=prefer_local)
         if swapped:
             _lp_log(swapped)
-        root, err = prepare_live_goldclub(target)
+        root, err = _timed("connect", timings, prepare_live_goldclub)(target)
         if root is None:
             return LiveLoadOutcome(None, None, err, "")
-        recipe = load_recipe_from_goldclub(root, label="live")
-        licence = inspect_live_licences(root)
-        onehand: OneHandBuildInfo | None = None
-        try:
-            onehand = detect_onehand_build(root)
-        except Exception as exc:  # noqa: BLE001
-            _lp_log(f"OneHand build detect failed: {exc}")
-        kind = goldclub_stack_kind(root)
-        if kind == "slot":
-            try:
-                prefetch_link2win_math(root)
-            except Exception as exc:  # noqa: BLE001
-                _lp_log(f"math prefetch failed: {exc}")
-            disp = recipe.display_mode or read_display_mode(root)
-            disp_s = f"{disp}-screen" if disp else "unknown"
-            status = (
-                f"Loaded {root} ({disp_s} layout). "
-                "Apply will stop OneHand, write, then start Bootstrap."
+        kind = _timed("kind", timings, goldclub_stack_kind)(root)
+
+        def _quiet(label: str, fn: Callable[..., object], default: object):
+            def _run(*args, **kwargs):
+                try:
+                    return fn(*args, **kwargs)
+                except Exception as exc:  # noqa: BLE001
+                    _lp_log(f"{label} failed: {exc}")
+                    return default
+
+            return _timed(label, timings, _run)
+
+        with scoped_read_cache() as scope, ThreadPoolExecutor(
+            max_workers=LIVE_LOAD_WORKERS, thread_name_prefix="live-load"
+        ) as pool:
+
+            def submit(fn: Callable[..., object], *args: object, **kwargs: object):
+                return pool.submit(run_in_scope(fn, *args, **kwargs))
+
+            f_recipe = submit(
+                _timed("recipe", timings, load_recipe_from_goldclub),
+                root,
+                label="live",
             )
-        elif kind == "roulette":
-            status = (
-                f"Loaded {root}. Apply will Kill-All, write, then Run-FullStack."
+            f_licence = submit(_timed("licence", timings, inspect_live_licences), root)
+            f_onehand = submit(
+                _quiet("OneHand build detect", detect_onehand_build, None), root
             )
-        else:
-            status = f"Loaded {root}. No game restart plan — Apply will write files only."
-        corrupt: dict[str, str] = {}
-        try:
-            corrupt = live_display_corruption_errors(root)
-        except Exception as exc:  # noqa: BLE001
-            _lp_log(f"display corruption scan failed: {exc}")
+            f_markets = submit(
+                _quiet("OneHand market scan", markets_accepted_by_onehand, None), root
+            )
+            f_printer = submit(
+                _quiet("ticket printer flag", read_ticket_printer_active, False), root
+            )
+            f_langs = submit(
+                _quiet("cabinet languages", read_cabinet_languages, None), root
+            )
+            f_corrupt = submit(
+                _quiet("display corruption scan", live_display_corruption_errors, {}),
+                root,
+            )
+            f_math = None
+            if kind == "slot":
+                f_math = submit(_quiet("math prefetch", prefetch_link2win_math, None), root)
+
+            recipe = f_recipe.result()
+            status = _load_status_text(root, kind, recipe)
+            if on_partial is not None:
+                try:
+                    on_partial(
+                        LiveLoadOutcome(root, recipe, "", status, partial=True)
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    _lp_log(f"partial-load callback failed: {exc}")
+
+            licence = f_licence.result()
+            onehand = f_onehand.result()
+            markets = f_markets.result()
+            printer_on = bool(f_printer.result())
+            languages = f_langs.result()
+            corrupt = f_corrupt.result() or {}
+            if f_math is not None:
+                f_math.result()
+
+        timings["total"] = time.perf_counter() - total_started
+        _lp_log(
+            f"load {root}: {_format_timings(timings)} "
+            f"(cache hits={scope.hits} misses={scope.misses})"
+        )
         return LiveLoadOutcome(
             root,
             recipe,
             "",
             status,
             licence,
-            display_corruption=corrupt,
+            display_corruption=dict(corrupt),
             onehand_build=onehand,
+            onehand_markets=markets,
+            ticket_printer_active=printer_on,
+            languages=languages,
         )
     except Exception as exc:  # noqa: BLE001
         return LiveLoadOutcome(
@@ -3142,6 +3276,69 @@ def _slot_target_is_local(scan_target: str) -> bool:
     return scan_target_is_local_machine(scan_target)
 
 
+_WINRM_UNREACHABLE_MARKERS = (
+    "servernottrusted",
+    "trustedhosts",
+    "psremotingtransportexception",
+    "winrm client cannot process the request",
+    "cannot connect to the destination",
+    "winrm inline timed out",
+    "winrm script timed out",
+    "access is denied",
+    "logon failure",
+    "the user name or password is incorrect",
+)
+
+
+def slot_stop_unreachable(detail: str) -> bool:
+    """True when the stop never reached the cabinet (WinRM trust / transport / logon).
+
+    Retrying, or trying to *start* the game over the same channel, cannot
+    work — but the SMB write path is independent, so settings can still go.
+    Covers both Live Push transport markers and the restore-side
+    ``stack_stop_unreachable`` set (5985 closed / OperationTimeout).
+    """
+    low = (detail or "").casefold()
+    if any(marker in low for marker in _WINRM_UNREACHABLE_MARKERS):
+        return True
+    return stack_stop_unreachable(detail)
+
+
+def winrm_failure_hint(detail: str, host: str) -> str:
+    """One-line operator fix for the common WinRM-from-this-PC failures."""
+    low = (detail or "").casefold()
+    who = host or "the cabinet"
+    if "servernottrusted" in low or "trustedhosts" in low:
+        return (
+            f"This PC's WinRM client does not trust {who}. Run once as "
+            "Administrator: .\\Initialize-LabAccess.ps1 (or: Start-Service WinRM; "
+            f"Set-Item WSMan:\\localhost\\Client\\TrustedHosts -Value '{who}' "
+            "-Concatenate -Force)."
+        )
+    if (
+        "access is denied" in low
+        or "logon failure" in low
+        or "user name or password is incorrect" in low
+    ):
+        return (
+            f"WinRM logon to {who} was refused. Check the lab credential for "
+            f"that cabinet (cmdkey /add:{who})."
+        )
+    if (
+        "cannot connect to the destination" in low
+        or "timed out" in low
+        or "winrmoperationtimeout" in low
+        or "winrm cannot complete the operation" in low
+        or "winrm is not reachable" in low
+        or "no listener" in low
+    ):
+        return (
+            f"WinRM (TCP 5985) on {who} did not answer. Enable-PSRemoting on the "
+            "cabinet, or restart the game there by hand."
+        )
+    return ""
+
+
 def run_slot_stack_kill(scan_target: str) -> tuple[bool, str]:
     """Stop OneHand / Bootstrap so slot XML can be written."""
     import time
@@ -3179,8 +3376,9 @@ def run_slot_stack_kill(scan_target: str) -> tuple[bool, str]:
         _lp_log(f"slot kill attempt={attempt} ok={ok} {detail[:400]}")
         if ok:
             return True, detail if detail else "OK"
-        if not local and stack_stop_unreachable(detail):
-            return False, f"Slot stop failed: {last_detail}"
+        if not local and slot_stop_unreachable(detail):
+            _lp_log("slot kill: WinRM never reached the cabinet, not retrying")
+            break
         if attempt < 3:
             time.sleep(2)
     return False, f"Slot stop failed: {last_detail}"
@@ -3572,15 +3770,19 @@ def commit_live_push(
         return LivePushResult((), (), (msg,), False, False, msg)
 
     stop_failed = ""
+    slot_stop_failed = ""
     if use_slot:
         _emit(progress, "Stopping the slot game…")
         ok, stack_detail = run_slot_stack_kill(plan_src)
         stack_killed = ok
         if not ok:
-            stop_failed = stack_detail
+            # The SMB write path does not depend on WinRM or on the game being
+            # down: OneHand reads these XMLs at start-up. Push the files anyway
+            # and tell the operator the game must be restarted on the cabinet.
+            slot_stop_failed = stack_detail
             _lp_log(
                 "commit: slot stop failed, writing settings anyway: "
-                f"{stack_detail[:400]}"
+                f"{_short_fail(stack_detail)}"
             )
             _emit(progress, "Game stop failed — writing settings anyway…")
     elif plan is not None:
@@ -3684,6 +3886,39 @@ def commit_live_push(
         if use_slot and slot_start_launcher(plan_src, dest) == "game-start"
         else "Bootstrap"
     )
+    # A stop that *reached* the cabinet but left the game up falls through to
+    # the normal post-write flow (hwsubsys -> stop again -> start). A dead WinRM
+    # channel, or a pending RAM clear with the game still up, cannot.
+    if (
+        use_slot
+        and slot_stop_failed
+        and not errors
+        and (slot_stop_unreachable(slot_stop_failed) or ramclear_reasons)
+    ):
+        host = unc_host_from_target(plan_src) or "the cabinet"
+        why = _short_fail(slot_stop_failed)
+        hint = winrm_failure_hint(slot_stop_failed, host)
+        need_rc = (
+            " RAM clear is still required ("
+            + ", ".join(ramclear_reasons)
+            + ") — run begin-ramclear on the cabinet."
+            if ramclear_reasons
+            else ""
+        )
+        listen = (
+            f" WinRM is not listening on {host}."
+            if stack_stop_unreachable(slot_stop_failed)
+            else ""
+        )
+        head = (
+            f"Settings written ({len(written)} file(s)), but the game could not "
+            f"be stopped/restarted from this PC — restart OneHand on {host} for "
+            f"them to take effect.{listen} {why}{need_rc}"
+            if written
+            else f"Nothing was written and the game could not be stopped: {why}"
+        )
+        errors = (f"{head} {hint} (log: {log_path})".strip(),)
+        _lp_log(f"commit: slot stop failed outcome: {errors[0][:400]}")
     if (
         use_slot
         and ramclear_reasons

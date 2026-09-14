@@ -1178,6 +1178,134 @@ def test_commit_ramclear_forces_restart_when_unchecked(
     assert order == ["kill", "ramclear", "hwsubsys", "kill", "start"]
 
 
+_SERVER_NOT_TRUSTED = (
+    "Slot stop failed: [10.0.0.111] Connecting to remote server 10.0.0.111 failed "
+    "with the following error message : The WinRM client cannot process the request. "
+    "... the destination machine must be added to the TrustedHosts configuration "
+    "setting.\n    + FullyQualifiedErrorId : ServerNotTrusted,PSSessionStateBroken"
+)
+
+
+def test_slot_stop_unreachable_and_winrm_hint() -> None:
+    from config_scanner.live_push import slot_stop_unreachable, winrm_failure_hint
+
+    assert slot_stop_unreachable(_SERVER_NOT_TRUSTED) is True
+    assert slot_stop_unreachable("winrm inline timed out") is True
+    assert slot_stop_unreachable("Access is denied") is True
+    # A stop that reached the cabinet but left the game up is NOT a transport failure.
+    assert slot_stop_unreachable("STILL: OneHand") is False
+    assert slot_stop_unreachable("") is False
+
+    hint = winrm_failure_hint(_SERVER_NOT_TRUSTED, "10.0.0.111")
+    assert "TrustedHosts" in hint
+    assert "10.0.0.111" in hint
+    assert "Initialize-LabAccess.ps1" in hint
+    assert "logon" in winrm_failure_hint("Access is denied", "10.0.0.111").casefold()
+    assert "5985" in winrm_failure_hint("winrm inline timed out", "10.0.0.111")
+    assert winrm_failure_hint("STILL: OneHand", "10.0.0.111") == ""
+
+
+def test_run_slot_stack_kill_does_not_retry_when_winrm_untrusted(monkeypatch) -> None:
+    from config_scanner.live_push import run_slot_stack_kill
+
+    calls: list[str] = []
+
+    class _Result:
+        returncode = 1
+        stdout = ""
+        stderr = _SERVER_NOT_TRUSTED
+
+    def fake_winrm(*, ip, script, timeout):
+        calls.append(ip)
+        return _Result()
+
+    monkeypatch.setattr(
+        "config_scanner.stack_restart.scan_target_is_local_machine", lambda _t: False
+    )
+    monkeypatch.setattr("config_scanner.live_push._ensure_lab_smb", lambda _ip: None)
+    monkeypatch.setattr("automation.remote_exec.winrm_run_inline", fake_winrm)
+    monkeypatch.setattr("network.lab_access.require_lab_fleet_ip", lambda host: host)
+    monkeypatch.setattr("time.sleep", lambda *_a, **_k: None)
+    ok, detail = run_slot_stack_kill(r"\\10.0.0.111\slot")
+    assert ok is False
+    assert calls == ["10.0.0.111"]
+    assert "ServerNotTrusted" in detail
+
+
+def test_commit_writes_settings_even_when_slot_stop_unreachable(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """WinRM never reached .111 (TrustedHosts) — the SMB write must still happen."""
+    gold = _fake_goldclub(tmp_path)
+    recipe = load_recipe_from_goldclub(gold, label="live")
+    recipe.sas.address = 3
+    order: list[str] = []
+
+    monkeypatch.setattr("config_scanner.live_push.goldclub_stack_kind", lambda _r: "slot")
+    monkeypatch.setattr(
+        "config_scanner.live_push.run_slot_stack_kill",
+        lambda *_a, **_k: (order.append("kill") or False, _SERVER_NOT_TRUSTED),
+    )
+    for name in ("run_slot_stack_start", "restart_slot_hwsubsys", "run_slot_ramclear"):
+        monkeypatch.setattr(
+            f"config_scanner.live_push.{name}",
+            lambda *_a, _n=name, **_k: (_ for _ in ()).throw(
+                AssertionError(f"{_n} must not run over a dead WinRM channel")
+            ),
+        )
+
+    result = commit_live_push(
+        recipe,
+        gold,
+        restart_stack=True,
+        scan_target=str(gold),
+        work_parent=tmp_path / "work",
+        backup=False,
+    )
+    assert order == ["kill"]
+    assert result.written, "settings must be written even though the stop failed"
+    assert result.stack_killed is False
+    assert result.stack_started is False
+    assert not result.ok
+    msg = result.errors[0]
+    assert msg.startswith("Settings written")
+    assert "restart OneHand" in msg
+    assert "TrustedHosts" in msg
+    assert "settings were not written" not in msg
+
+
+def test_commit_stop_failed_with_ramclear_tells_operator(
+    tmp_path: Path, monkeypatch
+) -> None:
+    gold = _fake_goldclub(tmp_path)
+    recipe = load_recipe_from_goldclub(gold, label="live")
+    recipe.jurisdiction.currency_name = "TTD"
+    recipe.hardware_currency_name = "TTD"
+
+    monkeypatch.setattr("config_scanner.live_push.goldclub_stack_kind", lambda _r: "slot")
+    monkeypatch.setattr(
+        "config_scanner.live_push.run_slot_stack_kill",
+        lambda *_a, **_k: (False, "Slot stop failed: STILL: OneHand"),
+    )
+    monkeypatch.setattr(
+        "config_scanner.live_push.run_slot_ramclear",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("no ramclear while game up")),
+    )
+    result = commit_live_push(
+        recipe,
+        gold,
+        restart_stack=False,
+        scan_target=str(gold),
+        work_parent=tmp_path / "work",
+        backup=False,
+    )
+    assert result.written
+    assert result.ramclear_ran is False
+    msg = result.errors[0]
+    assert "RAM clear is still required" in msg
+    assert "currency" in msg.casefold()
+
+
 def test_commit_slot_uses_bootstrap_not_ruleta(tmp_path: Path, monkeypatch) -> None:
     gold = _fake_goldclub(tmp_path)
     recipe = load_recipe_from_goldclub(gold, label="live")
@@ -1320,6 +1448,7 @@ def test_lp_log_writes_only_livepush_file(tmp_path: Path, monkeypatch, caplog) -
 def test_commit_writes_settings_when_slot_stop_unreachable(
     tmp_path: Path, monkeypatch
 ) -> None:
+    """WinRM timeout / 5985 closed — SMB write still happens, no start attempt."""
     gold = _fake_goldclub(tmp_path)
     recipe = load_recipe_from_goldclub(gold, label="live")
     recipe.play_limits.show_all_lines = not bool(recipe.play_limits.show_all_lines)
@@ -1362,26 +1491,24 @@ def test_commit_writes_settings_when_slot_stop_unreachable(
 def test_commit_slot_kill_failure_still_writes_then_retries_stop(
     tmp_path: Path, monkeypatch
 ) -> None:
+    """Stop reached the cabinet but the game stayed up: write, then try again."""
     gold = _fake_goldclub(tmp_path)
     recipe = load_recipe_from_goldclub(gold, label="live")
     recipe.play_limits.show_all_lines = not bool(recipe.play_limits.show_all_lines)
-    kills: list[int] = []
-    starts: list[str] = []
+    order: list[str] = []
 
     monkeypatch.setattr("config_scanner.live_push.goldclub_stack_kind", lambda _r: "slot")
-
-    def _kill(_target):
-        kills.append(1)
-        return False, "exit 1"
-
-    monkeypatch.setattr("config_scanner.live_push.run_slot_stack_kill", _kill)
+    monkeypatch.setattr(
+        "config_scanner.live_push.run_slot_stack_kill",
+        lambda *_a, **_k: (order.append("kill") or False, "Slot stop failed: STILL: OneHand"),
+    )
     monkeypatch.setattr(
         "config_scanner.live_push.restart_slot_hwsubsys",
-        lambda *_a, **_k: (True, "hw ok"),
+        lambda *_a, **_k: (order.append("hwsubsys") or True, "HWSubsys Running"),
     )
     monkeypatch.setattr(
         "config_scanner.live_push.run_slot_stack_start",
-        lambda *_a, **_k: (starts.append("start") or True, "bootstrap"),
+        lambda *_a, **_k: (order.append("start") or True, "bootstrap"),
     )
 
     result = commit_live_push(
@@ -1392,13 +1519,49 @@ def test_commit_slot_kill_failure_still_writes_then_retries_stop(
         work_parent=tmp_path / "work",
         backup=False,
     )
-    assert result.written
-    assert result.errors
-    assert "Settings written" in result.errors[0]
-    assert "still running" in result.errors[0]
-    assert len(kills) == 2
-    assert starts == []
+    assert result.written, "settings are pushed regardless of the game state"
+    assert order == ["kill", "hwsubsys", "kill"]
     assert result.stack_started is False
+    assert result.errors
+    assert result.errors[0].startswith("Settings written")
+    assert "still running" in result.errors[0]
+    assert "were not written" not in result.errors[0]
+
+
+def test_commit_slot_kill_failure_then_second_stop_succeeds(
+    tmp_path: Path, monkeypatch
+) -> None:
+    gold = _fake_goldclub(tmp_path)
+    recipe = load_recipe_from_goldclub(gold, label="live")
+    recipe.play_limits.show_all_lines = not bool(recipe.play_limits.show_all_lines)
+    kills: list[int] = []
+
+    def _kill(*_a, **_k):
+        kills.append(1)
+        return (len(kills) >= 2), "STILL: OneHand" if len(kills) < 2 else "stopped"
+
+    monkeypatch.setattr("config_scanner.live_push.goldclub_stack_kind", lambda _r: "slot")
+    monkeypatch.setattr("config_scanner.live_push.run_slot_stack_kill", _kill)
+    monkeypatch.setattr(
+        "config_scanner.live_push.restart_slot_hwsubsys",
+        lambda *_a, **_k: (True, "HWSubsys Running"),
+    )
+    monkeypatch.setattr(
+        "config_scanner.live_push.run_slot_stack_start",
+        lambda *_a, **_k: (True, "bootstrap"),
+    )
+    result = commit_live_push(
+        recipe,
+        gold,
+        restart_stack=True,
+        scan_target=str(gold),
+        work_parent=tmp_path / "work",
+        backup=False,
+    )
+    assert result.ok, result.errors
+    assert result.written
+    assert result.stack_started is True
+    assert len(kills) == 2
 
 
 def test_patch_aurum_rewrites_messenger_uri(tmp_path: Path) -> None:

@@ -13,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 
 from config_scanner.profiles import GameProfile, display_profile_label
+from config_scanner.read_cache import open_exe_cached
 
 
 @dataclass(frozen=True)
@@ -668,9 +669,9 @@ def _iter_version_info_windows(data: bytes) -> list[bytes]:
 
 
 def _read_pe_rsrc_bytes(path: Path) -> bytes | None:
-    """Read the PE resource section (.rsrc) without loading the whole exe."""
+    """Read the PE resource section (.rsrc) from the shared exe buffer."""
     try:
-        with path.open("rb") as handle:
+        with open_exe_cached(path) as handle:
             hdr = handle.read(4096)
             if len(hdr) < 64 or hdr[:2] != b"MZ":
                 return None
@@ -810,7 +811,7 @@ def _iter_pe_codeview_pdb_paths(path: Path) -> list[str]:
     """PDB paths from IMAGE_DEBUG_DIRECTORY (CodeView / RSDS)."""
     found: list[str] = []
     try:
-        with path.open("rb") as handle:
+        with open_exe_cached(path) as handle:
             layout = _read_pe_layout(handle)
             if layout is None:
                 return found
@@ -862,7 +863,7 @@ def _pe_codeview_is_debug_build(path: Path) -> bool:
 
 
 def _read_head_tail_bytes(path: Path, *, head: int, tail: int) -> bytes:
-    with path.open("rb") as handle:
+    with open_exe_cached(path) as handle:
         handle.seek(0, os.SEEK_END)
         size = handle.tell()
         if size <= head + tail:
@@ -1036,7 +1037,7 @@ def _sniff_build_configuration(exe_path: Path) -> str | None:
     binaries always contain that word from other assemblies.
     """
     try:
-        with exe_path.open("rb") as handle:
+        with open_exe_cached(exe_path) as handle:
             blob = handle.read(8 * 1024 * 1024)
     except OSError:
         return None
@@ -1276,7 +1277,7 @@ def _find_onehand_exe(scan_root: Path) -> Path | None:
 
 def _sniff_exe_version_strings(exe_path: Path) -> tuple[str, str | None]:
     try:
-        with exe_path.open("rb") as handle:
+        with open_exe_cached(exe_path) as handle:
             blob = handle.read(32 * 1024 * 1024)
     except OSError:
         return "", None
@@ -1444,7 +1445,17 @@ def _extract_version_from_exe(exe_path: Path, *, slot_style: bool = False) -> _E
                 is_debug = False
             elif res.file_flags is not None and res.file_flags & _VS_FF_DEBUG:
                 is_debug = True
-        sniff_pv, sniff_pn = _sniff_exe_version_strings(exe_path)
+        # The UTF-16 sniff only ever fills a missing/Debug ProductVersion or
+        # a missing ProductName, so skip the 32 MB scan when VERSIONINFO
+        # already answered both.
+        need_sniff = (
+            not pv
+            or _configuration_from_strings(pv) == "Debug"
+            or not product_name
+        )
+        sniff_pv, sniff_pn = (
+            _sniff_exe_version_strings(exe_path) if need_sniff else ("", None)
+        )
         if sniff_pv:
             rich = sniff_pv.strip()
             # Display only, and only when VERSIONINFO has no real version.

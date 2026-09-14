@@ -71,6 +71,14 @@ def is_screenshot_target_dialog(obj: Any) -> bool:
     return False
 
 
+def _widget_alive(widget: Any) -> bool:
+    try:
+        widget.objectName()
+    except RuntimeError:
+        return False
+    return True
+
+
 def corner_tool_screen_pos(
     main: QWidget,
     width: int,
@@ -118,6 +126,35 @@ class _CornerScreenshotTool(QWidget):
     def pin_to_main_bottom_right(self, main: QWidget) -> None:
         self.adjustSize()
         self.move(corner_tool_screen_pos(main, self.width(), self.height()))
+
+    def attach_to_modal(self, modal: QWidget | None) -> bool:
+        """Make the modal dialog this window's transient parent.
+
+        An application-modal ``QMessageBox`` blocks mouse input to every other
+        window, including this Tool overlay, so its Screenshot button was dead
+        while an "Apply finished with errors" popup was open. Qt exempts the
+        modal window's own (transient) children from that block, so parenting
+        the overlay to the topmost modal keeps the button clickable. Pass
+        ``None`` once the last dialog closes.
+        """
+        try:
+            self.winId()  # create the native handle so windowHandle() exists
+            handle = self.windowHandle()
+        except Exception:
+            return False
+        if handle is None:
+            return False
+        target = None
+        if modal is not None:
+            try:
+                target = modal.window().windowHandle()
+            except Exception:
+                target = None
+        try:
+            handle.setTransientParent(target)
+        except Exception:
+            return False
+        return target is not None
 
 
 class AnytimeScreenshot(QObject):
@@ -194,8 +231,11 @@ class AnytimeScreenshot(QObject):
         if win is None or tool is None:
             return
         bar_btn = getattr(win, "_screenshot_btn", None)
+        self._modals = [m for m in self._modals if _widget_alive(m)]
         if self._modals:
             tool.pin_to_main_bottom_right(win)
+            # Topmost modal last: only its transient children receive clicks.
+            tool.attach_to_modal(self._modals[-1])
             tool.show()
             tool.raise_()
             try:
@@ -208,6 +248,7 @@ class AnytimeScreenshot(QObject):
                 bar_btn.hide()
             return
         tool.hide()
+        tool.attach_to_modal(None)
         if bar_btn is not None:
             bar_btn.show()
 
