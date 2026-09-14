@@ -341,4 +341,7 @@ def test_live_push_panel_wires_slotlog_check() -> None:
     assert "field_highlight_error" in src
     assert "_start_slotlog_review" in src
     assert "wait_sec=90.0" in src
-    assert "sas_lock_note" in src
+    assert "format_live_push_apply_status" in src
+    assert 'QMessageBox.information(\n            self,\n            "Apply complete"' not in src
+    assert "_set_apply_result" in src
+    assert "LIVE_PUSH_APPLY_SLOTLOG_HINT" in src

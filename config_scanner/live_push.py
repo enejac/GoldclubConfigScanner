@@ -1022,6 +1022,38 @@ class LivePushResult:
         return not self.errors
 
 
+LIVE_PUSH_APPLY_SLOTLOG_HINT = (
+    "SlotLog review runs after the game starts (invalid market, denoms, SAS lock). "
+    "Or click Check SlotLog."
+)
+
+
+def format_live_push_apply_status(result: LivePushResult) -> str:
+    """One-line Apply outcome for the Live Push status area (no dialog)."""
+    bits = [f"Wrote {len(result.written)} file(s)."]
+    if result.sections:
+        bits.append(f"Sections: {', '.join(result.sections)}.")
+    if result.backup_dir:
+        bits.append(f"Backup: {result.backup_dir}")
+    if result.skipped:
+        bits.append(f"Skipped {len(result.skipped)}.")
+    if result.stack_killed:
+        bits.append("Game was stopped.")
+    if result.ramclear_ran:
+        bits.append("RAM clear ran.")
+    elif result.ramclear_detail:
+        bits.append(result.ramclear_detail.splitlines()[0][:120])
+    if result.stack_started:
+        bits.append("Game started.")
+    elif result.stack_detail:
+        last = result.stack_detail.splitlines()[-1]
+        if last != (result.sas_lock_note or ""):
+            bits.append(last)
+    if result.sas_lock_note:
+        bits.append(result.sas_lock_note)
+    return " ".join(bits)
+
+
 @dataclass(frozen=True)
 class LocaleDefaults:
     currency: str
@@ -1569,6 +1601,53 @@ def live_push_restart_required_reasons(
     if push_licences:
         _add("licence files")
     return tuple(reasons)
+
+
+# OneHand already deserialized these into RAM (Collect uses get_CashoutMode).
+# SMB overwrite of mgconfig does not call set_CashoutMode; the Service menu
+# does. Reloading OneHand (game-start) runs LoadMgConfiguration. Aurum / SAS
+# / HWSubsys do not read CashoutButtonMode.
+_ONEHAND_RELOAD_LABELS = frozenset({"Cashout button"})
+
+
+def live_push_onehand_reload_reasons(
+    live: SlotSetupRecipe,
+    form: SlotSetupRecipe,
+) -> tuple[str, ...]:
+    """Snapshot labels that need an OneHand reload (not a full stack bounce)."""
+    reasons: list[str] = []
+    seen: set[str] = set()
+    for line in recipe_change_lines(live, form):
+        label = line.split(":", 1)[0].strip()
+        if label in _ONEHAND_RELOAD_LABELS and label not in seen:
+            seen.add(label)
+            reasons.append(label)
+    return tuple(reasons)
+
+
+def live_push_apply_mode(
+    *,
+    kind: str,
+    restart_stack: bool,
+    restart_reasons: Sequence[str] = (),
+    ramclear_reasons: Sequence[str] = (),
+    onehand_reload_reasons: Sequence[str] = (),
+) -> str:
+    """How Apply restacks: ``fullstack``, ``onehand``, or ``write``.
+
+    Cashout-only is ``onehand`` even when the Restart checkbox is on — that
+    field is not lock-now / Aurum, and fullstack would bounce SAS for nothing.
+    """
+    slot = (kind or "").strip().casefold() == "slot"
+    if slot and ramclear_reasons:
+        return "fullstack"
+    if slot and restart_reasons and restart_stack:
+        return "fullstack"
+    if slot and onehand_reload_reasons and not restart_reasons:
+        return "onehand"
+    if restart_stack:
+        return "fullstack"
+    return "write"
 
 
 def live_push_restart_required_text(
@@ -2522,9 +2601,11 @@ LIVE_OPTION_HELP: dict[str, str] = {
     "Jackpot celebration": "Celebration screen limit / style after a jackpot.",
     "Cashout button": (
         "Writes mgconfig TransferParameters/CashoutButtonMode: Ticket, "
-        "Handpay, or Cashless. Not a restart-required field. Cashless is "
-        "WAT-to-host (Collect trigger with MODE:Cashless) and needs AFT/WAT "
-        "— without a host, OneHand falls back to handpay."
+        "Handpay, or Cashless. Not a restart-required field: Apply reloads "
+        "OneHand (game-start) so Collect uses the new mode, and leaves "
+        "Aurum / SAS / hardware up. Cashless is WAT-to-host (Collect "
+        "trigger with MODE:Cashless) and needs AFT/WAT — without a host, "
+        "OneHand falls back to handpay."
     ),
     "Default bet": "Default bet selection when a game opens.",
     "Show denom selector": (
@@ -4245,19 +4326,41 @@ def commit_live_push(
             _lp_log(f"commit abort: {msg}")
             return LivePushResult((), (), (msg,), False, False, msg)
     # Currency / denom / bet-step deltas need ramclear + Bootstrap even if the
-    # operator left "restart game" unchecked.
+    # operator left "restart game" unchecked. Cashout-only reloads OneHand
+    # (LoadMgConfiguration) and leaves Aurum / SAS / HWSubsys running.
     need_slot_ramclear = bool(ramclear_reasons) and kind == "slot"
-    effective_restart = bool(restart_stack or need_slot_ramclear)
+    restart_reasons = live_push_restart_required_reasons(
+        live_recipe,
+        recipe,
+        full_pack=full_pack,
+        push_licences=want_licences,
+        goldclub=dest,
+    )
+    onehand_reload_reasons = live_push_onehand_reload_reasons(live_recipe, recipe)
+    apply_mode = live_push_apply_mode(
+        kind=kind,
+        restart_stack=restart_stack,
+        restart_reasons=restart_reasons,
+        ramclear_reasons=ramclear_reasons if kind == "slot" else (),
+        onehand_reload_reasons=onehand_reload_reasons,
+    )
+    effective_restart = apply_mode == "fullstack"
     use_slot = bool(effective_restart and kind == "slot")
+    use_onehand_reload = apply_mode == "onehand"
     plan = (
         None
-        if use_slot
+        if use_slot or use_onehand_reload
         else (plan_stack_restart(plan_src) if effective_restart else None)
     )
     stack_killed = False
     stack_detail = ""
     if need_slot_ramclear and not restart_stack:
         _lp_log("commit: forcing slot restart because ramclear is required")
+    if use_onehand_reload:
+        _lp_log(
+            "commit: OneHand reload only (Aurum stays up): "
+            + ", ".join(onehand_reload_reasons)
+        )
     if effective_restart and not use_slot and plan is None:
         stack_detail = (
             "No roulette stack plan on this PC. Settings will still be written."
@@ -4400,7 +4503,8 @@ def commit_live_push(
     ramclear_detail = ""
     start_noun = (
         "game-start"
-        if use_slot and slot_start_launcher(plan_src, dest) == "game-start"
+        if (use_slot or use_onehand_reload)
+        and slot_start_launcher(plan_src, dest) == "game-start"
         else "Bootstrap"
     )
     # A stop that *reached* the cabinet but left the game up falls through to
@@ -4501,6 +4605,38 @@ def commit_live_push(
                 f"Settings written, but stack did not start: {_short_fail(start_detail)} "
                 f"(log: {log_path})",
             )
+    elif use_onehand_reload and written and not errors:
+        _emit(progress, "Reloading OneHand (Aurum stays up)…")
+        ok_stop, stop_detail = run_slot_stack_kill(plan_src, stop_aurum=False)
+        stack_killed = ok_stop
+        stack_detail = f"{stack_detail}\n{stop_detail}".strip()
+        _lp_log(
+            f"onehand reload kill ok={ok_stop} stop_aurum=False {stop_detail[:400]}"
+        )
+        if not ok_stop:
+            host = unc_host_from_target(plan_src) or "the cabinet"
+            hint = winrm_failure_hint(stop_detail, host)
+            errors = (
+                (
+                    f"Settings written ({len(written)} file(s)), but OneHand "
+                    f"could not be reloaded on {host} — "
+                    f"{_short_fail(stop_detail)} {hint} (log: {log_path})"
+                ).strip(),
+            )
+        else:
+            _emit(progress, f"Starting {start_noun} on the cabinet…")
+            ok, start_detail = run_slot_stack_start(plan_src, dest=dest)
+            stack_started = ok
+            stack_detail = f"{stack_detail}\n{start_detail}".strip()
+            if ok:
+                stack_detail = (
+                    f"{stack_detail}\nOneHand reloaded (Aurum left running)."
+                ).strip()
+            elif not errors:
+                errors = (
+                    f"Settings written, but the game did not start: "
+                    f"{_short_fail(start_detail)} (log: {log_path})",
+                )
 
     sas_lock_note = ""
     wrote_sas = sections is None or "sas" in sections

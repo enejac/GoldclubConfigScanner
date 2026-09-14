@@ -1088,6 +1088,31 @@ def test_lock_when_no_sas_is_not_restart_or_ramclear() -> None:
     assert "RAM clear" not in body
 
 
+def test_format_live_push_apply_status_includes_files_and_game() -> None:
+    from config_scanner.live_push import (
+        LIVE_PUSH_APPLY_SLOTLOG_HINT,
+        LivePushResult,
+        format_live_push_apply_status,
+    )
+
+    result = LivePushResult(
+        ("slot/themes/mgconfig.xml",),
+        (),
+        (),
+        True,
+        True,
+        "OneHand reloaded (Aurum left running).",
+        sections=("mgconfig",),
+    )
+    text = format_live_push_apply_status(result)
+    assert "Wrote 1 file(s)." in text
+    assert "Sections: mgconfig." in text
+    assert "Game was stopped." in text
+    assert "Game started." in text
+    assert "invalid market" in LIVE_PUSH_APPLY_SLOTLOG_HINT
+    assert "Check SlotLog" in LIVE_PUSH_APPLY_SLOTLOG_HINT
+
+
 def test_cashout_modes_include_cashless() -> None:
     from config_scanner.live_push import CASHOUT_MODES, LIVE_OPTION_HELP
 
@@ -1100,6 +1125,8 @@ def test_cashout_modes_include_cashless() -> None:
 
 def test_cashout_only_is_not_restart_or_ramclear() -> None:
     from config_scanner.live_push import (
+        live_push_apply_mode,
+        live_push_onehand_reload_reasons,
         live_push_ramclear_reasons,
         live_push_restart_required_reasons,
     )
@@ -1111,6 +1138,130 @@ def test_cashout_only_is_not_restart_or_ramclear() -> None:
     form.play_limits.cashout_button_mode = "Cashless"
     assert live_push_restart_required_reasons(live, form) == ()
     assert live_push_ramclear_reasons(live, form) == ()
+    assert live_push_onehand_reload_reasons(live, form) == ("Cashout button",)
+    assert live_push_apply_mode(
+        kind="slot",
+        restart_stack=False,
+        onehand_reload_reasons=("Cashout button",),
+    ) == "onehand"
+    assert live_push_apply_mode(
+        kind="slot",
+        restart_stack=True,
+        onehand_reload_reasons=("Cashout button",),
+    ) == "onehand"
+    assert live_push_apply_mode(
+        kind="slot",
+        restart_stack=True,
+        restart_reasons=("SAS enable / AFT",),
+        onehand_reload_reasons=("Cashout button",),
+    ) == "fullstack"
+    assert live_push_apply_mode(
+        kind="slot",
+        restart_stack=False,
+        restart_reasons=("market",),
+        onehand_reload_reasons=("Cashout button",),
+    ) == "write"
+
+
+def _track_slot_restack(monkeypatch) -> list[str]:
+    order: list[str] = []
+
+    def _kill(_target, *, stop_aurum=True):
+        order.append("slot-kill")
+        order.append(f"stop_aurum={stop_aurum}")
+        return True, "stopped"
+
+    def _start(_target, dest=None):
+        order.append("slot-start")
+        return True, "game-start"
+
+    monkeypatch.setattr("config_scanner.live_push.goldclub_stack_kind", lambda _r: "slot")
+    monkeypatch.setattr("config_scanner.live_push.run_slot_stack_kill", _kill)
+    monkeypatch.setattr("config_scanner.live_push.run_slot_stack_start", _start)
+    monkeypatch.setattr(
+        "config_scanner.live_push.restart_slot_hwsubsys",
+        lambda *_a, **_k: (order.append("hwsubsys") or True, "hw ok"),
+    )
+    monkeypatch.setattr(
+        "config_scanner.live_push.run_slot_ramclear",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("no ramclear")),
+    )
+    monkeypatch.setattr(
+        "config_scanner.live_push.run_stack_kill",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("roulette kill")),
+    )
+    return order
+
+
+def test_commit_cashout_only_reloads_onehand_not_fullstack(
+    tmp_path: Path, monkeypatch
+) -> None:
+    gold = _fake_goldclub(tmp_path)
+    recipe = load_recipe_from_goldclub(gold, label="live")
+    assert recipe.play_limits.cashout_button_mode == "Ticket"
+    recipe.play_limits.cashout_button_mode = "Cashless"
+    order = _track_slot_restack(monkeypatch)
+    result = commit_live_push(
+        recipe,
+        gold,
+        restart_stack=False,
+        scan_target=str(gold),
+        work_parent=tmp_path / "work-cashout",
+        backup=False,
+    )
+    assert result.ok, result.errors
+    assert result.stack_started is True
+    assert order == ["slot-kill", "stop_aurum=False", "slot-start"]
+    assert "OneHand reloaded" in result.stack_detail
+    mg = (gold / "slot" / "themes" / "mgconfig.xml").read_text(encoding="utf-8")
+    assert "<CashoutButtonMode>Cashless</CashoutButtonMode>" in mg
+
+
+def test_commit_cashout_only_skips_fullstack_when_restart_checked(
+    tmp_path: Path, monkeypatch
+) -> None:
+    gold = _fake_goldclub(tmp_path)
+    recipe = load_recipe_from_goldclub(gold, label="live")
+    recipe.play_limits.cashout_button_mode = "Cashless"
+    order = _track_slot_restack(monkeypatch)
+    result = commit_live_push(
+        recipe,
+        gold,
+        restart_stack=True,
+        scan_target=str(gold),
+        work_parent=tmp_path / "work-cashout-restart",
+        backup=False,
+    )
+    assert result.ok, result.errors
+    assert order == ["slot-kill", "stop_aurum=False", "slot-start"]
+    assert "hwsubsys" not in order
+
+
+def test_commit_cashout_plus_aft_still_fullstacks(
+    tmp_path: Path, monkeypatch
+) -> None:
+    gold = _fake_goldclub(tmp_path)
+    recipe = load_recipe_from_goldclub(gold, label="live")
+    recipe.play_limits.cashout_button_mode = "Cashless"
+    recipe.sas.aft_enabled = not bool(recipe.sas.aft_enabled)
+    order = _track_slot_restack(monkeypatch)
+    result = commit_live_push(
+        recipe,
+        gold,
+        restart_stack=True,
+        scan_target=str(gold),
+        work_parent=tmp_path / "work-cashout-aft",
+        backup=False,
+    )
+    assert result.ok, result.errors
+    assert order == [
+        "slot-kill",
+        "stop_aurum=True",
+        "hwsubsys",
+        "slot-kill",
+        "stop_aurum=False",
+        "slot-start",
+    ]
 
 
 def test_live_push_restart_required_reasons_full_pack_and_licences() -> None:

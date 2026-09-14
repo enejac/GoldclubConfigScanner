@@ -228,7 +228,7 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         "slot/themes/mgconfig.xml",
         "TransferParameters/CashoutButtonMode",
         "scalar",
-        notes="Ticket, Handpay, or Cashless. Not restart-required.",
+        notes="Ticket, Handpay, or Cashless. Apply reloads OneHand only.",
     ),
     _spec(
         "ui.partial_payout",
