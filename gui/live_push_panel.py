@@ -714,6 +714,8 @@ class LivePushPanel(QWidget):
         self._licence_goldclub: Path | None = None
         self._licence_pack_origin = ""
         self._onehand_markets: frozenset[str] | None = None
+        # slot\languages + jurisdiction_config <Languages> of the loaded root.
+        self._cabinet_languages = None
         self._dallas_busy = False
         self._slotlog_findings: list[SlotLogFinding] = []
         self._fleet_scanning = False
@@ -881,7 +883,7 @@ class LivePushPanel(QWidget):
         self._culture.addItems(list(self._catalog["cultures"]))
         self._language = QComboBox()
         self._language.setEditable(True)
-        self._language.addItems(list(self._catalog["languages"]))
+        self._fill_language_combo()
         self._market = QComboBox()
         self._market.setEditable(True)
         self._fill_market_combo()
@@ -1908,6 +1910,8 @@ class LivePushPanel(QWidget):
             self._status.setText(msg)
             self._goldclub = None
             self._display_corruption = {}
+            self._cabinet_languages = None
+            self._fill_language_combo()
             self._update_licence_ui(None)
             self._set_onehand_build_label(None)
             self._paint_live_highlights()
@@ -1923,6 +1927,10 @@ class LivePushPanel(QWidget):
             # re-scan it on the GUI thread.
             self._onehand_markets = outcome.onehand_markets
             self._fill_market_combo(keep=outcome.recipe.jurisdiction.tag)
+            # Languages are per cabinet (slot\languages differs between
+            # EGMs); rebuild the combo from this root before filling the form.
+            self._cabinet_languages = outcome.languages
+            self._fill_language_combo(keep=outcome.recipe.mg_identity.language)
         self._fill_form(outcome.recipe)
         self._update_ticket_hint(
             outcome.root, printer_on=outcome.ticket_printer_active
@@ -2632,6 +2640,40 @@ class LivePushPanel(QWidget):
         if self._loaded is not None and self._loaded.denomination_list:
             return tuple(int(d) for d in self._loaded.denomination_list)
         return tuple(self._parse_denoms())
+
+    def _language_choices(self) -> list[tuple[str, str]]:
+        """``(label, name)`` rows: the cabinet's installed translations, else the catalog."""
+        langs = self._cabinet_languages
+        installed = tuple(getattr(langs, "installed", ()) or ())
+        if installed:
+            pack = {name.casefold() for name in (getattr(langs, "pack", ()) or ())}
+            rows: list[tuple[str, str]] = []
+            for item in installed:
+                label = f"{item.name} — {item.code}"
+                if item.name.casefold() in pack:
+                    label += "  (in pack)"
+                rows.append((label, item.name))
+            return rows
+        return [(name, name) for name in self._catalog["languages"]]
+
+    def _fill_language_combo(self, *, keep: str = "") -> None:
+        current = (keep or _combo_code(self._language)).strip()
+        was = self._applying
+        self._applying = True
+        try:
+            self._language.blockSignals(True)
+            self._language.clear()
+            for label, name in self._language_choices():
+                self._language.addItem(label, name)
+            if current:
+                _set_combo_code(self._language, current, editable_ok=True)
+            else:
+                self._language.setCurrentIndex(-1)
+                if self._language.isEditable():
+                    self._language.setEditText("")
+        finally:
+            self._language.blockSignals(False)
+            self._applying = was
 
     def _fill_market_combo(self, *, keep: str = "") -> None:
         codes = ordered_live_markets(
