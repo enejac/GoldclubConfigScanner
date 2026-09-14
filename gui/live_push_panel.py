@@ -345,9 +345,9 @@ def _group_form(title: str) -> tuple[QGroupBox, QFormLayout]:
     """A group box whose rows are tight enough to read several side by side."""
     box = QGroupBox(title)
     form = QFormLayout(box)
-    form.setContentsMargins(10, 6, 10, 8)
-    form.setHorizontalSpacing(10)
-    form.setVerticalSpacing(6)
+    form.setContentsMargins(12, 8, 12, 10)
+    form.setHorizontalSpacing(16)
+    form.setVerticalSpacing(8)
     form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
     form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
     return box, form
@@ -1015,8 +1015,8 @@ class LivePushPanel(QWidget):
             alert.setCurrentText("BOTH" if name == "cabinet_door" else "SEMAPHORE")
             row = QWidget()
             row_l = QHBoxLayout(row)
-            row_l.setContentsMargins(0, 0, 0, 0)
-            row_l.setSpacing(6)
+            row_l.setContentsMargins(4, 2, 0, 2)
+            row_l.setSpacing(10)
             row_l.addWidget(auto)
             row_l.addWidget(offline)
             row_l.addWidget(alert, 1)
