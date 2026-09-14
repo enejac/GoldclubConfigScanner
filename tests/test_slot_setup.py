@@ -599,6 +599,25 @@ def test_jackpot_and_magic_wheel_pack(tmp_path: Path) -> None:
     assert "<MoneyLimit>5000</MoneyLimit>" in live_mw
 
 
+def test_patch_mgconfig_play_writes_cashless(tmp_path: Path) -> None:
+    from config_scanner.slot_setup import PlayLimitsSettings, patch_mgconfig_play
+
+    src = tmp_path / "mgconfig.xml"
+    dest = tmp_path / "out.xml"
+    src.write_text(
+        '<?xml version="1.0"?>\n'
+        "<Multigamer><TransferParameters>"
+        "<CashoutButtonMode>Ticket</CashoutButtonMode>"
+        "</TransferParameters></Multigamer>\n",
+        encoding="utf-8",
+    )
+    patch_mgconfig_play(
+        src, dest, PlayLimitsSettings(cashout_button_mode="Cashless")
+    )
+    text = dest.read_text(encoding="utf-8")
+    assert "<CashoutButtonMode>Cashless</CashoutButtonMode>" in text
+
+
 _TITO_FUTURE = (
     ".[GoldClub.HW.Subsys.Driver.INodeRoot].[tcp://127.0.0.1:30400]."
     "[GoldClub.HW.Subsys.Driver.TicketPrinter.FutureLogic.PSA66ST2]"

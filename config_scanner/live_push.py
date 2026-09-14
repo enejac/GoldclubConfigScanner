@@ -768,7 +768,7 @@ MAGIC_WHEEL_AVERAGES: tuple[int, ...] = (
 JACKPOT_COUNTERS: tuple[int, ...] = (0, 1, 2, 3, 4, 5)
 JACKPOT_LAYOUTS: tuple[str, ...] = ("jackpotreceipt0", "jackpotreceipt1")
 CELEBRATION_LIMITS: tuple[str, ...] = ("LockAndHandpay", "Handpay", "Ticket")
-CASHOUT_MODES: tuple[str, ...] = ("Ticket", "Handpay")
+CASHOUT_MODES: tuple[str, ...] = ("Ticket", "Handpay", "Cashless")
 DEFAULT_BETS: tuple[str, ...] = ("Minimum", "Maximum", "Last")
 
 # Start Aurum if Live Push / a filtered goldclub token left it down.
@@ -2520,7 +2520,12 @@ LIVE_OPTION_HELP: dict[str, str] = {
     "Jackpot counters": "How many progressive / jackpot counters the UI shows.",
     "Jackpot receipt": "Jackpot receipt / ticket layout style.",
     "Jackpot celebration": "Celebration screen limit / style after a jackpot.",
-    "Cashout button": "How the cashout button behaves (e.g. collect / handpay).",
+    "Cashout button": (
+        "Writes mgconfig TransferParameters/CashoutButtonMode: Ticket, "
+        "Handpay, or Cashless. Not a restart-required field. Cashless is "
+        "WAT-to-host (Collect trigger with MODE:Cashless) and needs AFT/WAT "
+        "— without a host, OneHand falls back to handpay."
+    ),
     "Default bet": "Default bet selection when a game opens.",
     "Show denom selector": (
         "Show the on-screen denomination picker in the game UI."

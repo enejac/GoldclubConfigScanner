@@ -1088,6 +1088,31 @@ def test_lock_when_no_sas_is_not_restart_or_ramclear() -> None:
     assert "RAM clear" not in body
 
 
+def test_cashout_modes_include_cashless() -> None:
+    from config_scanner.live_push import CASHOUT_MODES, LIVE_OPTION_HELP
+
+    assert CASHOUT_MODES == ("Ticket", "Handpay", "Cashless")
+    help_text = LIVE_OPTION_HELP["Cashout button"]
+    assert "Cashless" in help_text
+    assert "not a restart-required" in help_text.casefold()
+    assert "CashoutButtonMode" in help_text
+
+
+def test_cashout_only_is_not_restart_or_ramclear() -> None:
+    from config_scanner.live_push import (
+        live_push_ramclear_reasons,
+        live_push_restart_required_reasons,
+    )
+    from config_scanner.slot_setup import SlotSetupRecipe
+
+    live = SlotSetupRecipe()
+    live.play_limits.cashout_button_mode = "Ticket"
+    form = SlotSetupRecipe.from_dict(live.to_dict())
+    form.play_limits.cashout_button_mode = "Cashless"
+    assert live_push_restart_required_reasons(live, form) == ()
+    assert live_push_ramclear_reasons(live, form) == ()
+
+
 def test_live_push_restart_required_reasons_full_pack_and_licences() -> None:
     from config_scanner.live_push import live_push_restart_required_reasons
     from config_scanner.slot_setup import SlotSetupRecipe
