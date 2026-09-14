@@ -659,6 +659,50 @@ def test_live_push_footer_keeps_apply_beside_options(
     assert panel._restore_backup.text().startswith("Restore backup")
 
 
+def test_apply_success_stays_in_panel_not_popup(
+    qt_app: QApplication, monkeypatch
+) -> None:
+    from PySide6.QtWidgets import QMessageBox
+
+    from config_scanner.live_push import (
+        LIVE_PUSH_APPLY_SLOTLOG_HINT,
+        LivePushResult,
+    )
+    from gui.live_push_panel import LivePushPanel
+
+    panel = LivePushPanel(autoload=False)
+    panel.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    panel.show()
+    qt_app.processEvents()
+    monkeypatch.setattr(panel, "_load", lambda: None)
+    monkeypatch.setattr(panel, "_start_slotlog_review", lambda **_k: None)
+    popups: list[str] = []
+
+    def _no_info(*_a, **_k):
+        popups.append("information")
+        return QMessageBox.StandardButton.Ok
+
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(_no_info))
+    panel._on_finished(
+        LivePushResult(
+            ("slot/themes/mgconfig.xml",),
+            (),
+            (),
+            True,
+            True,
+            "OneHand reloaded (Aurum left running).",
+            sections=("mgconfig",),
+        )
+    )
+    qt_app.processEvents()
+    assert popups == []
+    body = panel._apply_result.text()
+    assert "Wrote 1 file(s)." in body
+    assert "Sections: mgconfig." in body
+    assert LIVE_PUSH_APPLY_SLOTLOG_HINT in body
+    assert panel._apply_result.isVisible()
+
+
 def test_door_switch_defaults_match_111_and_auto_unlock_all(
     qt_app: QApplication,
 ) -> None:
