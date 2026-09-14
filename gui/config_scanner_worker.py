@@ -37,6 +37,7 @@ class ConfigScannerEmitter(QObject):
     repairs_diagnosed = Signal(bool, object, str)
     repairs_applied = Signal(bool, object, str)
     target_validated = Signal(str, bool, int)  # path, valid, seq
+    live_version_ready = Signal(str, str, int)  # target, version, seq
 
 
 @dataclass(frozen=True)
@@ -123,6 +124,37 @@ class _ValidateTargetRunnable(QRunnable):
     def run(self) -> None:
         valid = bool(self._raw_target) and self._service.is_scan_target_valid(self._raw_target)
         self._emitter.target_validated.emit(self._raw_target, valid, self._seq)
+
+
+class _LiveVersionRunnable(QRunnable):
+    """Read ProductVersion off the UI thread (UNC OneHand.exe is a large SMB pull)."""
+
+    def __init__(
+        self,
+        target: str,
+        profile_id: str | None,
+        emitter: ConfigScannerEmitter,
+        seq: int,
+    ) -> None:
+        super().__init__()
+        self.setAutoDelete(True)
+        self._target = (target or "").strip()
+        self._profile_id = profile_id
+        self._emitter = emitter
+        self._seq = seq
+
+    def run(self) -> None:
+        version = ""
+        if self._target:
+            try:
+                from config_scanner.egm_ui_labels import live_exe_version_for_target
+
+                version = live_exe_version_for_target(
+                    self._target, profile_id=self._profile_id
+                ) or ""
+            except OSError:
+                version = ""
+        self._emitter.live_version_ready.emit(self._target, version, self._seq)
 
 
 class _PrepareScanTargetRunnable(QRunnable):
@@ -552,6 +584,17 @@ def schedule_validate_scan_target(
     seq: int = -1,
 ) -> None:
     pool.start(_ValidateTargetRunnable(service, raw_target, emitter, seq=seq))
+
+
+def schedule_live_exe_version(
+    pool: QThreadPool,
+    target: str,
+    profile_id: str | None,
+    emitter: ConfigScannerEmitter,
+    *,
+    seq: int,
+) -> None:
+    pool.start(_LiveVersionRunnable(target, profile_id, emitter, seq))
 
 
 def schedule_prepare_scan_target(

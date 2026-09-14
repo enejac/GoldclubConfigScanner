@@ -27,9 +27,9 @@ from pathlib import Path
 
 from config_scanner.bill_tokens_view import format_bill_notes_snapshot
 from config_scanner.build_version import OneHandBuildInfo, detect_onehand_build
+from config_scanner.language_flags import COUNTRY_FLAG_LABEL, flags_snapshot
 from config_scanner.denom_compat import (
     apply_magic_wheel_for_denom,
-    bet_multiplier_preset_labels,
     denom_combo_choices,
     denomination_lists_equal,
     inspect_link2win_math,
@@ -74,10 +74,13 @@ from config_scanner.slot_setup import (
 )
 from config_scanner.stack_restart import (
     plan_stack_restart,
+    remote_winrm_ready,
     run_stack_kill,
     run_stack_start,
     running_on_egm,
+    stack_stop_unreachable,
     unc_host_from_target,
+    winrm_skip_detail,
 )
 
 ProgressFn = Callable[[str], None]
@@ -694,10 +697,13 @@ def wait_for_dallas_from_hardware(
     )
 
 
-# Derived from jurisdictions.json so the dropdown cannot offer a list
-# Apply will reject. Link2Win game-pack ``Bet`` rows are denom coverage,
-# not this list.
-BET_MULTIPLIER_PRESETS: tuple[str, ...] = bet_multiplier_preset_labels()
+BET_MULTIPLIER_PRESETS: tuple[str, ...] = (
+    "1, 2, 3, 4, 5, 8, 10, 12, 15",
+    "1, 2, 3, 4, 5",
+    "4, 8, 12",
+    "1, 2, 5, 10",
+    "1, 5, 10, 20",
+)
 
 CURRENCY_SYMBOL_CHOICES: tuple[str, ...] = (
     "$",
@@ -1327,6 +1333,7 @@ _LABEL_SECTIONS: dict[str, frozenset[str]] = {
     "Currency symbol": frozenset({"mgconfig", "jurisdiction"}),
     "Culture": frozenset({"mgconfig", "jurisdiction"}),
     "Language": frozenset({"mgconfig", "jurisdiction"}),
+    COUNTRY_FLAG_LABEL: frozenset({"jurisdiction"}),
     "Market": frozenset({"mgconfig", "jurisdiction"}),
     "Denoms (cents)": frozenset(
         {"mgconfig", "jurisdiction", "link2win", "magicwheel", "math"}
@@ -1382,6 +1389,8 @@ def live_push_ramclear_reasons(
     When ``aurum_currency`` is provided (including empty string), a mismatch
     against the form jurisdiction currency is also a ramclear reason.
     """
+    from config_scanner.denom_compat import denomination_lists_equal
+
     reasons: list[str] = []
     live_c = (
         live.jurisdiction.currency_name or live.hardware_currency_name or ""
@@ -1404,8 +1413,9 @@ def live_push_ramclear_reasons(
             else:
                 reasons.append(f"Aurum currency missing → set {form_c}")
 
+    live_denoms = list(live.denomination_list or [])
     form_denoms = [int(x) for x in (form.denomination_list or [])]
-    if form_denoms and not denoms_effectively_equal(live, form):
+    if form_denoms and not denomination_lists_equal(form_denoms, live_denoms):
         reasons.append("denomination list")
 
     form_mults = list(form.play_limits.bet_multipliers or [])
@@ -1420,6 +1430,134 @@ def live_push_ramclear_reasons(
     return tuple(reasons)
 
 
+LIVE_PUSH_RESTART_REQUIRED_TITLE = "Full stack restart required"
+LIVE_PUSH_RAMCLEAR_RESTART_TITLE = "RAM clear and restart required"
+LIVE_PUSH_WRITE_AND_RESTART = "Write and restart"
+
+# Only writes that will not appear (or will NRE) until restack / ramclear.
+# SAS address, lock-when-no-comms, and channel checkboxes are ordinary
+# deltas — they use the normal Apply confirm, not this warning.
+_SAS_RESTART_LABELS = frozenset({"SAS enabled", "AFT", "Funds transfer"})
+_CURRENCY_RESTART_LABELS = frozenset(
+    {"Currency", "Currency symbol", "Denoms (cents)", "Bet multipliers"}
+)
+_LANGUAGE_RESTART_LABELS = frozenset(
+    {"Language", COUNTRY_FLAG_LABEL, "Culture"}
+)
+_DISPLAY_RESTART_LABELS = frozenset({"Display layout", "Button deck"})
+_BILL_TICKET_RESTART_LABELS = frozenset(
+    {"Bill protocol", "Ticket printer"}
+)
+
+
+def live_push_ramclear_notice(reasons: Sequence[str]) -> str:
+    """Operator line when a slot RAM clear will run. Empty if none."""
+    if not reasons:
+        return ""
+    return (
+        "A RAM clear will run after write (required for: "
+        + ", ".join(reasons)
+        + "). That resets meters."
+    )
+
+
+def live_push_restart_reason_for_label(label: str) -> str | None:
+    """Group name if this snapshot label needs the restart warning, else None."""
+    if label in _CURRENCY_RESTART_LABELS:
+        return "currency, denoms, or bet steps"
+    if label in _LANGUAGE_RESTART_LABELS:
+        return "language or country flag"
+    if label == "Market":
+        return "market"
+    if label in _DISPLAY_RESTART_LABELS:
+        return "display layout or button deck"
+    if label in _SAS_RESTART_LABELS:
+        return "SAS enable / AFT"
+    if label in _BILL_TICKET_RESTART_LABELS:
+        return "bill or ticket protocol"
+    return None
+
+
+def live_push_restart_required_reasons(
+    live: SlotSetupRecipe,
+    form: SlotSetupRecipe,
+    *,
+    full_pack: bool = False,
+    push_licences: bool = False,
+    goldclub: Path | None = None,
+) -> tuple[str, ...]:
+    """Why Apply must restart — empty for ordinary deltas such as SAS lock.
+
+    Currency / denoms / bets, language, market, display, SAS enable or AFT,
+    Link2Win restage, licence copy, and Write full pack. Not lock-when-no-comms,
+    SAS address, or channel checkboxes.
+    """
+    reasons: list[str] = []
+    seen: set[str] = set()
+
+    def _add(reason: str | None) -> None:
+        if reason and reason not in seen:
+            seen.add(reason)
+            reasons.append(reason)
+
+    for line in recipe_change_lines(live, form):
+        label = line.split(":", 1)[0].strip()
+        _add(live_push_restart_reason_for_label(label))
+    if goldclub is not None:
+        from config_scanner.denom_compat import link2win_restage_change_line
+
+        if link2win_restage_change_line(live, form, Path(goldclub)):
+            _add("Link2Win math files")
+    if full_pack:
+        _add("full config pack rewrite")
+    if push_licences:
+        _add("licence files")
+    return tuple(reasons)
+
+
+def live_push_restart_required_text(
+    *,
+    kind: str,
+    change_lines: Sequence[str],
+    ramclear_reasons: Sequence[str] = (),
+    full_pack: bool = False,
+    backup: bool = False,
+    push_licences: bool = False,
+) -> str:
+    """Plain-language body for the restart-required Apply dialog."""
+    parts: list[str] = [
+        "The game is still running, so it will keep the old settings.",
+    ]
+    ramclear_line = live_push_ramclear_notice(ramclear_reasons)
+    if ramclear_line:
+        parts.append(ramclear_line)
+    parts.append("A full stack restart is required before the new settings appear.")
+    if change_lines:
+        parts.append("What will be written:\n• " + "\n• ".join(change_lines))
+    elif full_pack:
+        parts.append("The full Live Push config pack will be rewritten.")
+    if full_pack and change_lines:
+        parts.append("Full pack: all Live Push config files will be rewritten.")
+    if backup:
+        parts.append("A backup of those live files is taken first.")
+    if push_licences:
+        parts.append(
+            "Missing licence XML / licence.dll will be copied next to "
+            "OneHand (existing licence files are not overwritten)."
+        )
+    if kind == "slot":
+        parts.append(
+            "Write and restart will stop the game, write the files, then "
+            "start it again. Windows will not reboot."
+        )
+    else:
+        parts.append(
+            "Write and restart will stop the game, write the files, then "
+            "start the stack again. Windows will not reboot."
+        )
+    return "\n\n".join(parts)
+
+
 def run_slot_ramclear(scan_target: str) -> tuple[bool, str]:
     """Run the vendor slot ramclear maintenance task (game must already be stopped)."""
     from config_scanner.cabinet_repairs import (
@@ -1427,6 +1565,11 @@ def run_slot_ramclear(scan_target: str) -> tuple[bool, str]:
         _repair_ramclear,
         build_context,
     )
+
+    if not _slot_target_is_local(scan_target):
+        host = unc_host_from_target(scan_target) or ""
+        if not remote_winrm_ready(host):
+            return False, winrm_skip_detail(host)
 
     try:
         ctx = build_context(scan_target, "slot")
@@ -1512,6 +1655,8 @@ def restart_slot_hwsubsys(scan_target: str) -> tuple[bool, str]:
         if local:
             return _run_local_powershell(script, timeout=150)
         host = unc_host_from_target(scan_target) or ""
+        if not remote_winrm_ready(host):
+            return False, winrm_skip_detail(host)
         from automation.remote_exec import winrm_run_inline
         from network.lab_access import require_lab_fleet_ip
 
@@ -1639,7 +1784,7 @@ def live_push_catalog() -> dict[str, tuple[str, ...]]:
         "languages": _unique(languages),
         "markets": ordered_live_markets(_unique(markets)),
         "denoms": _unique(denoms),
-        "bet_multipliers": bet_multiplier_preset_labels(),
+        "bet_multipliers": BET_MULTIPLIER_PRESETS,
         "symbols": CURRENCY_SYMBOL_CHOICES,
         "magic_wheel_limits": tuple(str(v) for v in MAGIC_WHEEL_LIMITS),
         "jackpot_layouts": JACKPOT_LAYOUTS,
@@ -2086,13 +2231,13 @@ def live_field_matches(live: SlotSetupRecipe, form: SlotSetupRecipe) -> dict[str
     return out
 
 
-LIVE_FIELD_TOOLTIP_MATCH = (
-    "Green: matches the live cabinet. No change will be written for this field."
-)
 LIVE_FIELD_TOOLTIP_ADVISORY = (
     "Amber: a scanner rule disagrees with the running cabinet, which already "
-    "has this value and the game is up. Not blocking — nothing is written for "
+    "has this value and the game is up. Not blocking -- nothing is written for "
     "this field unless you change it."
+)
+LIVE_FIELD_TOOLTIP_MATCH = (
+    "Green: matches the live cabinet. No change will be written for this field."
 )
 LIVE_FIELD_TOOLTIP_CHANGED = (
     "Orange: editable in Live Push and your value differs from the live cabinet. "
@@ -2121,7 +2266,16 @@ LIVE_OPTION_HELP: dict[str, str] = {
         "Initial game language. On 2.0.1+ images this is the first entry of "
         "jurisdiction_config <Languages> and the list offers only the "
         "translations installed in slot\\languages on this cabinet; older "
-        "images use mgconfig <Language>."
+        "images use mgconfig <Language>. This is not the picture on the "
+        f"console button — use {COUNTRY_FLAG_LABEL} for that."
+    ),
+    COUNTRY_FLAG_LABEL: (
+        "Picture on the console language button (jurisdiction_config "
+        "Languages / TexturePath). Filenames are language tokens "
+        "(flag_spanish.png or .dds) and often do not match the country in "
+        "the bitmap — Puerto Rico packs commonly wire Spanish to a PR flag. "
+        "Pick by the thumbnail. First language in the list is still the "
+        "Language row (the default), not this picture."
     ),
     "Market": (
         "Target market / jurisdiction tag (mgconfig TargetMarket). Choosing a "
@@ -2137,11 +2291,8 @@ LIVE_OPTION_HELP: dict[str, str] = {
         "Link2WinBonusMath.json already contains that denom (red if it does not)."
     ),
     "Bet multipliers": (
-        "Bet steps written to each slot theme MathSettings.xml "
-        "(not RouletteGame or Link2WinFeature). Must match an approved "
-        "market setup (currently 1,2,3,4,5,8,10,12,15). Country-pack "
-        "Link2Win Bet/Denom rows only gate denoms — they do not restrict "
-        "these steps if a title cannot play them."
+        "Bet multiplier list offered to the player. Must match an approved bet "
+        "setup for the selected denoms / market."
     ),
     "Magic wheel limit": (
         "Maximum money the magic wheel can award. Written to "
@@ -2296,6 +2447,7 @@ LIVE_FIELD_CONFIG_RELS: dict[str, tuple[str, ...]] = {
     "Currency symbol": (_JURISDICTION_REL, _MGCONFIG_REL),
     "Culture": (_JURISDICTION_REL,),
     "Language": (_JURISDICTION_REL, _MGCONFIG_REL),
+    COUNTRY_FLAG_LABEL: (_JURISDICTION_REL,),
     "Market": (_MGCONFIG_REL, _JURISDICTION_REL),
     "Denoms (cents)": (
         _MGCONFIG_REL,
@@ -2366,10 +2518,8 @@ for _name in STANDARD_DOOR_SWITCH_NAMES:
 # Tags OneHand paints on the game DENOM / credit labels. UTF-8 cent or a
 # leftover '?' here is what shows as ``5?¢`` on cabinet.
 _DISPLAY_TEXT_TAGS: dict[str, tuple[str, ...]] = {
-    # Base (cent) tags are the DENOM label only. ``Currency symbol`` in the
-    # form is <CurrencySymbol> ($); a cent-tag finding must not paint it.
-    "CurrencyBaseSymbol": ("Denoms (cents)",),
-    "CurrencyBaseFormat": ("Denoms (cents)",),
+    "CurrencyBaseSymbol": ("Denoms (cents)", "Currency symbol"),
+    "CurrencyBaseFormat": ("Denoms (cents)", "Currency symbol"),
     "CurrencyShortSymbol": ("Currency symbol",),
     "CurrencyShortFormat": ("Currency", "Denoms (cents)"),
     "CurrencyLongFormat": ("Currency", "Denoms (cents)"),
@@ -2392,45 +2542,31 @@ _DISPLAY_TAG_PATTERN = re.compile(
 )
 
 
-# UTF-8 bytes re-read as ANSI (cp1252): ``¢`` -> ``Â¢``, ``€`` -> ``â‚¬``.
-_MOJIBAKE_RE = re.compile("[\u00c2\u00c3][\u0080-\u00bf]|\u00e2[\u0080-\u00bf\u20ac\u201a\u0192]")
-
-# Latin-1 currency glyphs a valid UTF-8 jurisdiction_config may carry. .NET
-# honours the XML encoding declaration, so these are read correctly; lab
-# .76 (GameStar 3.0 Debug) paints ``1¢`` on DENOM with <CurrencyBaseSymbol>¢<.
-_CLEAN_CURRENCY_GLYPHS = frozenset("\u00a2\u00a3\u00a5\u20ac")
-
-
 def display_text_anomalies(text: str) -> tuple[str, ...]:
-    """Reasons a live XML / form string will render as garbage on OneHand.
-
-    Only *evidence* of corruption counts: replacement char, literal ``?``,
-    undefined ``&cent;`` entity, control chars, or mojibake (``Â¢``). A clean
-    ``¢`` / ``€`` is not corruption — a working cabinet proved that.
-    """
+    """Reasons a live XML / form string will render as garbage on OneHand."""
     raw = text if text is not None else ""
     if raw == "":
         return ()
     reasons: list[str] = []
     if "\ufffd" in raw:
         reasons.append("Unicode replacement character")
-    if _MOJIBAKE_RE.search(raw):
-        reasons.append("mojibake (UTF-8 bytes read as ANSI, shows as Â¢ / â‚¬)")
+    if "\u00a2" in raw or "¢" in raw:
+        reasons.append("UTF-8 cent sign (shows as ?¢ on DENOM)")
     if "?" in raw:
         reasons.append("literal '?'")
     low = raw.casefold()
-    if "&cent;" in low:
-        reasons.append("undefined XML entity &cent; (parser error)")
+    if "&cent;" in low or "&#162;" in low or "&#xa2;" in low:
+        reasons.append("HTML cent entity (shows as ?¢ on DENOM)")
     if any(ord(ch) < 32 and ch not in "\t\n\r" for ch in raw):
         reasons.append("control character")
     extras = [
         ch
         for ch in raw
-        if ord(ch) > 127 and ch not in _CLEAN_CURRENCY_GLYPHS and ch != "\ufffd"
+        if ord(ch) > 127 and ch not in ("\u00a2", "¢", "\ufffd")
     ]
-    if extras and not _MOJIBAKE_RE.search(raw):
+    if extras:
         shown = "".join(dict.fromkeys(extras))[:6]
-        reasons.append(f"non-ASCII {shown!r} (check the DENOM label renders it)")
+        reasons.append(f"non-ASCII {shown!r} (OneHand reads ANSI)")
     return tuple(reasons)
 
 
@@ -2613,7 +2749,7 @@ def live_baseline_validation_errors(
 ) -> list[str]:
     """Validation errors the *running* cabinet raises against itself.
 
-    ``validate(live, live)`` cannot describe a broken push — nothing is
+    ``validate(live, live)`` cannot describe a broken push -- nothing is
     proposed. Anything it returns is a scanner rule that disagrees with a
     cabinet whose game is up, so those messages are advisory, never red.
     """
@@ -2764,6 +2900,8 @@ def _revert_live_push_label(
         out.jurisdiction.culture_name = live.jurisdiction.culture_name
     elif label == "Language":
         out.mg_identity.language = live.mg_identity.language
+    elif label == COUNTRY_FLAG_LABEL:
+        out.jurisdiction.language_flags = list(live.jurisdiction.language_flags)
     elif label == "Market":
         out.jurisdiction.tag = live.jurisdiction.tag
     elif label == "Denoms (cents)":
@@ -2864,11 +3002,7 @@ def live_field_highlight_state(
     invalid_reason: str = "",
     advisory_reason: str = "",
 ) -> str:
-    """Return ``match``, ``changed``, ``editable``, ``invalid``, ``advisory`` or ``none``.
-
-    ``advisory`` (amber) is a scanner doubt about the cabinet it cannot prove
-    — the game runs with this value. It never blocks Apply.
-    """
+    """Return ``match``, ``changed``, ``editable``, ``invalid``, ``advisory`` or ``none``."""
     if invalid_reason:
         return "invalid"
     if advisory_reason:
@@ -3454,9 +3588,13 @@ def slot_stop_unreachable(detail: str) -> bool:
 
     Retrying, or trying to *start* the game over the same channel, cannot
     work — but the SMB write path is independent, so settings can still go.
+    Covers both Live Push transport markers and the restore-side
+    ``stack_stop_unreachable`` set (5985 closed / OperationTimeout).
     """
     low = (detail or "").casefold()
-    return any(marker in low for marker in _WINRM_UNREACHABLE_MARKERS)
+    if any(marker in low for marker in _WINRM_UNREACHABLE_MARKERS):
+        return True
+    return stack_stop_unreachable(detail)
 
 
 def winrm_failure_hint(detail: str, host: str) -> str:
@@ -3479,7 +3617,14 @@ def winrm_failure_hint(detail: str, host: str) -> str:
             f"WinRM logon to {who} was refused. Check the lab credential for "
             f"that cabinet (cmdkey /add:{who})."
         )
-    if "cannot connect to the destination" in low or "timed out" in low:
+    if (
+        "cannot connect to the destination" in low
+        or "timed out" in low
+        or "winrmoperationtimeout" in low
+        or "winrm cannot complete the operation" in low
+        or "winrm is not reachable" in low
+        or "no listener" in low
+    ):
         return (
             f"WinRM (TCP 5985) on {who} did not answer. Enable-PSRemoting on the "
             "cabinet, or restart the game there by hand."
@@ -3495,12 +3640,16 @@ def run_slot_stack_kill(scan_target: str) -> tuple[bool, str]:
     _lp_log(f"slot kill local={local} target={scan_target!r}")
     if local:
         _arm_slot_bootstrap_watchdog(scan_target)
+    host = "" if local else (unc_host_from_target(scan_target) or "")
+    if host and not remote_winrm_ready(host):
+        detail = f"Slot stop failed: {winrm_skip_detail(host)}"
+        _lp_log(detail)
+        return False, detail
     last_detail = ""
     for attempt in range(1, 4):
         if local:
             ok, detail = _run_local_powershell(_SLOT_KILL_SCRIPT, timeout=90)
         else:
-            host = unc_host_from_target(scan_target) or ""
             try:
                 from automation.remote_exec import winrm_run_inline
                 from network.lab_access import require_lab_fleet_ip
@@ -3550,6 +3699,10 @@ def run_slot_stack_start(
         _lp_log(f"slot start local result ok={ok} {detail}")
         return ok, detail if ok else f"Slot start failed: {detail}"
     host = unc_host_from_target(scan_target) or ""
+    if not remote_winrm_ready(host):
+        detail = winrm_skip_detail(host)
+        _lp_log(f"slot start skipped: {detail}")
+        return False, f"Slot start failed: {detail}"
     try:
         from automation.remote_exec import winrm_run_inline
         from network.lab_access import require_lab_fleet_ip
@@ -3622,6 +3775,7 @@ def recipe_snapshot_rows(recipe: SlotSetupRecipe) -> tuple[tuple[str, str], ...]
         ("Currency symbol", recipe.jurisdiction.currency_symbol or "—"),
         ("Culture", recipe.jurisdiction.culture_name or "—"),
         ("Language", recipe.mg_identity.language or "—"),
+        (COUNTRY_FLAG_LABEL, flags_snapshot(recipe.jurisdiction.language_flags)),
         ("Market", recipe.jurisdiction.tag or "—"),
         ("Denoms (cents)", _fmt_list(recipe.denomination_list)),
         ("Bet multipliers", _fmt_list(pl.bet_multipliers or (
@@ -3689,9 +3843,12 @@ def overlay_jurisdiction_recipe(
         setattr(out.sas, field, getattr(live.sas, field, True))
     out.door_switches = live.door_switches
     live_mw = live.jurisdiction.magic_wheel_money_limit
+    live_flags = list(live.jurisdiction.language_flags)
     out.jurisdiction = preset_copy.jurisdiction
     if out.jurisdiction.magic_wheel_money_limit is None:
         out.jurisdiction.magic_wheel_money_limit = live_mw
+    if not out.jurisdiction.language_flags:
+        out.jurisdiction.language_flags = live_flags
     if not out.jurisdiction.currency_symbol:
         out.jurisdiction.currency_symbol = currency_symbol_for(
             out.jurisdiction.currency_name
@@ -3909,6 +4066,7 @@ def commit_live_push(
         _lp_log(f"commit abort before stop: {msg}")
         return LivePushResult((), (), (msg,), False, False, msg)
 
+    stop_failed = ""
     slot_stop_failed = ""
     if use_slot:
         _emit(progress, "Stopping the slot game…")
@@ -3928,17 +4086,26 @@ def commit_live_push(
         _emit(progress, "Stopping the game (Kill-All)…")
         ok, stack_detail = run_stack_kill(plan)
         if not ok:
-            if work_parent is None:
-                shutil.rmtree(parent, ignore_errors=True)
-            return LivePushResult(
-                (),
-                (),
-                (stack_detail or "Kill-All failed",),
-                False,
-                False,
-                stack_detail,
-            )
-        stack_killed = True
+            if stack_stop_unreachable(stack_detail):
+                stop_failed = stack_detail
+                _lp_log(
+                    "commit: Kill-All unreachable, writing settings anyway: "
+                    f"{stack_detail[:400]}"
+                )
+                _emit(progress, "Game stop failed — writing settings anyway…")
+            else:
+                if work_parent is None:
+                    shutil.rmtree(parent, ignore_errors=True)
+                return LivePushResult(
+                    (),
+                    (),
+                    (stack_detail or "Kill-All failed",),
+                    False,
+                    False,
+                    stack_detail,
+                )
+        else:
+            stack_killed = True
 
     try:
         if backup and staged_files:
@@ -3989,6 +4156,25 @@ def commit_live_push(
         if sections is not None and "licence" not in sections:
             sections = frozenset(set(sections) | {"licence"})
 
+    if (
+        stop_failed
+        and written
+        and not errors
+        and stack_stop_unreachable(stop_failed)
+    ):
+        host = unc_host_from_target(plan_src) or "the cabinet"
+        game = "OneHand" if use_slot else "the GoldClub stack"
+        errors = (
+            f"Settings written ({len(written)} file(s)), but the game could not "
+            f"be stopped/restarted from this PC — WinRM is not listening on "
+            f"{host}. Restart {game} there for them to take effect "
+            f"(log: {log_path}).",
+        )
+        _lp_log(
+            "commit: skip restart after unreachable stop: "
+            f"{stop_failed[:200]}"
+        )
+
     stack_started = False
     ramclear_ran = False
     ramclear_detail = ""
@@ -4016,10 +4202,15 @@ def commit_live_push(
             if ramclear_reasons
             else ""
         )
+        listen = (
+            f" WinRM is not listening on {host}."
+            if stack_stop_unreachable(slot_stop_failed)
+            else ""
+        )
         head = (
             f"Settings written ({len(written)} file(s)), but the game could not "
             f"be stopped/restarted from this PC — restart OneHand on {host} for "
-            f"them to take effect. {why}{need_rc}"
+            f"them to take effect.{listen} {why}{need_rc}"
             if written
             else f"Nothing was written and the game could not be stopped: {why}"
         )

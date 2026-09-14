@@ -182,8 +182,11 @@ def _truthy(value: str | None) -> bool:
 def run_probe(ctx: RepairContext, script: str, *, timeout: int = 60) -> dict[str, str]:
     """Run a read-only PowerShell probe on the cabinet and parse KEY=VALUE output."""
     if ctx.is_remote:
+        from config_scanner.stack_restart import remote_winrm_ready, winrm_skip_detail
         from automation.remote_exec import winrm_run_inline
 
+        if not remote_winrm_ready(ctx.host):
+            raise RepairError(winrm_skip_detail(str(ctx.host)))
         result = winrm_run_inline(ip=str(ctx.host), script=script, timeout=timeout)
         if result.returncode != 0 and not result.stdout.strip():
             raise RepairError(
@@ -457,6 +460,8 @@ def _repair_slot_licence(ctx: RepairContext) -> RepairOutcome:
 _AURUM_SETUP_REL = "services/aurum/config/AurumSetup.xml"
 _HOST_ELEMENTS = ("NetworkHostName", "ServiceURI", "MessengerURI")
 _HOSTNAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9\-]{1,14}$")
+# Live packs often write <ns0:NetworkHostName>, not a bare tag.
+_XML_NS_PREFIX = r"(?:[A-Za-z_][\w.-]*:)?"
 
 _MACHINE_NAME_PROBE = "'MACHINE=' + [Environment]::MachineName"
 
@@ -506,6 +511,8 @@ def rewrite_aurum_host_tokens(
         return False, f"could not read {setup}: {exc}"
 
     hosts = _aurum_host_names(text)
+    if not hosts:
+        return False, "no NetworkHostName block found"
     stale = [h for h in hosts if h.casefold() != machine.casefold()]
     if not stale:
         return False, f"AurumSetup already targets {machine}"
@@ -514,9 +521,7 @@ def rewrite_aurum_host_tokens(
     patched = text
     for old in stale:
         for element in _HOST_ELEMENTS:
-            pattern = re.compile(
-                rf"(<{element}>\s*)([^<]*?)(\s*</{element}>)", re.IGNORECASE
-            )
+            pattern = _host_element_pattern(element)
 
             def _swap(match: re.Match[str], _old: str = old) -> str:
                 value = match.group(2)
@@ -532,7 +537,9 @@ def rewrite_aurum_host_tokens(
         return False, "found a stale host block but no host token to rewrite"
 
     if backup:
-        backup_path = setup.with_name(f"{setup.name}.bak-host-{stale[0]}")
+        backup_path = setup.with_name(
+            f"{setup.name}.bak-host-{_host_backup_suffix(stale[0])}"
+        )
         try:
             if not backup_path.exists():
                 shutil.copy2(setup, backup_path)
@@ -557,10 +564,25 @@ def _cabinet_machine_name(ctx: RepairContext) -> str | None:
     return name or None
 
 
+def _host_element_pattern(element: str) -> re.Pattern[str]:
+    tag = re.escape(element)
+    return re.compile(
+        rf"(<{_XML_NS_PREFIX}{tag}>\s*)([^<]*?)(\s*</{_XML_NS_PREFIX}{tag}>)",
+        re.IGNORECASE,
+    )
+
+
+def _host_backup_suffix(host: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", host or "").strip("._-")
+    return cleaned or "template"
+
+
 def _aurum_host_names(text: str) -> list[str]:
     names: list[str] = []
     for match in re.finditer(
-        r"<NetworkHostName>\s*([^<\s]+)\s*</NetworkHostName>", text, re.IGNORECASE
+        rf"<{_XML_NS_PREFIX}NetworkHostName>\s*([^<\s]+)\s*</{_XML_NS_PREFIX}NetworkHostName>",
+        text,
+        re.IGNORECASE,
     ):
         candidate = match.group(1).strip()
         if candidate and candidate not in names:
@@ -998,8 +1020,16 @@ def _repair_ramclear(ctx: RepairContext) -> RepairOutcome:
         f"-path '{task_dir}' 2>&1"
     )
     if ctx.is_remote:
+        from config_scanner.stack_restart import remote_winrm_ready, winrm_skip_detail
         from automation.remote_exec import winrm_run_inline
 
+        if not remote_winrm_ready(ctx.host):
+            return RepairOutcome(
+                repair_id="slot_ramclear_pending",
+                title=_TITLE_RAMCLEAR,
+                ok=False,
+                detail=winrm_skip_detail(str(ctx.host)),
+            )
         result = winrm_run_inline(ip=str(ctx.host), script=command, timeout=900)
         code = result.returncode
         output = "\n".join(p for p in (result.stdout, result.stderr) if p.strip())

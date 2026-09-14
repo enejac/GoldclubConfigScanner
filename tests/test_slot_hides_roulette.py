@@ -98,6 +98,17 @@ def test_tab_hides_trial_keypad_actions_on_slot() -> None:
     # Detection result must be applied before actions are re-enabled.
     validated = src.split("def _on_target_validated", 1)[1].split("def ", 1)[0]
     assert "_refresh_egm_ui_strings()" in validated
+    # Kind is read from the Cabinet path immediately (no valid-flag gate).
+    kind_fn = src.split("def _game_kind", 1)[1].split("\n    def ", 1)[0]
+    assert "if target and self._target_valid" not in kind_fn
+    assert "scan_target=target" in kind_fn
+    assert "self._live_sw_label.setVisible(False)" in src
+    assert "self._live_sw_label.setVisible(True)" in src
+    # Version / kind SMB stays off the UI thread so Create is not frozen.
+    assert "schedule_live_exe_version" in src
+    assert "live_exe_version_for_target(" not in src.split(
+        "def _refresh_live_game_version", 1
+    )[1].split("def ", 1)[0]
     # ERROR 30 / LLAVE stay disabled while hidden.
     assert "self._clear_error30_action.isVisible()" in src
     assert "self._llave_password_action.isVisible()" in src

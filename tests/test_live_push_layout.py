@@ -20,7 +20,7 @@ from gui.live_push_panel import (  # noqa: E402
 
 # Market / denoms first, peripherals next, licence last (add_box order).
 PANEL_GROUPS = (
-    ("Currency / market", 5),
+    ("Currency / market", 6),
     ("Denoms / bets", 2),
     ("Magic wheel", 5),
     ("Jackpots", 4),
@@ -87,6 +87,42 @@ def _column_weights(board: _ColumnBoard) -> dict[int, int]:
     for title, (_row, col) in _placements(board).items():
         totals[col] = totals.get(col, 0) + weights[title]
     return totals
+
+
+def test_group_form_label_margins_leave_room_for_checkbox_text(
+    qt_app: QApplication,
+) -> None:
+    _box, form = _group_form("Door switches")
+    margins = form.contentsMargins()
+    assert form.horizontalSpacing() >= 16
+    assert margins.left() >= 12
+    assert margins.right() >= 12
+    src = (
+        Path(__file__).resolve().parents[1] / "gui" / "live_push_panel.py"
+    ).read_text(encoding="utf-8")
+    assert "row_l.setContentsMargins(4, 2, 0, 2)" in src
+    assert "row_l.setSpacing(10)" in src
+
+
+def test_live_field_highlight_styles_pad_checkbox_text(qt_app: QApplication) -> None:
+    from gui.palette_adapt import (
+        live_advisory_field_stylesheet,
+        live_changed_field_stylesheet,
+        live_invalid_field_stylesheet,
+        live_match_field_stylesheet,
+    )
+    from gui.theme import STYLESHEET
+
+    pal = qt_app.palette()
+    for sheet in (
+        live_match_field_stylesheet(pal),
+        live_changed_field_stylesheet(pal),
+        live_advisory_field_stylesheet(pal),
+        live_invalid_field_stylesheet(pal),
+    ):
+        assert "padding: 3px 8px" in sheet
+    assert "QCheckBox" in STYLESHEET
+    assert "spacing: 8px" in STYLESHEET
 
 
 def test_narrow_window_uses_a_single_column(qt_app: QApplication) -> None:

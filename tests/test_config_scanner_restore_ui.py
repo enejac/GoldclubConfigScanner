@@ -26,12 +26,25 @@ SRC = (
 ).read_text(encoding="utf-8")
 
 
+def test_restore_writes_when_stack_stop_fails() -> None:
+    """Create snapshot uses SMB; restore must not abort just because WinRM is down."""
+    assert "writing snapshot over SMB" in SRC
+    assert "_begin_pre_restore_scan" in SRC
+    assert "remote_winrm_ready" in SRC
+    assert "software files would stay locked during restore" not in SRC
+    assert "restore_stop_failed_note" in SRC
+
+
 def test_create_full_snapshot_is_a_toolbar_action() -> None:
     assert 'QPushButton("Create full snapshot")' in SRC
     assert 'more_menu.addAction(self._create_snapshot_action)' not in SRC
     assert "_on_create_snapshot_clicked" in SRC
     assert "_start_live_scan(compare_after=False, include_software=True)" in SRC
     assert "_start_live_scan(compare_after=True, include_software=False)" in SRC
+    start_scan = SRC.split("def _start_live_scan", 1)[1].split("def ", 1)[0]
+    assert "not self._target_valid" not in start_scan
+    assert "not self._drive_edit.text().strip()" in start_scan
+    assert "can_scan = (not busy) and has_target" in SRC
     assert "_pending_create_snapshot" in SRC
     assert "_finish_create_full_snapshot" in SRC
     assert 'QPushButton("Restore snapshot")' in SRC
@@ -58,6 +71,30 @@ def test_create_full_snapshot_is_a_toolbar_action() -> None:
     assert 'QMessageBox.information(\n            self,\n            "Snapshot saved"' in SRC or (
         '"Snapshot saved"' in SRC and "_finish_create_full_snapshot" in SRC
     )
+
+
+def test_create_full_snapshot_is_green_and_autoloads_shared_cabinet() -> None:
+    theme = (
+        Path(__file__).resolve().parents[1] / "gui" / "theme.py"
+    ).read_text(encoding="utf-8")
+    assert 'setObjectName("snapshotCreate")' in SRC
+    assert 'setObjectName("primary")' not in SRC.split(
+        'QPushButton("Create full snapshot")', 1
+    )[1][:200]
+    assert "QPushButton#snapshotCreate" in theme
+    assert "snapshotCreate:disabled" in theme
+    assert "COLOR_SNAPSHOT_CREATE" in theme
+    assert "_autoload_or_detect" in SRC
+    show = SRC.split("def showEvent", 1)[1].split("def ", 1)[0]
+    assert "_autoload_or_detect" in show
+    assert "_schedule_startup_auto_detect" not in show
+    autoload = SRC.split("def _autoload_or_detect", 1)[1].split("def ", 1)[0]
+    assert "_on_target_load_requested" in autoload
+    assert "_schedule_startup_auto_detect" in autoload
+    init_tail = SRC.split("self._refresh_egm_ui_strings()", 1)[1].split(
+        "def _clear_layout", 1
+    )[0]
+    assert "_refresh_action_enabled" in init_tail
 
 
 def test_full_snapshot_saved_message_includes_software() -> None:
@@ -177,9 +214,27 @@ def test_revert_uses_recorded_write_scope() -> None:
 
 def test_swap_confirm_asks_backup_in_the_same_dialog() -> None:
     assert "Swap this machine to:" in SRC
-    assert "undo_backup_step_line" in SRC
+    assert 'QCheckBox("Create a backup")' in SRC
+    assert "backup.setChecked(False)" in SRC
+    assert "_ask_restore_confirm" in SRC
+    assert "_pending_create_backup" in SRC
+    assert "_begin_restore_apply" in SRC
     assert "How it works:" not in SRC
     assert "Config Scanner — confirm restore" in SRC
+
+
+def test_restore_skips_presave_when_backup_unchecked() -> None:
+    confirm = SRC.split("def _confirm_write_snapshot", 1)[1].split("\n    def ", 1)[0]
+    assert "_pending_create_backup = bool(create_backup)" in confirm
+    assert "_pending_include_software = bool(create_backup)" in confirm
+    after_stop = SRC.split("def _begin_pending_restore_after_stop", 1)[1].split(
+        "\n    def ", 1
+    )[0]
+    assert "self._begin_pre_restore_scan()" in after_stop
+    assert "self._begin_restore_apply()" in after_stop
+    ready = SRC.split("def _on_scan_target_ready", 1)[1].split("\n    def ", 1)[0]
+    assert "if self._pending_write_snapshot:" in ready
+    assert "self._begin_pending_restore_after_stop()" in ready
 
 
 def test_live_game_version_banner_is_bold() -> None:
@@ -187,17 +242,14 @@ def test_live_game_version_banner_is_bold() -> None:
     assert "format_live_sw_banner" in SRC
     assert "_refresh_live_game_version" in SRC
     assert "font-weight: 700" in SRC
-    assert "live_exe_version_for_target" in SRC
+    assert "schedule_live_exe_version" in SRC
 
 
 def test_pre_restore_undo_point_captures_ruleta_binaries() -> None:
-    """The snapshot taken before a restore must be able to put the exe back."""
-    marker = "self._pending_include_software = True"
-    assert marker in SRC
-    at = SRC.find(marker)
-    write = SRC.find("self._pending_write_snapshot = snapshot_name", at)
-    assert write != -1 and write - at < 200
-    assert "_pending_include_software = False\n        self._pending_write_snapshot" not in SRC
+    """When Create a backup is ticked, the undo scan includes live binaries."""
+    confirm = SRC.split("def _confirm_write_snapshot", 1)[1].split("\n    def ", 1)[0]
+    assert "_pending_include_software = bool(create_backup)" in confirm
+    assert "self._pending_write_snapshot = snapshot_name" in confirm
 
 
 def test_restore_stops_when_undo_point_has_no_binaries() -> None:

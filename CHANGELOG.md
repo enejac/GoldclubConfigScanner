@@ -5,6 +5,16 @@ Updated automatically when a PR is merged.
 
 ## 2026-09-14
 
+- Live Push: give door labels and checkbox text a bit of margin ([#67](https://github.com/enejac/GoldclubConfigScanner/pull/67))
+- Live Push: warn when Apply needs a stack restart or RAM clear ([#66](https://github.com/enejac/GoldclubConfigScanner/pull/66))
+- Rebuild ConfigScanner.exe from master a9ef44f (2026-09-14 07:57) ([#64](https://github.com/enejac/GoldclubConfigScanner/pull/64))
+- Snapshots: autoload the last Live Push cabinet so Create is ready, and drop flag combo chrome ([#63](https://github.com/enejac/GoldclubConfigScanner/pull/63))
+- Restore: make the live backup an off-by-default checkbox ([#62](https://github.com/enejac/GoldclubConfigScanner/pull/62))
+- Snapshots: Create without GUI freeze; drop placeholder banner and status-bar stamp ([#61](https://github.com/enejac/GoldclubConfigScanner/pull/61))
+- Live Push: show real country-flag bitmaps because flag_spanish is oft… ([#60](https://github.com/enejac/GoldclubConfigScanner/pull/60))
+- Cursor/smb write without winrm ([#59](https://github.com/enejac/GoldclubConfigScanner/pull/59))
+- Restore and Live Push: SMB write when WinRM is not listening ([#58](https://github.com/enejac/GoldclubConfigScanner/pull/58))
+- Live Push: read Language from jurisdiction_config + slot\languages (2.0.1/3.0.0 images) ([#57](https://github.com/enejac/GoldclubConfigScanner/pull/57))
 - Rebuild ConfigScanner.exe from master a9ef44f (2026-09-14 07:57) ([#56](https://github.com/enejac/GoldclubConfigScanner/pull/56))
 - Rebuild ConfigScanner.exe from master 8abecfd (2026-09-11 15:16) ([#55](https://github.com/enejac/GoldclubConfigScanner/pull/55))
 

@@ -126,6 +126,10 @@ def test_run_remote_one_fails_closed_on_winrm_error(monkeypatch) -> None:
         raise OSError("winrm down")
 
     monkeypatch.setattr(
+        "config_scanner.stack_restart.remote_winrm_ready",
+        lambda _h: True,
+    )
+    monkeypatch.setattr(
         "automation.remote_exec.winrm_run_elevated_script",
         _boom,
     )

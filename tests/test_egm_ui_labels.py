@@ -7,6 +7,7 @@ from config_scanner.egm_ui_labels import (
     encrypted_setup_legend,
     full_snapshot_saved_message,
     game_kind_from_profile_id,
+    restore_snapshot_tooltip,
     rollback_summary,
     set_baseline_tooltip,
     software_files_summary_line,
@@ -51,6 +52,36 @@ def test_write_scope_labels_differ_by_profile() -> None:
 def test_game_kind_from_profile_id() -> None:
     assert game_kind_from_profile_id("slot_lab_90") == "slot"
     assert game_kind_from_profile_id("roulette_usb") == "roulette"
+
+
+def test_format_live_sw_banner_empty_until_version() -> None:
+    from config_scanner.egm_ui_labels import format_live_sw_banner
+
+    assert format_live_sw_banner(None, kind="roulette") == ""
+    assert format_live_sw_banner("  ", kind="slot") == ""
+    assert format_live_sw_banner("3.0.0+RC2", kind="slot") == (
+        "Running: OneHand.exe 3.0.0+RC2"
+    )
+    assert format_live_sw_banner("10.2.0.876", kind="roulette") == (
+        "Running: Ruleta.exe 10.2.0.876"
+    )
+
+
+def test_resolve_game_kind_uses_cabinet_path_over_roulette_profile(
+    tmp_path,
+) -> None:
+    from config_scanner.egm_ui_labels import resolve_game_kind
+
+    gold = tmp_path / "Goldclub"
+    (gold / "slot").mkdir(parents=True)
+    (gold / "slot" / "OneHand.exe").write_bytes(b"MZ")
+    leftover = gold / "ruleta"
+    leftover.mkdir()
+    (leftover / "Ruleta.exe").write_bytes(b"MZ")
+    assert (
+        resolve_game_kind(profile_id="roulette_usb", scan_target=str(gold))
+        == "slot"
+    )
 
 
 def test_rollback_summary_slot() -> None:
@@ -102,3 +133,9 @@ def test_slot_tooltips_never_mention_ruleta() -> None:
     assert "OneHand.exe" in detect_target_tooltip("slot")
     assert "Ruleta.exe" in detect_target_tooltip("roulette")
     assert "ruleta" in encrypted_setup_legend("roulette").casefold()
+
+
+def test_restore_tooltip_does_not_promise_an_auto_backup() -> None:
+    text = restore_snapshot_tooltip("slot")
+    assert "saved first" not in text.casefold()
+    assert "Create a backup" in text

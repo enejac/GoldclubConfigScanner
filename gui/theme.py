@@ -21,6 +21,10 @@ COLOR_CRITICAL = "#f44747"
 COLOR_MEDIUM = "#d19a66"
 COLOR_LOW = "#6a9fb5"
 COLOR_SUCCESS = "#89d185"
+# Snapshots "Create full snapshot" — distinct from Load/Apply accent blue.
+COLOR_SNAPSHOT_CREATE = "#2e7d32"
+COLOR_SNAPSHOT_CREATE_HOVER = "#388e3c"
+COLOR_SNAPSHOT_CREATE_DISABLED = "#4a7c4d"
 
 STYLESHEET = f"""
 /* ``QWidget:!window`` — styling a top-level window background makes Qt
@@ -69,6 +73,20 @@ QPushButton#primary {{
 }}
 QPushButton#primary:hover {{
     background-color: #1c8adb;
+}}
+QPushButton#snapshotCreate {{
+    background-color: {COLOR_SNAPSHOT_CREATE};
+    color: #ffffff;
+    border-color: {COLOR_SNAPSHOT_CREATE};
+    font-weight: 600;
+}}
+QPushButton#snapshotCreate:hover {{
+    background-color: {COLOR_SNAPSHOT_CREATE_HOVER};
+}}
+QPushButton#snapshotCreate:disabled {{
+    background-color: {COLOR_SNAPSHOT_CREATE_DISABLED};
+    color: #e8f5e9;
+    border-color: {COLOR_SNAPSHOT_CREATE_DISABLED};
 }}
 QTableView {{
     background-color: {COLOR_BG_ELEVATED};
@@ -158,5 +176,9 @@ QProgressBar::chunk {{
 QStatusBar {{
     background-color: {COLOR_BG_ELEVATED};
     border-top: 1px solid {COLOR_BORDER};
+}}
+QCheckBox {{
+    spacing: 8px;
+    padding: 2px 4px;
 }}
 """

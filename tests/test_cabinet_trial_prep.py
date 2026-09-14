@@ -142,6 +142,10 @@ def test_run_remote_one_accepts_fix_error30_clock_log_success(monkeypatch) -> No
         lambda h: h,
     )
     monkeypatch.setattr(
+        "config_scanner.stack_restart.remote_winrm_ready",
+        lambda _h: True,
+    )
+    monkeypatch.setattr(
         "automation.remote_exec.winrm_run_elevated_script",
         lambda **_kw: _Result(),
     )

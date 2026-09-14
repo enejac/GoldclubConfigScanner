@@ -1479,6 +1479,19 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         notes="Present on JAM/PR/PANC/PRU/TRI-01/TT CS leaves; TRI-00 OL+SAS omits the file.",
     ),
     _spec(
+        "locale.jur_language_flags",
+        "Country flags",
+        "Jurisdiction",
+        "slot/themes/jurisdiction_config.xml",
+        "Languages",
+        "str_list",
+        cs_pack_delivers=False,
+        notes=(
+            "Console language-button textures. Filenames are language tokens "
+            "(flag_spanish) and often do not match the country in the bitmap."
+        ),
+    ),
+    _spec(
         "locale.jur_currency_symbol",
         "Jurisdiction currency symbol",
         "Jurisdiction",
