@@ -1047,7 +1047,9 @@ def format_live_push_apply_status(result: LivePushResult) -> str:
         bits.append("Game started.")
     elif result.stack_detail:
         last = result.stack_detail.splitlines()[-1]
-        if last != (result.sas_lock_note or ""):
+        if last != (result.sas_lock_note or "") and stack_detail_worth_showing(
+            last, result.errors
+        ):
             bits.append(last)
     if result.sas_lock_note:
         bits.append(result.sas_lock_note)
@@ -3888,6 +3890,63 @@ def slot_stop_unreachable(detail: str) -> bool:
     return stack_stop_unreachable(detail)
 
 
+def _states_winrm_is_down(text: str) -> bool:
+    low = " ".join(str(text or "").split()).casefold()
+    if "winrm" not in low:
+        return False
+    return any(
+        marker in low
+        for marker in (
+            "not reachable",
+            "not listening",
+            "not answering",
+            "did not answer",
+        )
+    )
+
+
+def stack_detail_worth_showing(detail_line: str, errors: Sequence[str]) -> bool:
+    """False when the error text already tells the operator the same thing.
+
+    The summary line and the error paragraph are built separately, so a dead
+    WinRM channel used to be spelled out in both.
+    """
+    line = " ".join(str(detail_line or "").split())
+    if not line:
+        return False
+    joined = " ".join(" ".join(str(e or "").split()) for e in errors or ())
+    if not joined:
+        return True
+    if line.casefold() in joined.casefold():
+        return False
+    return not (_states_winrm_is_down(line) and _states_winrm_is_down(joined))
+
+
+def winrm_listener_dead(detail: str) -> bool:
+    """True only for 'nothing is listening on 5985' — not trust or logon.
+
+    Those two have their own fix, so their wording must survive; this one is
+    the case where the stop error, the aside and the hint all said 'no WinRM'.
+    """
+    low = (detail or "").casefold()
+    if "servernottrusted" in low or "trustedhosts" in low:
+        return False
+    if (
+        "access is denied" in low
+        or "logon failure" in low
+        or "user name or password is incorrect" in low
+    ):
+        return False
+    return (
+        "cannot connect to the destination" in low
+        or "timed out" in low
+        or "winrmoperationtimeout" in low
+        or "winrm cannot complete the operation" in low
+        or "winrm is not reachable" in low
+        or "no listener" in low
+    )
+
+
 def winrm_failure_hint(detail: str, host: str) -> str:
     """One-line operator fix for the common WinRM-from-this-PC failures."""
     low = (detail or "").casefold()
@@ -4518,7 +4577,6 @@ def commit_live_push(
     ):
         host = unc_host_from_target(plan_src) or "the cabinet"
         why = _short_fail(slot_stop_failed)
-        hint = winrm_failure_hint(slot_stop_failed, host)
         need_rc = (
             " RAM clear is still required ("
             + ", ".join(ramclear_reasons)
@@ -4526,18 +4584,29 @@ def commit_live_push(
             if ramclear_reasons
             else ""
         )
-        listen = (
-            f" WinRM is not listening on {host}."
-            if stack_stop_unreachable(slot_stop_failed)
-            else ""
-        )
-        head = (
-            f"Settings written ({len(written)} file(s)), but the game could not "
-            f"be stopped/restarted from this PC — restart OneHand on {host} for "
-            f"them to take effect.{listen} {why}{need_rc}"
-            if written
-            else f"Nothing was written and the game could not be stopped: {why}"
-        )
+        if not written:
+            head = f"Nothing was written and the game could not be stopped: {why}"
+            hint = winrm_failure_hint(slot_stop_failed, host)
+        elif winrm_listener_dead(slot_stop_failed):
+            # State the dead channel once. The raw stop error, the "not
+            # listening" aside and the generic hint all said the same thing.
+            head = (
+                f"Settings written ({len(written)} file(s)), but WinRM (TCP 5985) "
+                f"is not answering on {host}, so the game could not be restarted "
+                f"from here. Restart OneHand on the cabinet for them to take "
+                f"effect.{need_rc}"
+            )
+            hint = (
+                "Run Enable-PSRemoting on the cabinet to let Config Scanner "
+                "restart it for you next time."
+            )
+        else:
+            head = (
+                f"Settings written ({len(written)} file(s)), but the game could not "
+                f"be stopped/restarted from this PC — restart OneHand on {host} for "
+                f"them to take effect. {why}{need_rc}"
+            )
+            hint = winrm_failure_hint(slot_stop_failed, host)
         errors = (f"{head} {hint} (log: {log_path})".strip(),)
         _lp_log(f"commit: slot stop failed outcome: {errors[0][:400]}")
     if (

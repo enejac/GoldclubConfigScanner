@@ -1581,6 +1581,142 @@ def test_commit_writes_settings_even_when_slot_stop_unreachable(
     assert "settings were not written" not in msg
 
 
+_WINRM_5985_DEAD = (
+    "Slot stop failed: WinRM is not reachable on 10.0.0.76:5985. "
+    "SMB can still write. Restart the game on the cabinet."
+)
+
+
+def test_commit_stop_unreachable_says_winrm_is_down_once(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The dialog used to state the dead WinRM channel four times over."""
+    gold = _fake_goldclub(tmp_path)
+    recipe = load_recipe_from_goldclub(gold, label="live")
+    recipe.jurisdiction.currency_name = "COP"
+    recipe.hardware_currency_name = "COP"
+
+    monkeypatch.setattr("config_scanner.live_push.goldclub_stack_kind", lambda _r: "slot")
+    monkeypatch.setattr(
+        "config_scanner.live_push.run_slot_stack_kill",
+        lambda *_a, **_k: (False, _WINRM_5985_DEAD),
+    )
+    for name in ("run_slot_stack_start", "restart_slot_hwsubsys", "run_slot_ramclear"):
+        monkeypatch.setattr(
+            f"config_scanner.live_push.{name}",
+            lambda *_a, _n=name, **_k: (_ for _ in ()).throw(
+                AssertionError(f"{_n} must not run over a dead WinRM channel")
+            ),
+        )
+
+    result = commit_live_push(
+        recipe,
+        gold,
+        restart_stack=True,
+        scan_target=str(gold),
+        work_parent=tmp_path / "work",
+        backup=False,
+    )
+    assert result.written
+    msg = result.errors[0]
+    assert msg.casefold().count("winrm") == 1, msg
+    # The raw stop error and the "not listening" aside repeated the same fact.
+    assert "not listening" not in msg
+    assert "SMB can still write" not in msg
+    # Everything the operator has to do is still there, once each.
+    assert "Settings written" in msg
+    assert "Restart OneHand on the cabinet" in msg
+    assert "RAM clear is still required" in msg
+    assert "Enable-PSRemoting" in msg
+
+
+def test_trusted_hosts_keeps_its_own_fix(tmp_path: Path, monkeypatch) -> None:
+    """Collapsing the 5985 case must not swallow the TrustedHosts instructions."""
+    gold = _fake_goldclub(tmp_path)
+    recipe = load_recipe_from_goldclub(gold, label="live")
+    recipe.sas.address = 3
+
+    monkeypatch.setattr("config_scanner.live_push.goldclub_stack_kind", lambda _r: "slot")
+    monkeypatch.setattr(
+        "config_scanner.live_push.run_slot_stack_kill",
+        lambda *_a, **_k: (False, _SERVER_NOT_TRUSTED),
+    )
+    result = commit_live_push(
+        recipe,
+        gold,
+        restart_stack=True,
+        scan_target=str(gold),
+        work_parent=tmp_path / "work",
+        backup=False,
+    )
+    msg = result.errors[0]
+    assert "TrustedHosts" in msg
+    assert "Initialize-LabAccess.ps1" in msg
+    assert "WinRM is not listening on" not in msg
+
+
+def test_winrm_listener_dead_only_for_a_missing_listener() -> None:
+    from config_scanner.live_push import winrm_listener_dead
+
+    assert winrm_listener_dead(_WINRM_5985_DEAD) is True
+    assert winrm_listener_dead("winrm inline timed out") is True
+    # Trust and logon failures have their own, different fix.
+    assert winrm_listener_dead(_SERVER_NOT_TRUSTED) is False
+    assert winrm_listener_dead("Access is denied") is False
+    assert winrm_listener_dead("STILL: OneHand") is False
+    assert winrm_listener_dead("") is False
+
+
+def test_summary_line_drops_a_fact_the_error_already_states() -> None:
+    from config_scanner.live_push import stack_detail_worth_showing
+
+    errors = (
+        "Settings written (7 file(s)), but WinRM (TCP 5985) is not answering "
+        "on 10.0.0.76, so the game could not be restarted from here.",
+    )
+    assert stack_detail_worth_showing(_WINRM_5985_DEAD, errors) is False
+    assert stack_detail_worth_showing("Slot stop failed: STILL: OneHand", errors) is True
+    assert stack_detail_worth_showing("Game was stopped.", ()) is True
+    assert stack_detail_worth_showing("", errors) is False
+    # Identical text, only re-wrapped.
+    assert stack_detail_worth_showing("  Game   stopped. ", ("Game stopped.",)) is False
+
+
+def test_apply_status_line_skips_the_repeat(tmp_path: Path) -> None:
+    """format_live_push_apply_status must not open by repeating the error."""
+    from config_scanner.live_push import LivePushResult, format_live_push_apply_status
+
+    errors = (
+        "Settings written (7 file(s)), but WinRM (TCP 5985) is not answering "
+        "on 10.0.0.76, so the game could not be restarted from here.",
+    )
+    result = LivePushResult(
+        written=(str(tmp_path / "mgconfig.xml"),),
+        skipped=(),
+        errors=errors,
+        stack_killed=False,
+        stack_started=False,
+        stack_detail=_WINRM_5985_DEAD,
+        sections=("mgconfig",),
+    )
+    text = format_live_push_apply_status(result)
+    assert "Wrote 1 file(s)." in text
+    assert "WinRM" not in text
+
+    kept = format_live_push_apply_status(
+        LivePushResult(
+            written=(str(tmp_path / "mgconfig.xml"),),
+            skipped=(),
+            errors=("Settings written, but RAM clear failed.",),
+            stack_killed=False,
+            stack_started=False,
+            stack_detail="Slot stop failed: STILL: OneHand",
+            sections=("mgconfig",),
+        )
+    )
+    assert "STILL: OneHand" in kept
+
+
 def test_commit_stop_failed_with_ramclear_tells_operator(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -1810,7 +1946,7 @@ def test_commit_writes_settings_when_slot_stop_unreachable(
     assert result.written
     assert result.errors
     assert "Settings written" in result.errors[0]
-    assert "WinRM is not listening" in result.errors[0]
+    assert "WinRM (TCP 5985) is not answering" in result.errors[0]
     assert starts == []
     assert result.stack_started is False
 
@@ -2118,7 +2254,14 @@ def test_lock_when_no_sas_help_is_honest() -> None:
         Path(__file__).resolve().parents[1] / "gui" / "live_push_panel.py"
     ).read_text(encoding="utf-8")
     assert 'LIVE_OPTION_HELP.get("Lock when no SAS"' in panel
-    assert "sas_lock_note" in panel
+    # The note reaches the status line through format_live_push_apply_status.
+    src = (
+        Path(__file__).resolve().parents[1] / "config_scanner" / "live_push.py"
+    ).read_text(encoding="utf-8")
+    status = src.split("def format_live_push_apply_status", 1)[1].split(
+        "\n@dataclass", 1
+    )[0]
+    assert "result.sas_lock_note" in status
 
 
 def test_format_sas_lock_probe_line_up_and_down() -> None:
