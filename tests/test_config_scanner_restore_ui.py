@@ -26,6 +26,15 @@ SRC = (
 ).read_text(encoding="utf-8")
 
 
+def test_restore_writes_when_stack_stop_fails() -> None:
+    """Create snapshot uses SMB; restore must not abort just because WinRM is down."""
+    assert "writing snapshot over SMB" in SRC
+    assert "_begin_pre_restore_scan" in SRC
+    assert "remote_winrm_ready" in SRC
+    assert "software files would stay locked during restore" not in SRC
+    assert "restore_stop_failed_note" in SRC
+
+
 def test_create_full_snapshot_is_a_toolbar_action() -> None:
     assert 'QPushButton("Create full snapshot")' in SRC
     assert 'more_menu.addAction(self._create_snapshot_action)' not in SRC
