@@ -2865,8 +2865,8 @@ class ConfigScannerTabWidget(QFrame):
         self._set_busy(True)
         schedule_delete_snapshot(self._pool, self._service, snapshot_name, self._emitter)
 
-    def _ask_restore_confirm(self, prompt: str, *, kind: str) -> bool | None:
-        """Yes/No restore confirm. Returns whether to snapshot live first, or None."""
+    def _ask_restore_confirm(self, prompt: str) -> bool | None:
+        """Yes/No restore confirm. Backup comes from the restore-row switch."""
         dlg = QDialog(self)
         dlg.setWindowTitle("Config Scanner — confirm restore")
         lay = QVBoxLayout(dlg)
@@ -2874,16 +2874,6 @@ class ConfigScannerTabWidget(QFrame):
         text.setWordWrap(True)
         text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         lay.addWidget(text)
-        backup = QCheckBox("Create a backup")
-        # Same switch as the one on the restore row, so the confirm shows what
-        # is already set and a change here sticks for the next restore.
-        backup.setChecked(self._create_backup_enabled())
-        noun = "slot software" if kind == "slot" else "Ruleta software"
-        backup.setToolTip(
-            f"Save what's running now (config + {noun}) as a snapshot you can "
-            "revert to. Off by default — restore writes without that extra scan."
-        )
-        lay.addWidget(backup)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Yes | QDialogButtonBox.StandardButton.No
         )
@@ -2900,9 +2890,7 @@ class ConfigScannerTabWidget(QFrame):
         lay.addWidget(buttons)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return None
-        wanted = bool(backup.isChecked())
-        self._set_create_backup(wanted)
-        return wanted
+        return self._create_backup_enabled()
 
     def _confirm_write_snapshot(
         self,
@@ -3062,7 +3050,7 @@ class ConfigScannerTabWidget(QFrame):
 
         create_backup = True
         if not revert_from:
-            create_backup = self._ask_restore_confirm(prompt, kind=snap_kind)
+            create_backup = self._ask_restore_confirm(prompt)
             if create_backup is None:
                 self._pending_stack_plan = None
                 return
