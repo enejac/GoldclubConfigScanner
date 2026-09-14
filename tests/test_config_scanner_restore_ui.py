@@ -73,6 +73,30 @@ def test_create_full_snapshot_is_a_toolbar_action() -> None:
     )
 
 
+def test_create_full_snapshot_is_green_and_autoloads_shared_cabinet() -> None:
+    theme = (
+        Path(__file__).resolve().parents[1] / "gui" / "theme.py"
+    ).read_text(encoding="utf-8")
+    assert 'setObjectName("snapshotCreate")' in SRC
+    assert 'setObjectName("primary")' not in SRC.split(
+        'QPushButton("Create full snapshot")', 1
+    )[1][:200]
+    assert "QPushButton#snapshotCreate" in theme
+    assert "snapshotCreate:disabled" in theme
+    assert "COLOR_SNAPSHOT_CREATE" in theme
+    assert "_autoload_or_detect" in SRC
+    show = SRC.split("def showEvent", 1)[1].split("def ", 1)[0]
+    assert "_autoload_or_detect" in show
+    assert "_schedule_startup_auto_detect" not in show
+    autoload = SRC.split("def _autoload_or_detect", 1)[1].split("def ", 1)[0]
+    assert "_on_target_load_requested" in autoload
+    assert "_schedule_startup_auto_detect" in autoload
+    init_tail = SRC.split("self._refresh_egm_ui_strings()", 1)[1].split(
+        "def _clear_layout", 1
+    )[0]
+    assert "_refresh_action_enabled" in init_tail
+
+
 def test_full_snapshot_saved_message_includes_software() -> None:
     text = full_snapshot_saved_message(
         "2026-08-21_GRT330106_v10.2_b40119",
