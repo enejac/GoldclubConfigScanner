@@ -29,6 +29,7 @@ _KEY_AI_PROVIDER = "ai/provider"
 _KEY_CONFIG_SCANNER_GAME_DRIVE = "config_scanner/game_drive"
 _KEY_CONFIG_SCANNER_PROFILE = "config_scanner/profile_id"
 _KEY_CONFIG_SCANNER_AUTO_START_STACK = "config_scanner/auto_start_stack"
+_KEY_CONFIG_SCANNER_RESTORE_BACKUP = "config_scanner/restore_backup"
 _KEY_LIVE_PUSH_TARGET = "config_scanner/live_push_target"
 _KEY_LIVE_PUSH_RECENT = "config_scanner/live_push_recent_json"
 LIVE_PUSH_RECENT_LIMIT = 8
@@ -231,6 +232,20 @@ class SettingsManager:
     def set_config_scanner_auto_start_stack(enabled: bool) -> None:
         s = SettingsManager._s()
         s.setValue(_KEY_CONFIG_SCANNER_AUTO_START_STACK, bool(enabled))
+        s.sync()
+
+    @staticmethod
+    def get_config_scanner_restore_backup() -> bool:
+        """True: snapshot the live machine before a restore (off by default)."""
+        v = SettingsManager._s().value(_KEY_CONFIG_SCANNER_RESTORE_BACKUP, False)
+        if isinstance(v, bool):
+            return v
+        return str(v).strip().casefold() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def set_config_scanner_restore_backup(enabled: bool) -> None:
+        s = SettingsManager._s()
+        s.setValue(_KEY_CONFIG_SCANNER_RESTORE_BACKUP, bool(enabled))
         s.sync()
 
     @staticmethod

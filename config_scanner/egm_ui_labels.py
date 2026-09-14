@@ -234,7 +234,8 @@ def restore_snapshot_tooltip(kind: GameKind) -> str:
     sw = game_software_short(kind)
     return (
         f"Put the selected snapshot back on the machine (config + {sw}). "
-        "Tick Create a backup on the confirm dialog if you want an undo snapshot."
+        "Tick Create a backup, next to Auto-start stack, if you want an undo "
+        "snapshot."
     )
 
 
@@ -386,12 +387,14 @@ def restore_full_context_menu_tip(kind: GameKind) -> str:
     if kind == "slot":
         return (
             "Restore config + matching slot software from this snapshot. "
-            "Tick Create a backup on confirm if you want an undo snapshot."
+            "Tick Create a backup, next to Auto-start stack, if you want an "
+            "undo snapshot."
         )
     return (
         "Restore config + matching Ruleta software. WIBU licence is kept; "
         "LLAVE trial bind is restored from this snapshot when it was captured. "
-        "Tick Create a backup on confirm if you want an undo snapshot."
+        "Tick Create a backup, next to Auto-start stack, if you want an undo "
+        "snapshot."
     )
 
 

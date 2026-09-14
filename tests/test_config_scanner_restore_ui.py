@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from config_scanner.write_scope import WriteScope
 from gui.config_scanner_tab import (
     SNAPSHOT_DRAWER_MIN_OPEN_PX,
@@ -24,6 +26,22 @@ from gui.config_scanner_tab import (
 SRC = (
     Path(__file__).resolve().parents[1] / "gui" / "config_scanner_tab.py"
 ).read_text(encoding="utf-8")
+
+
+@pytest.fixture
+def isolated_settings_ini(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Per-test QSettings file, so one test's toggle cannot leak into another."""
+    from PySide6.QtCore import QSettings
+
+    from config_manager import SettingsManager
+
+    ini = str(tmp_path / "config-scanner.ini")
+    monkeypatch.setattr(
+        SettingsManager,
+        "_s",
+        staticmethod(lambda: QSettings(ini, QSettings.Format.IniFormat)),
+    )
+    return ini
 
 
 def test_restore_writes_when_stack_stop_fails() -> None:
@@ -215,7 +233,7 @@ def test_revert_uses_recorded_write_scope() -> None:
 def test_swap_confirm_asks_backup_in_the_same_dialog() -> None:
     assert "Swap this machine to:" in SRC
     assert 'QCheckBox("Create a backup")' in SRC
-    assert "backup.setChecked(False)" in SRC
+    assert "backup.setChecked(self._create_backup_enabled())" in SRC
     assert "_ask_restore_confirm" in SRC
     assert "_pending_create_backup" in SRC
     assert "_begin_restore_apply" in SRC
@@ -277,6 +295,50 @@ def test_auto_start_stack_is_optional_kill_is_not() -> None:
     assert "Start GoldClub stack…" in SRC
     assert "_on_start_stack_clicked" in SRC
     assert 'getattr(plan, "kind", "roulette") == "slot"' in SRC
+
+
+def test_create_backup_sits_next_to_auto_start_stack() -> None:
+    """The backup switch is visible on the restore row, not only in the dialog."""
+    row = SRC.split("restore_sel_row = QHBoxLayout()", 1)[1].split(
+        "drawer_layout.addLayout(restore_sel_row)", 1
+    )[0]
+    assert 'QCheckBox("Auto-start stack")' in row
+    assert 'self._create_backup_cb = QCheckBox("Create a backup")' in row
+    assert row.index("_auto_start_stack_cb") < row.index("_create_backup_cb")
+    assert "get_config_scanner_restore_backup()" in row
+    assert "set_config_scanner_restore_backup" in row
+    # No tooltip may still send the operator hunting through the confirm dialog.
+    assert "Create a backup on confirm" not in SRC
+    assert "Create a backup on the confirm dialog" not in SRC
+
+
+def test_create_backup_defaults_off_and_survives_relaunch(
+    isolated_settings_ini: str,
+) -> None:
+    from config_manager import SettingsManager
+
+    assert SettingsManager.get_config_scanner_restore_backup() is False
+    SettingsManager.set_config_scanner_restore_backup(True)
+    assert SettingsManager.get_config_scanner_restore_backup() is True
+    SettingsManager.set_config_scanner_restore_backup(False)
+    assert SettingsManager.get_config_scanner_restore_backup() is False
+
+
+def test_confirm_dialog_choice_sticks_for_the_next_restore() -> None:
+    """The dialog seeds from the row and writes the answer back to it."""
+    ask = SRC.split("def _ask_restore_confirm", 1)[1].split("\n    def ", 1)[0]
+    assert "backup.setChecked(self._create_backup_enabled())" in ask
+    assert "self._set_create_backup(wanted)" in ask
+
+    setter = SRC.split("def _set_create_backup", 1)[1].split("\n    def ", 1)[0]
+    assert "box.setChecked(bool(enabled))" in setter
+    assert "set_config_scanner_restore_backup(bool(enabled))" in setter
+
+    getter = SRC.split("def _create_backup_enabled", 1)[1].split("\n    def ", 1)[0]
+    assert "get_config_scanner_restore_backup()" in getter
+
+    # Busy restores must not let the switch change under a running write.
+    assert "self._create_backup_cb.setEnabled(not busy)" in SRC
 
 
 def test_restore_does_not_auto_prompt_llave_code() -> None:

@@ -911,6 +911,19 @@ class ConfigScannerTabWidget(QFrame):
             SettingsManager.set_config_scanner_auto_start_stack
         )
         restore_sel_row.addWidget(self._auto_start_stack_cb, stretch=0)
+        self._create_backup_cb = QCheckBox("Create a backup")
+        self._create_backup_cb.setChecked(
+            SettingsManager.get_config_scanner_restore_backup()
+        )
+        self._create_backup_cb.setToolTip(
+            "Before a restore: save what's running now (config + software) as a "
+            "snapshot you can revert to. Off by default — restore writes without "
+            "that extra scan. Revert always saves one."
+        )
+        self._create_backup_cb.toggled.connect(
+            SettingsManager.set_config_scanner_restore_backup
+        )
+        restore_sel_row.addWidget(self._create_backup_cb, stretch=0)
         restore_sel_row.addStretch(1)
         drawer_layout.addLayout(restore_sel_row)
 
@@ -994,7 +1007,8 @@ class ConfigScannerTabWidget(QFrame):
 
         self._write_baseline_btn = QPushButton("Restore to machine")
         self._write_baseline_btn.setToolTip(
-            "Restore using the scope below. Tick Create a backup on confirm if you want an undo snapshot."
+            "Restore using the scope below. Tick Create a backup, next to "
+            "Auto-start stack, if you want an undo snapshot."
         )
         self._write_baseline_btn.clicked.connect(self._on_write_baseline_from_compare)
         self._write_baseline_btn.setVisible(False)
@@ -1580,7 +1594,8 @@ class ConfigScannerTabWidget(QFrame):
             restore_row.addWidget(self._write_baseline_btn, stretch=0)
             hint = QLabel(
                 "Restore puts config + software back. Backup is off unless you tick "
-                "Create a backup. Apply below changes one setting at a time."
+                "Create a backup next to Auto-start stack. Apply below changes "
+                "one setting at a time."
             )
             hint.setStyleSheet(styles["legend"])
             hint.setWordWrap(True)
@@ -2188,7 +2203,8 @@ class ConfigScannerTabWidget(QFrame):
             act = "Restore reference to machine"
             tip = (
                 "Restore the reference archive (all config except serialport/ "
-                "and EGM identity). Tick Create a backup on confirm to save live first."
+                "and EGM identity). Tick Create a backup, next to Auto-start "
+                "stack, to save live first."
             )
         elif scope is WriteScope.NO_PAYTABLE:
             btn = f"Restore {short} to machine"
@@ -2859,7 +2875,9 @@ class ConfigScannerTabWidget(QFrame):
         text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         lay.addWidget(text)
         backup = QCheckBox("Create a backup")
-        backup.setChecked(False)
+        # Same switch as the one on the restore row, so the confirm shows what
+        # is already set and a change here sticks for the next restore.
+        backup.setChecked(self._create_backup_enabled())
         noun = "slot software" if kind == "slot" else "Ruleta software"
         backup.setToolTip(
             f"Save what's running now (config + {noun}) as a snapshot you can "
@@ -2882,7 +2900,9 @@ class ConfigScannerTabWidget(QFrame):
         lay.addWidget(buttons)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return None
-        return bool(backup.isChecked())
+        wanted = bool(backup.isChecked())
+        self._set_create_backup(wanted)
+        return wanted
 
     def _confirm_write_snapshot(
         self,
@@ -3091,6 +3111,19 @@ class ConfigScannerTabWidget(QFrame):
         if self._widget_is_alive(box):
             return bool(box.isChecked())
         return SettingsManager.get_config_scanner_auto_start_stack()
+
+    def _create_backup_enabled(self) -> bool:
+        box = getattr(self, "_create_backup_cb", None)
+        if self._widget_is_alive(box):
+            return bool(box.isChecked())
+        return SettingsManager.get_config_scanner_restore_backup()
+
+    def _set_create_backup(self, enabled: bool) -> None:
+        box = getattr(self, "_create_backup_cb", None)
+        if self._widget_is_alive(box):
+            box.setChecked(bool(enabled))  # toggled() persists it
+            return
+        SettingsManager.set_config_scanner_restore_backup(bool(enabled))
 
     def _on_start_stack_clicked(self) -> None:
         if self._busy:
@@ -3927,6 +3960,8 @@ class ConfigScannerTabWidget(QFrame):
             self._start_stack_action.setEnabled((not busy) and self._target_valid)
         if self._widget_is_alive(getattr(self, "_auto_start_stack_cb", None)):
             self._auto_start_stack_cb.setEnabled(not busy)
+        if self._widget_is_alive(getattr(self, "_create_backup_cb", None)):
+            self._create_backup_cb.setEnabled(not busy)
         self._snapshots_toggle.setEnabled(True)
         self._set_baseline_action.setEnabled(not busy)
         self._delete_action.setEnabled(not busy)
