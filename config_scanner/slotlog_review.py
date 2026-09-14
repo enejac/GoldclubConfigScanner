@@ -331,6 +331,7 @@ def review_slot_logs(
     seen_ids: set[str] = set()
     sas_locked = False
     sas_cleared = False
+    online_lock_seen = False
     ticket_recover = False
     ticket_hard_fail = False
     ticket_ok = False
@@ -344,6 +345,8 @@ def review_slot_logs(
         except ValueError:
             rel = path.name
 
+        if "onlinelock" in low:
+            online_lock_seen = True
         for needle in _SAS_CLEAR_NEEDLES:
             if needle.casefold() in low:
                 sas_cleared = True
@@ -477,6 +480,26 @@ def review_slot_logs(
                 fix_hint="No action needed — normal when CommCtrlSAS comes up after Bootstrap.",
             )
         )
+    elif not sas_locked and not online_lock_seen:
+        lock_on = _live_sas_lock_on_disk(goldclub)
+        if lock_on is True:
+            review.findings.append(
+                SlotLogFinding(
+                    id="sas_lock_flag_idle",
+                    severity="info",
+                    title="Lock when no SAS is on; game did not lock",
+                    detail=(
+                        "LockGameWhenNoComms is true and SlotLog has no "
+                        "NO SAS COMMUNICATIONS / OnlineLock. Unlocked is "
+                        "expected while SAS 31100 / CommCtrlSAS is up."
+                    ),
+                    field_label="Lock when no SAS",
+                    fix_hint=(
+                        "This is not lock now. The game locks only if the SAS "
+                        "gateway (localhost:31100) drops."
+                    ),
+                )
+            )
 
     if (ticket_recover or ticket_hard_fail) and not ticket_ok:
         detail = (
@@ -561,11 +584,40 @@ def review_slot_logs(
             f"Scanned {len(review.logs_scanned)} log(s); no known misconfig signatures."
         )
     elif not review.has_actionable:
-        review.note = (
-            f"Scanned {len(review.logs_scanned)} log(s); only boot-noise notes "
-            "(empty theme RTP, TITO handshake, icon index) — not Live Push fields."
+        idle = next(
+            (f for f in review.findings if f.id == "sas_lock_flag_idle"),
+            None,
         )
+        if idle is not None:
+            review.note = (
+                "Lock when no SAS is on; SlotLog has no lock — unlocked is "
+                "expected while SAS 31100 is up."
+            )
+        else:
+            review.note = (
+                f"Scanned {len(review.logs_scanned)} log(s); only boot-noise notes "
+                "(empty theme RTP, TITO handshake, icon index) — not Live Push fields."
+            )
     return review
+
+
+def _live_sas_lock_on_disk(goldclub: Path) -> bool | None:
+    """True/False from SASsetupData; None when the file is missing or unreadable."""
+    try:
+        from config_scanner.slot_setup import (
+            _SAS_SETUP_REL,
+            _resolve_goldclub_rel,
+            read_sas_settings,
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    path = _resolve_goldclub_rel(goldclub, _SAS_SETUP_REL)
+    if path is None or not path.is_file():
+        return None
+    try:
+        return bool(read_sas_settings(goldclub).lock_game_when_no_comms)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _xml_text(goldclub: Path, rel: str, tag: str) -> str:

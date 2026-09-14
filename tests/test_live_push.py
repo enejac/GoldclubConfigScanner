@@ -1928,3 +1928,89 @@ def test_cabinet_ip_prefill_selects_last_octet() -> None:
     assert (text[start : start + length], start) == ("9", 7)
     assert cabinet_ip_prefill("") == ("", 0, 0)
     assert cabinet_ip_prefill("host")[2] == 0
+
+
+def test_lock_when_no_sas_help_is_honest() -> None:
+    from config_scanner.live_push import FIELD_HELP, LIVE_OPTION_HELP
+
+    text = LIVE_OPTION_HELP["Lock when no SAS"]
+    assert text == FIELD_HELP["Lock when no SAS"]
+    assert "31100" in text
+    assert "not lock now" in text.casefold()
+    assert "LockGameWhenNoComms" in text
+    panel = (
+        Path(__file__).resolve().parents[1] / "gui" / "live_push_panel.py"
+    ).read_text(encoding="utf-8")
+    assert 'LIVE_OPTION_HELP.get("Lock when no SAS"' in panel
+    assert "sas_lock_note" in panel
+
+
+def test_format_sas_lock_probe_line_up_and_down() -> None:
+    from config_scanner.live_push import (
+        format_sas_lock_probe_line,
+        parse_sas_lock_probe_blob,
+    )
+
+    up = format_sas_lock_probe_line(lock_on=True, port_31100_up=True)
+    assert "SAS 31100 is up" in up
+    assert "stays unlocked" in up
+    down = format_sas_lock_probe_line(lock_on=True, port_31100_up=False)
+    assert "31100 is down" in down
+    assert "NO SAS COMMUNICATIONS" in down
+    assert format_sas_lock_probe_line(lock_on=False, port_31100_up=True) == ""
+    assert parse_sas_lock_probe_blob("AURUM=1 PORT31100=1") == (True, True)
+    assert parse_sas_lock_probe_blob("AURUM=0 PORT31100=0") == (False, False)
+    assert parse_sas_lock_probe_blob("nope") == (None, None)
+
+
+def test_commit_appends_sas_lock_probe_line(tmp_path: Path, monkeypatch) -> None:
+    gold = _fake_goldclub(tmp_path)
+    recipe = load_recipe_from_goldclub(gold, label="live")
+    recipe.sas.address = 5
+
+    monkeypatch.setattr("config_scanner.live_push.goldclub_stack_kind", lambda _r: "slot")
+    monkeypatch.setattr(
+        "config_scanner.live_push.run_slot_stack_kill",
+        lambda *_a, **_k: (True, "stopped"),
+    )
+    monkeypatch.setattr(
+        "config_scanner.live_push.restart_slot_hwsubsys",
+        lambda *_a, **_k: (True, "hw ok"),
+    )
+    monkeypatch.setattr(
+        "config_scanner.live_push.run_slot_stack_start",
+        lambda *_a, **_k: (True, "bootstrap"),
+    )
+    monkeypatch.setattr(
+        "config_scanner.live_push.probe_sas_lock_comms",
+        lambda *_a, **_k: (True, True),
+    )
+
+    result = commit_live_push(
+        recipe,
+        gold,
+        restart_stack=True,
+        scan_target=str(gold),
+        work_parent=tmp_path / "work",
+        backup=False,
+    )
+    assert result.ok, result.errors
+    assert "SAS 31100 is up" in result.sas_lock_note
+    assert "stays unlocked" in result.stack_detail
+
+    monkeypatch.setattr(
+        "config_scanner.live_push.probe_sas_lock_comms",
+        lambda *_a, **_k: (True, False),
+    )
+    recipe.sas.address = 6
+    down = commit_live_push(
+        recipe,
+        gold,
+        restart_stack=True,
+        scan_target=str(gold),
+        work_parent=tmp_path / "work2",
+        backup=False,
+    )
+    assert down.ok, down.errors
+    assert "31100 is down" in down.sas_lock_note
+    assert "NO SAS COMMUNICATIONS" in down.sas_lock_note

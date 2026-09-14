@@ -58,6 +58,7 @@ from config_scanner.slot_setup import (
     load_recipe_from_goldclub,
     iter_magicwheel_setting_rels,
     markets_accepted_by_onehand,
+    read_sas_settings,
     math_settings_rels,
     merge_play_limits,
     missing_display_mode_assets,
@@ -1014,6 +1015,7 @@ class LivePushResult:
     sections: tuple[str, ...] = ()
     ramclear_ran: bool = False
     ramclear_detail: str = ""
+    sas_lock_note: str = ""
 
     @property
     def ok(self) -> bool:
@@ -1740,6 +1742,117 @@ def restart_slot_hwsubsys(scan_target: str) -> tuple[bool, str]:
     return False, blob or f"HWSubsys restart exit {result.returncode}"
 
 
+_SAS_LOCK_PROBE_SCRIPT = textwrap.dedent(
+    r"""
+    $ErrorActionPreference = 'SilentlyContinue'
+    $au = Get-Service -Name 'GoldClub.Aurum.Services' -ErrorAction SilentlyContinue
+    $aurum = if ($au -and $au.Status -eq 'Running') { '1' } else { '0' }
+    $hits = @()
+    try {
+        $hits = @(Get-NetTCPConnection -LocalPort 31100 -State Listen,Established -ErrorAction SilentlyContinue)
+    } catch {}
+    if (-not $hits) {
+        try {
+            $hits = @(netstat -ano | Select-String -Pattern ':31100\s')
+        } catch {}
+    }
+    $port = if ($hits -and $hits.Count -gt 0) { '1' } else { '0' }
+    Write-Output ("AURUM={0} PORT31100={1}" -f $aurum, $port)
+    exit 0
+    """
+).strip()
+
+_SAS_LOCK_PROBE_RE = re.compile(
+    r"AURUM=(?P<aurum>[01])\s+PORT31100=(?P<port>[01])",
+    re.I,
+)
+
+
+def format_sas_lock_probe_line(
+    *,
+    lock_on: bool,
+    port_31100_up: bool | None,
+    aurum_running: bool | None = None,
+) -> str:
+    """One operator line: lock flag vs SAS 31100. Empty when the flag is off."""
+    if not lock_on:
+        return ""
+    if port_31100_up is True:
+        return (
+            "Lock when no SAS is on; SAS 31100 is up so the game stays unlocked"
+        )
+    if port_31100_up is False:
+        extra = ""
+        if aurum_running is False:
+            extra = " (Aurum is not Running)"
+        return (
+            "Lock when no SAS is on; 31100 is down — expect NO SAS COMMUNICATIONS"
+            + extra
+        )
+    return "Lock when no SAS is on; could not check SAS 31100"
+
+
+def parse_sas_lock_probe_blob(blob: str) -> tuple[bool | None, bool | None]:
+    """Parse AURUM=/PORT31100= from the probe script. Unknowns stay None."""
+    match = _SAS_LOCK_PROBE_RE.search(blob or "")
+    if match is None:
+        return None, None
+    return match.group("aurum") == "1", match.group("port") == "1"
+
+
+def probe_sas_lock_comms(scan_target: str) -> tuple[bool | None, bool | None]:
+    """Aurum Running and TCP 31100 listen/established. None if unknown.
+
+    Unit tests skip the live cabinet probe (PYTEST_CURRENT_TEST) so Apply
+    tests stay offline. Monkeypatch this function when a test needs fakes.
+    """
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return None, None
+    local = _slot_target_is_local(scan_target)
+    try:
+        if local:
+            ok, blob = _run_local_powershell(_SAS_LOCK_PROBE_SCRIPT, timeout=30)
+        else:
+            host = unc_host_from_target(scan_target) or ""
+            if not remote_winrm_ready(host):
+                _lp_log(f"sas lock probe skip: {winrm_skip_detail(host)}")
+                return None, None
+            from automation.remote_exec import winrm_run_inline
+            from network.lab_access import require_lab_fleet_ip
+
+            ip = require_lab_fleet_ip(host)
+            _ensure_lab_smb(ip)
+            result = winrm_run_inline(
+                ip=ip, script=_SAS_LOCK_PROBE_SCRIPT, timeout=45
+            )
+            blob = ((result.stdout or "") + (result.stderr or "")).strip()
+            ok = result.returncode == 0
+    except Exception as exc:  # noqa: BLE001
+        _lp_log(f"sas lock probe failed: {exc}")
+        return None, None
+    if not ok and not blob:
+        return None, None
+    return parse_sas_lock_probe_blob(blob)
+
+
+def probe_sas_lock_state(scan_target: str, dest: Path | str) -> str:
+    """Disk LockGameWhenNoComms plus cabinet 31100 → one Apply-complete line."""
+    try:
+        gold = goldclub_root_from_target(dest)
+        lock_on = bool(read_sas_settings(gold).lock_game_when_no_comms)
+    except Exception as exc:  # noqa: BLE001
+        _lp_log(f"sas lock probe disk read failed: {exc}")
+        return ""
+    if not lock_on:
+        return ""
+    aurum, port = probe_sas_lock_comms(scan_target)
+    return format_sas_lock_probe_line(
+        lock_on=True,
+        port_31100_up=port,
+        aurum_running=aurum,
+    )
+
+
 def backup_live_push_files(
     dest_goldclub: Path | str,
     relative_paths: Sequence[str],
@@ -2426,8 +2539,11 @@ LIVE_OPTION_HELP: dict[str, str] = {
     ),
     "AFT": "Enable AFT (Advanced Funds Transfer) when funds transfer is AFT.",
     "Lock when no SAS": (
-        "Lock the game when SAS communications are lost "
-        "(LockGameWhenNoComms)."
+        "Writes SASsetupData LockGameWhenNoComms. The game locks only if "
+        "that SAS gateway/TCP drops (Aurum SASControler1 → CommCtrlSAS "
+        "localhost:31100 / COM11 — the 31 Aug COM11-ghost case). A healthy "
+        "31100 path stays unlocked. This is not lock now and not "
+        "'no casino host on the LAN'."
     ),
     "Validation controler": (
         "SAS channel functionality: this host owns ticket validation "
@@ -2602,6 +2718,7 @@ for _name in STANDARD_DOOR_SWITCH_NAMES:
             "encrypted bios/.../game/switches.xml that is not edited here."
         ),
     )
+FIELD_HELP = LIVE_OPTION_HELP
 
 # Tags OneHand paints on the game DENOM / credit labels. UTF-8 cent or a
 # leftover '?' here is what shows as ``5?¢`` on cabinet.
@@ -4380,6 +4497,22 @@ def commit_live_push(
                 f"(log: {log_path})",
             )
 
+    sas_lock_note = ""
+    wrote_sas = sections is None or "sas" in sections
+    if (
+        kind == "slot"
+        and written
+        and (wrote_sas or bool(recipe.sas.lock_game_when_no_comms))
+    ):
+        try:
+            sas_lock_note = probe_sas_lock_state(plan_src, dest)
+        except Exception as exc:  # noqa: BLE001
+            _lp_log(f"sas lock probe skipped: {exc}")
+            sas_lock_note = ""
+        if sas_lock_note:
+            stack_detail = f"{stack_detail}\n{sas_lock_note}".strip()
+            _lp_log(f"sas lock probe {sas_lock_note}")
+
     _lp_log(
         f"commit end killed={stack_killed} started={stack_started} "
         f"ramclear={ramclear_ran} written={len(written)} errors={errors}"
@@ -4395,4 +4528,5 @@ def commit_live_push(
         sections=tuple(sorted(sections)) if sections is not None else (),
         ramclear_ran=ramclear_ran,
         ramclear_detail=ramclear_detail,
+        sas_lock_note=sas_lock_note,
     )

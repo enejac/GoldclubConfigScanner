@@ -965,6 +965,7 @@ class LivePushPanel(QWidget):
         self._sas_aft = QCheckBox("AFT enabled")
         self._sas_aft.setChecked(True)
         self._sas_lock = QCheckBox("Lock game when no SAS comms")
+        self._sas_lock.setToolTip(LIVE_OPTION_HELP.get("Lock when no SAS", ""))
         self._sas_channels: dict[str, QCheckBox] = {}
         sas.addRow(self._sas_enabled)
         sas.addRow("Address", self._sas_address)
@@ -3567,7 +3568,11 @@ class LivePushPanel(QWidget):
         if result.stack_started:
             bits.append("Game started.")
         elif result.stack_detail:
-            bits.append(result.stack_detail.splitlines()[-1])
+            last = result.stack_detail.splitlines()[-1]
+            if last != (result.sas_lock_note or ""):
+                bits.append(last)
+        if result.sas_lock_note:
+            bits.append(result.sas_lock_note)
         text = " ".join(bits)
         if result.errors:
             QMessageBox.warning(

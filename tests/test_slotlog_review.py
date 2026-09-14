@@ -113,6 +113,25 @@ def test_review_detects_invalid_market(tmp_path: Path) -> None:
     ).casefold()
 
 
+def _write_sas_lock(goldclub: Path, *, on: bool) -> None:
+    path = (
+        goldclub
+        / "Services"
+        / "aurum"
+        / "config"
+        / "SASControler1"
+        / "SASsetupData.xml"
+    )
+    flag = "true" if on else "false"
+    _write(
+        path,
+        '<?xml version="1.0"?>\n'
+        "<SASsetupData>"
+        f"<LockGameWhenNoComms>{flag}</LockGameWhenNoComms>"
+        "</SASsetupData>\n",
+    )
+
+
 def test_review_sas_lock_cleared(tmp_path: Path) -> None:
     log = tmp_path / "var" / "log" / "SlotLog" / "day.log"
     _write(
@@ -124,6 +143,38 @@ def test_review_sas_lock_cleared(tmp_path: Path) -> None:
     review = review_slot_logs(tmp_path)
     assert any(f.id == "sas_lock_cleared" for f in review.findings)
     assert not any(f.id == "sas_lock" and f.severity == "warning" for f in review.findings)
+
+
+def test_review_sas_lock_flag_idle_when_comms_hold(tmp_path: Path) -> None:
+    log = tmp_path / "var" / "log" / "SlotLog" / "day.log"
+    _write(
+        log,
+        "2026-09-14T13:31:00.000+01:00 INFO Aurum EGM messenger created and started\n"
+        "2026-09-14T13:31:10.000+01:00 INFO 'Select A Game'\n",
+    )
+    _write_sas_lock(tmp_path, on=True)
+    review = review_slot_logs(tmp_path)
+    idle = next(f for f in review.findings if f.id == "sas_lock_flag_idle")
+    assert idle.severity == "info"
+    assert idle.field_label == "Lock when no SAS"
+    assert "31100" in idle.detail
+    assert not any(f.id == "sas_lock" and f.severity == "warning" for f in review.findings)
+    assert not review.has_actionable
+    assert "unlocked is expected" in review.note.casefold()
+
+
+def test_review_sas_lock_warning_when_flag_on(tmp_path: Path) -> None:
+    log = tmp_path / "var" / "log" / "SlotLog" / "day.log"
+    _write(
+        log,
+        "2026-09-14T13:06:00.000+01:00 INFO Locked by Host. NO SAS COMMUNICATIONS!\n",
+    )
+    _write_sas_lock(tmp_path, on=True)
+    review = review_slot_logs(tmp_path)
+    hit = next(f for f in review.findings if f.id == "sas_lock")
+    assert hit.severity == "warning"
+    assert not any(f.id == "sas_lock_flag_idle" for f in review.findings)
+    assert review.has_actionable
 
 
 def test_review_since_filters_old_lines(tmp_path: Path) -> None:
@@ -290,3 +341,4 @@ def test_live_push_panel_wires_slotlog_check() -> None:
     assert "field_highlight_error" in src
     assert "_start_slotlog_review" in src
     assert "wait_sec=90.0" in src
+    assert "sas_lock_note" in src
