@@ -5,6 +5,7 @@ Updated automatically when a PR is merged.
 
 ## 2026-09-14
 
+- Keep pytest tmp paths out of the remembered cabinet ([#68](https://github.com/enejac/GoldclubConfigScanner/pull/68))
 - Live Push: give door labels and checkbox text a bit of margin ([#67](https://github.com/enejac/GoldclubConfigScanner/pull/67))
 - Live Push: warn when Apply needs a stack restart or RAM clear ([#66](https://github.com/enejac/GoldclubConfigScanner/pull/66))
 - Live Push: read Language from jurisdiction_config + slot\languages (2.0.1/3.0.0 images) ([#65](https://github.com/enejac/GoldclubConfigScanner/pull/65))
