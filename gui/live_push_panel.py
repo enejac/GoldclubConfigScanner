@@ -107,6 +107,7 @@ from config_scanner.live_push import (
     locale_defaults_for_market,
     overlay_jurisdiction_recipe,
     prepare_live_goldclub,
+    COUNTRY_FLAG_LABEL,
     recipe_change_lines,
     recipe_from_market_id,
     wait_for_dallas_from_hardware,
@@ -138,6 +139,7 @@ from config_scanner.jurisdiction import (
     suggest_jurisdiction_label,
     upsert_jurisdiction,
 )
+from gui.country_flag_row import CountryFlagsEditor
 from gui.create_market_dialog import CreateMarketDialog
 from config_scanner.cs_sources import pick_cs_source_for_export, resolve_cs_source
 from config_scanner.cs_catalog import discover_leaves
@@ -884,6 +886,7 @@ class LivePushPanel(QWidget):
         self._language = QComboBox()
         self._language.setEditable(True)
         self._fill_language_combo()
+        self._country_flags = CountryFlagsEditor()
         self._market = QComboBox()
         self._market.setEditable(True)
         self._fill_market_combo()
@@ -891,8 +894,9 @@ class LivePushPanel(QWidget):
         loc.addRow("Symbol", self._symbol)
         loc.addRow("Culture", self._culture)
         loc.addRow("Language", self._language)
+        loc.addRow(COUNTRY_FLAG_LABEL, self._country_flags)
         loc.addRow("Target market", self._market)
-        board.add_box(loc_box, 5)
+        board.add_box(loc_box, 6)
 
         denom_box, denom = _group_form("Denoms / bets")
         self._denoms = QComboBox()
@@ -1244,6 +1248,7 @@ class LivePushPanel(QWidget):
                 widget.valueChanged.connect(self._refresh_changes)
             elif isinstance(widget, QCheckBox):
                 widget.toggled.connect(self._refresh_changes)
+        self._country_flags.changed.connect(self._refresh_changes)
         self._licence_source.textChanged.connect(self._refresh_changes)
 
         self._restart = QCheckBox("Restart game after write")
@@ -1521,6 +1526,7 @@ class LivePushPanel(QWidget):
             ("Currency symbol", self._symbol),
             ("Culture", self._culture),
             ("Language", self._language),
+            (COUNTRY_FLAG_LABEL, self._country_flags),
             ("Market", self._market),
             ("Denoms (cents)", self._denoms),
             ("Bet multipliers", self._bets),
@@ -2216,6 +2222,9 @@ class LivePushPanel(QWidget):
                 self._language.setCurrentIndex(-1)
                 if self._language.isEditable():
                     self._language.setEditText("")
+            self._country_flags.load(
+                self._goldclub, list(recipe.jurisdiction.language_flags)
+            )
             _set_combo_code(self._market, recipe.jurisdiction.tag)
             denoms = ", ".join(str(d) for d in recipe.denomination_list)
             self._refresh_denom_choices(keep=denoms)
@@ -2536,6 +2545,7 @@ class LivePushPanel(QWidget):
         symbol = _combo_code(self._symbol) or currency_symbol_for(currency)
         recipe.jurisdiction.currency_symbol = symbol
         recipe.mg_identity.language = _combo_code(self._language).strip()
+        recipe.jurisdiction.language_flags = self._country_flags.current_flags()
         recipe.hardware_currency_name = currency
         denoms = self._parse_denoms()
         if denoms:

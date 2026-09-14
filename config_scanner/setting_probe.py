@@ -285,6 +285,10 @@ def read_setting_value(goldclub: Path, spec: SettingSpec) -> tuple[bool, Any, st
     el = _find_by_locator(doc, spec.locator)
     if el is None and spec.kind == "button_map":
         el = doc  # whole Keyboard.xml
+    if spec.id == "locale.jur_language_flags":
+        from config_scanner.language_flags import probe_language_flags
+
+        return probe_language_flags(doc)
     if el is None:
         return False, None, f"missing locator {spec.locator}"
     return True, _extract_value(spec, el), ""
