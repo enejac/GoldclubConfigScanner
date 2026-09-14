@@ -5,6 +5,7 @@ Updated automatically when a PR is merged.
 
 ## 2026-09-14
 
+- Snapshots: Create without GUI freeze; drop placeholder banner and status-bar stamp ([#61](https://github.com/enejac/GoldclubConfigScanner/pull/61))
 - Live Push: show real country-flag bitmaps because flag_spanish is oft… ([#60](https://github.com/enejac/GoldclubConfigScanner/pull/60))
 - Cursor/smb write without winrm ([#59](https://github.com/enejac/GoldclubConfigScanner/pull/59))
 - Restore and Live Push: SMB write when WinRM is not listening ([#58](https://github.com/enejac/GoldclubConfigScanner/pull/58))
