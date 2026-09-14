@@ -3,6 +3,10 @@
 What landed on `master`. One line per merged pull request, newest first.
 Updated automatically when a PR is merged.
 
+## 2026-09-14
+
+- Rebuild ConfigScanner.exe from master 8abecfd (2026-09-11 15:16) ([#55](https://github.com/enejac/GoldclubConfigScanner/pull/55))
+
 ## 2026-09-11
 
 - Screenshot button works while an 'Apply finished with errors' popup is open ([#54](https://github.com/enejac/GoldclubConfigScanner/pull/54))
