@@ -230,15 +230,16 @@ def test_revert_uses_recorded_write_scope() -> None:
     assert "Restore that undo snapshot" in SRC
 
 
-def test_swap_confirm_asks_backup_in_the_same_dialog() -> None:
+def test_swap_confirm_reads_backup_from_the_restore_row() -> None:
     assert "Swap this machine to:" in SRC
-    assert 'QCheckBox("Create a backup")' in SRC
-    assert "backup.setChecked(self._create_backup_enabled())" in SRC
     assert "_ask_restore_confirm" in SRC
     assert "_pending_create_backup" in SRC
     assert "_begin_restore_apply" in SRC
     assert "How it works:" not in SRC
     assert "Config Scanner — confirm restore" in SRC
+    ask = SRC.split("def _ask_restore_confirm", 1)[1].split("\n    def ", 1)[0]
+    assert 'QCheckBox("Create a backup")' not in ask
+    assert "return self._create_backup_enabled()" in ask
 
 
 def test_restore_skips_presave_when_backup_unchecked() -> None:
@@ -304,6 +305,7 @@ def test_create_backup_sits_next_to_auto_start_stack() -> None:
     )[0]
     assert 'QCheckBox("Auto-start stack")' in row
     assert 'self._create_backup_cb = QCheckBox("Create a backup")' in row
+    assert SRC.count('QCheckBox("Create a backup")') == 1
     assert row.index("_auto_start_stack_cb") < row.index("_create_backup_cb")
     assert "get_config_scanner_restore_backup()" in row
     assert "set_config_scanner_restore_backup" in row
@@ -324,15 +326,11 @@ def test_create_backup_defaults_off_and_survives_relaunch(
     assert SettingsManager.get_config_scanner_restore_backup() is False
 
 
-def test_confirm_dialog_choice_sticks_for_the_next_restore() -> None:
-    """The dialog seeds from the row and writes the answer back to it."""
+def test_confirm_dialog_has_no_backup_checkbox() -> None:
+    """Backup is the restore-row switch; Yes/No only confirms the swap."""
     ask = SRC.split("def _ask_restore_confirm", 1)[1].split("\n    def ", 1)[0]
-    assert "backup.setChecked(self._create_backup_enabled())" in ask
-    assert "self._set_create_backup(wanted)" in ask
-
-    setter = SRC.split("def _set_create_backup", 1)[1].split("\n    def ", 1)[0]
-    assert "box.setChecked(bool(enabled))" in setter
-    assert "set_config_scanner_restore_backup(bool(enabled))" in setter
+    assert 'QCheckBox("Create a backup")' not in ask
+    assert "return self._create_backup_enabled()" in ask
 
     getter = SRC.split("def _create_backup_enabled", 1)[1].split("\n    def ", 1)[0]
     assert "get_config_scanner_restore_backup()" in getter

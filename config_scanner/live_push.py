@@ -58,6 +58,7 @@ from config_scanner.slot_setup import (
     load_recipe_from_goldclub,
     iter_magicwheel_setting_rels,
     markets_accepted_by_onehand,
+    read_sas_settings,
     math_settings_rels,
     merge_play_limits,
     missing_display_mode_assets,
@@ -767,10 +768,65 @@ MAGIC_WHEEL_AVERAGES: tuple[int, ...] = (
 JACKPOT_COUNTERS: tuple[int, ...] = (0, 1, 2, 3, 4, 5)
 JACKPOT_LAYOUTS: tuple[str, ...] = ("jackpotreceipt0", "jackpotreceipt1")
 CELEBRATION_LIMITS: tuple[str, ...] = ("LockAndHandpay", "Handpay", "Ticket")
-CASHOUT_MODES: tuple[str, ...] = ("Ticket", "Handpay")
+CASHOUT_MODES: tuple[str, ...] = ("Ticket", "Handpay", "Cashless")
 DEFAULT_BETS: tuple[str, ...] = ("Minimum", "Maximum", "Last")
 
-_SLOT_KILL_SCRIPT = textwrap.dedent(
+# Start Aurum if Live Push / a filtered goldclub token left it down.
+# game-start.exe does not start the service. LockGameWhenNoComms is inert
+# until Aurum reloads SASsetupData. Same snippet on WinRM and local EGM.
+_ENSURE_AURUM_PS = textwrap.dedent(
+    r"""
+    function Ensure-GoldClubAurumRunning {
+        $svc = Get-Service -Name 'GoldClub.Aurum.Services' -ErrorAction SilentlyContinue
+        if (-not $svc) { return }
+        if ($svc.Status -eq 'Running') { return }
+        Start-Service -Name $svc.Name -ErrorAction SilentlyContinue
+        $deadline = (Get-Date).AddSeconds(20)
+        do {
+            $svc.Refresh()
+            if ($svc.Status -eq 'Running') { return }
+            Start-Sleep -Milliseconds 400
+        } while ((Get-Date) -lt $deadline)
+        cmd /c 'schtasks /Run /TN "GoldClub-Ensure-HwStack" /I' 2>$null | Out-Null
+        $deadline = (Get-Date).AddSeconds(40)
+        do {
+            $svc = Get-Service -Name 'GoldClub.Aurum.Services' -ErrorAction SilentlyContinue
+            if ($svc -and $svc.Status -eq 'Running') { return }
+            Start-Sleep -Milliseconds 500
+        } while ((Get-Date) -lt $deadline)
+    }
+    Ensure-GoldClubAurumRunning
+    """
+).strip()
+
+
+def _slot_kill_aurum_block(*, stop_aurum: bool) -> str:
+    if stop_aurum:
+        return textwrap.dedent(
+            """
+            # Stop Aurum so it cannot rewrite SASsetupData (LockGameWhenNoComms)
+            # from in-memory state while Live Push is writing the file.
+            $aurum = Get-Service -Name 'GoldClub.Aurum.Services' -ErrorAction SilentlyContinue
+            if ($aurum) { Stop-Service -Name $aurum.Name -Force -ErrorAction SilentlyContinue }
+            Start-Sleep -Seconds 2
+            """
+        ).strip()
+    return textwrap.dedent(
+        """
+        # Pre-start kill: leave Aurum Running so LockGameWhenNoComms stays live.
+        # game-start.exe does not start GoldClub.Aurum.Services.
+        """
+    ).strip()
+
+
+def _slot_kill_script(*, stop_aurum: bool = True) -> str:
+    return _SLOT_KILL_SCRIPT_TEMPLATE.replace(
+        "__AURUM_BLOCK__",
+        _slot_kill_aurum_block(stop_aurum=stop_aurum),
+    )
+
+
+_SLOT_KILL_SCRIPT_TEMPLATE = textwrap.dedent(
     """
     $ErrorActionPreference = 'SilentlyContinue'
     # Start-SlotGameWatch.exe is a stub: it launches powershell.exe -File
@@ -922,11 +978,7 @@ _SLOT_KILL_SCRIPT = textwrap.dedent(
         if (-not $p) { break }
         Start-Sleep -Milliseconds 400
     }
-    # Stop Aurum so it cannot rewrite SASsetupData (LockGameWhenNoComms) from
-    # in-memory state while Live Push is writing the file.
-    $aurum = Get-Service -Name 'GoldClub.Aurum.Services' -ErrorAction SilentlyContinue
-    if ($aurum) { Stop-Service -Name $aurum.Name -Force -ErrorAction SilentlyContinue }
-    Start-Sleep -Seconds 2
+    __AURUM_BLOCK__
     Stop-SlotWatchers
     $names = @('Bootstrap','Start-SlotGameWatch','BiOS2','OneHand','game-start')
     Stop-Named $names
@@ -948,6 +1000,8 @@ _SLOT_KILL_SCRIPT = textwrap.dedent(
     """
 ).strip()
 
+_SLOT_KILL_SCRIPT = _slot_kill_script(stop_aurum=True)
+
 
 @dataclass(frozen=True)
 class LivePushResult:
@@ -961,10 +1015,45 @@ class LivePushResult:
     sections: tuple[str, ...] = ()
     ramclear_ran: bool = False
     ramclear_detail: str = ""
+    sas_lock_note: str = ""
 
     @property
     def ok(self) -> bool:
         return not self.errors
+
+
+LIVE_PUSH_APPLY_SLOTLOG_HINT = (
+    "SlotLog review runs after the game starts (invalid market, denoms, SAS lock). "
+    "Or click Check SlotLog."
+)
+
+
+def format_live_push_apply_status(result: LivePushResult) -> str:
+    """One-line Apply outcome for the Live Push status area (no dialog)."""
+    bits = [f"Wrote {len(result.written)} file(s)."]
+    if result.sections:
+        bits.append(f"Sections: {', '.join(result.sections)}.")
+    if result.backup_dir:
+        bits.append(f"Backup: {result.backup_dir}")
+    if result.skipped:
+        bits.append(f"Skipped {len(result.skipped)}.")
+    if result.stack_killed:
+        bits.append("Game was stopped.")
+    if result.ramclear_ran:
+        bits.append("RAM clear ran.")
+    elif result.ramclear_detail:
+        bits.append(result.ramclear_detail.splitlines()[0][:120])
+    if result.stack_started:
+        bits.append("Game started.")
+    elif result.stack_detail:
+        last = result.stack_detail.splitlines()[-1]
+        if last != (result.sas_lock_note or "") and stack_detail_worth_showing(
+            last, result.errors
+        ):
+            bits.append(last)
+    if result.sas_lock_note:
+        bits.append(result.sas_lock_note)
+    return " ".join(bits)
 
 
 @dataclass(frozen=True)
@@ -1152,7 +1241,7 @@ def _slot_start_script(
             throw 'OneHand did not start after Bootstrap'
         }
         """
-    head = textwrap.dedent(
+    head = _ENSURE_AURUM_PS + "\n" + textwrap.dedent(
         f"""
         $ErrorActionPreference = 'Stop'
         $exe = $null
@@ -1222,6 +1311,7 @@ def _slot_bootstrap_watchdog_script(
                 if (Test-Path -LiteralPath $c) {{ $exe = $c; break }}
             }}
             if (-not $exe) {{ exit 1 }}
+            __ENSURE_AURUM__
             $dir = Split-Path -Parent $exe
             try {{
                 $user = 'goldclub'
@@ -1241,7 +1331,7 @@ def _slot_bootstrap_watchdog_script(
         }}
         exit 0
         """
-    ).strip()
+    ).strip().replace("__ENSURE_AURUM__", _ENSURE_AURUM_PS)
 
 
 def _arm_slot_bootstrap_watchdog(
@@ -1515,6 +1605,53 @@ def live_push_restart_required_reasons(
     return tuple(reasons)
 
 
+# OneHand already deserialized these into RAM (Collect uses get_CashoutMode).
+# SMB overwrite of mgconfig does not call set_CashoutMode; the Service menu
+# does. Reloading OneHand (game-start) runs LoadMgConfiguration. Aurum / SAS
+# / HWSubsys do not read CashoutButtonMode.
+_ONEHAND_RELOAD_LABELS = frozenset({"Cashout button"})
+
+
+def live_push_onehand_reload_reasons(
+    live: SlotSetupRecipe,
+    form: SlotSetupRecipe,
+) -> tuple[str, ...]:
+    """Snapshot labels that need an OneHand reload (not a full stack bounce)."""
+    reasons: list[str] = []
+    seen: set[str] = set()
+    for line in recipe_change_lines(live, form):
+        label = line.split(":", 1)[0].strip()
+        if label in _ONEHAND_RELOAD_LABELS and label not in seen:
+            seen.add(label)
+            reasons.append(label)
+    return tuple(reasons)
+
+
+def live_push_apply_mode(
+    *,
+    kind: str,
+    restart_stack: bool,
+    restart_reasons: Sequence[str] = (),
+    ramclear_reasons: Sequence[str] = (),
+    onehand_reload_reasons: Sequence[str] = (),
+) -> str:
+    """How Apply restacks: ``fullstack``, ``onehand``, or ``write``.
+
+    Cashout-only is ``onehand`` even when the Restart checkbox is on — that
+    field is not lock-now / Aurum, and fullstack would bounce SAS for nothing.
+    """
+    slot = (kind or "").strip().casefold() == "slot"
+    if slot and ramclear_reasons:
+        return "fullstack"
+    if slot and restart_reasons and restart_stack:
+        return "fullstack"
+    if slot and onehand_reload_reasons and not restart_reasons:
+        return "onehand"
+    if restart_stack:
+        return "fullstack"
+    return "write"
+
+
 def live_push_restart_required_text(
     *,
     kind: str,
@@ -1633,11 +1770,26 @@ def restart_slot_hwsubsys(scan_target: str) -> tuple[bool, str]:
             Start-Sleep -Milliseconds 400
             if ($hw) { $hw.Refresh() }
         } while ((Get-Date) -lt $deadline)
+        $au = Get-Service -Name 'GoldClub.Aurum.Services' -ErrorAction SilentlyContinue
+        if ($au) {
+            $auDeadline = (Get-Date).AddSeconds(20)
+            do {
+                if ($au.Status -eq 'Running') { break }
+                Start-Service -Name $au.Name -ErrorAction SilentlyContinue
+                Start-Sleep -Milliseconds 400
+                $au.Refresh()
+            } while ((Get-Date) -lt $auDeadline)
+            $notes.Add("GoldClub.Aurum.Services wait=$([string]$au.Status)")
+        }
         if ($hw -and $hw.Status -eq 'Running') {
             Start-Sleep -Seconds 12
         }
         $blob = ($notes -join '; ')
         if ($hw) { $blob = $blob + '; wait=' + [string]$hw.Status }
+        if ($au -and $au.Status -ne 'Running') {
+            Write-Output ($blob + '; Aurum not Running')
+            exit 1
+        }
         if (-not $hw) {
             Write-Output ($blob + '; hardware subsystem not installed')
             exit 0
@@ -1669,6 +1821,117 @@ def restart_slot_hwsubsys(scan_target: str) -> tuple[bool, str]:
     if result.returncode == 0:
         return True, blob or "GoldClub Hardware Subsystem Running"
     return False, blob or f"HWSubsys restart exit {result.returncode}"
+
+
+_SAS_LOCK_PROBE_SCRIPT = textwrap.dedent(
+    r"""
+    $ErrorActionPreference = 'SilentlyContinue'
+    $au = Get-Service -Name 'GoldClub.Aurum.Services' -ErrorAction SilentlyContinue
+    $aurum = if ($au -and $au.Status -eq 'Running') { '1' } else { '0' }
+    $hits = @()
+    try {
+        $hits = @(Get-NetTCPConnection -LocalPort 31100 -State Listen,Established -ErrorAction SilentlyContinue)
+    } catch {}
+    if (-not $hits) {
+        try {
+            $hits = @(netstat -ano | Select-String -Pattern ':31100\s')
+        } catch {}
+    }
+    $port = if ($hits -and $hits.Count -gt 0) { '1' } else { '0' }
+    Write-Output ("AURUM={0} PORT31100={1}" -f $aurum, $port)
+    exit 0
+    """
+).strip()
+
+_SAS_LOCK_PROBE_RE = re.compile(
+    r"AURUM=(?P<aurum>[01])\s+PORT31100=(?P<port>[01])",
+    re.I,
+)
+
+
+def format_sas_lock_probe_line(
+    *,
+    lock_on: bool,
+    port_31100_up: bool | None,
+    aurum_running: bool | None = None,
+) -> str:
+    """One operator line: lock flag vs SAS 31100. Empty when the flag is off."""
+    if not lock_on:
+        return ""
+    if port_31100_up is True:
+        return (
+            "Lock when no SAS is on; SAS 31100 is up so the game stays unlocked"
+        )
+    if port_31100_up is False:
+        extra = ""
+        if aurum_running is False:
+            extra = " (Aurum is not Running)"
+        return (
+            "Lock when no SAS is on; 31100 is down — expect NO SAS COMMUNICATIONS"
+            + extra
+        )
+    return "Lock when no SAS is on; could not check SAS 31100"
+
+
+def parse_sas_lock_probe_blob(blob: str) -> tuple[bool | None, bool | None]:
+    """Parse AURUM=/PORT31100= from the probe script. Unknowns stay None."""
+    match = _SAS_LOCK_PROBE_RE.search(blob or "")
+    if match is None:
+        return None, None
+    return match.group("aurum") == "1", match.group("port") == "1"
+
+
+def probe_sas_lock_comms(scan_target: str) -> tuple[bool | None, bool | None]:
+    """Aurum Running and TCP 31100 listen/established. None if unknown.
+
+    Unit tests skip the live cabinet probe (PYTEST_CURRENT_TEST) so Apply
+    tests stay offline. Monkeypatch this function when a test needs fakes.
+    """
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return None, None
+    local = _slot_target_is_local(scan_target)
+    try:
+        if local:
+            ok, blob = _run_local_powershell(_SAS_LOCK_PROBE_SCRIPT, timeout=30)
+        else:
+            host = unc_host_from_target(scan_target) or ""
+            if not remote_winrm_ready(host):
+                _lp_log(f"sas lock probe skip: {winrm_skip_detail(host)}")
+                return None, None
+            from automation.remote_exec import winrm_run_inline
+            from network.lab_access import require_lab_fleet_ip
+
+            ip = require_lab_fleet_ip(host)
+            _ensure_lab_smb(ip)
+            result = winrm_run_inline(
+                ip=ip, script=_SAS_LOCK_PROBE_SCRIPT, timeout=45
+            )
+            blob = ((result.stdout or "") + (result.stderr or "")).strip()
+            ok = result.returncode == 0
+    except Exception as exc:  # noqa: BLE001
+        _lp_log(f"sas lock probe failed: {exc}")
+        return None, None
+    if not ok and not blob:
+        return None, None
+    return parse_sas_lock_probe_blob(blob)
+
+
+def probe_sas_lock_state(scan_target: str, dest: Path | str) -> str:
+    """Disk LockGameWhenNoComms plus cabinet 31100 → one Apply-complete line."""
+    try:
+        gold = goldclub_root_from_target(dest)
+        lock_on = bool(read_sas_settings(gold).lock_game_when_no_comms)
+    except Exception as exc:  # noqa: BLE001
+        _lp_log(f"sas lock probe disk read failed: {exc}")
+        return ""
+    if not lock_on:
+        return ""
+    aurum, port = probe_sas_lock_comms(scan_target)
+    return format_sas_lock_probe_line(
+        lock_on=True,
+        port_31100_up=port,
+        aurum_running=aurum,
+    )
 
 
 def backup_live_push_files(
@@ -2338,7 +2601,14 @@ LIVE_OPTION_HELP: dict[str, str] = {
     "Jackpot counters": "How many progressive / jackpot counters the UI shows.",
     "Jackpot receipt": "Jackpot receipt / ticket layout style.",
     "Jackpot celebration": "Celebration screen limit / style after a jackpot.",
-    "Cashout button": "How the cashout button behaves (e.g. collect / handpay).",
+    "Cashout button": (
+        "Writes mgconfig TransferParameters/CashoutButtonMode: Ticket, "
+        "Handpay, or Cashless. Not a restart-required field: Apply reloads "
+        "OneHand (game-start) so Collect uses the new mode, and leaves "
+        "Aurum / SAS / hardware up. Cashless is WAT-to-host (Collect "
+        "trigger with MODE:Cashless) and needs AFT/WAT — without a host, "
+        "OneHand falls back to handpay."
+    ),
     "Default bet": "Default bet selection when a game opens.",
     "Show denom selector": (
         "Show the on-screen denomination picker in the game UI."
@@ -2357,8 +2627,11 @@ LIVE_OPTION_HELP: dict[str, str] = {
     ),
     "AFT": "Enable AFT (Advanced Funds Transfer) when funds transfer is AFT.",
     "Lock when no SAS": (
-        "Lock the game when SAS communications are lost "
-        "(LockGameWhenNoComms)."
+        "Writes SASsetupData LockGameWhenNoComms. The game locks only if "
+        "that SAS gateway/TCP drops (Aurum SASControler1 → CommCtrlSAS "
+        "localhost:31100 / COM11 — the 31 Aug COM11-ghost case). A healthy "
+        "31100 path stays unlocked. This is not lock now and not "
+        "'no casino host on the LAN'."
     ),
     "Validation controler": (
         "SAS channel functionality: this host owns ticket validation "
@@ -2533,6 +2806,7 @@ for _name in STANDARD_DOOR_SWITCH_NAMES:
             "encrypted bios/.../game/switches.xml that is not edited here."
         ),
     )
+FIELD_HELP = LIVE_OPTION_HELP
 
 # Tags OneHand paints on the game DENOM / credit labels. UTF-8 cent or a
 # leftover '?' here is what shows as ``5?¢`` on cabinet.
@@ -3708,12 +3982,22 @@ def winrm_failure_hint(detail: str, host: str) -> str:
     return ""
 
 
-def run_slot_stack_kill(scan_target: str) -> tuple[bool, str]:
-    """Stop OneHand / Bootstrap so slot XML can be written."""
+def run_slot_stack_kill(
+    scan_target: str, *, stop_aurum: bool = True
+) -> tuple[bool, str]:
+    """Stop OneHand / Bootstrap so slot XML can be written.
+
+    ``stop_aurum`` is True for the pre-write kill so Aurum cannot rewrite
+    SASsetupData. False for the pre-start kill: Aurum already reloaded the
+    file, and game-start does not bring the service back.
+    """
     import time
 
+    script = _slot_kill_script(stop_aurum=stop_aurum)
     local = _slot_target_is_local(scan_target)
-    _lp_log(f"slot kill local={local} target={scan_target!r}")
+    _lp_log(
+        f"slot kill local={local} stop_aurum={stop_aurum} target={scan_target!r}"
+    )
     if local:
         _arm_slot_bootstrap_watchdog(scan_target)
     host = "" if local else (unc_host_from_target(scan_target) or "")
@@ -3724,7 +4008,7 @@ def run_slot_stack_kill(scan_target: str) -> tuple[bool, str]:
     last_detail = ""
     for attempt in range(1, 4):
         if local:
-            ok, detail = _run_local_powershell(_SLOT_KILL_SCRIPT, timeout=90)
+            ok, detail = _run_local_powershell(script, timeout=90)
         else:
             try:
                 from automation.remote_exec import winrm_run_inline
@@ -3733,7 +4017,7 @@ def run_slot_stack_kill(scan_target: str) -> tuple[bool, str]:
                 ip = require_lab_fleet_ip(host)
                 _ensure_lab_smb(ip)
                 result = winrm_run_inline(
-                    ip=ip, script=_SLOT_KILL_SCRIPT, timeout=120
+                    ip=ip, script=script, timeout=120
                 )
             except Exception as exc:  # noqa: BLE001
                 _lp_log(f"slot kill remote exception {exc}")
@@ -4101,19 +4385,41 @@ def commit_live_push(
             _lp_log(f"commit abort: {msg}")
             return LivePushResult((), (), (msg,), False, False, msg)
     # Currency / denom / bet-step deltas need ramclear + Bootstrap even if the
-    # operator left "restart game" unchecked.
+    # operator left "restart game" unchecked. Cashout-only reloads OneHand
+    # (LoadMgConfiguration) and leaves Aurum / SAS / HWSubsys running.
     need_slot_ramclear = bool(ramclear_reasons) and kind == "slot"
-    effective_restart = bool(restart_stack or need_slot_ramclear)
+    restart_reasons = live_push_restart_required_reasons(
+        live_recipe,
+        recipe,
+        full_pack=full_pack,
+        push_licences=want_licences,
+        goldclub=dest,
+    )
+    onehand_reload_reasons = live_push_onehand_reload_reasons(live_recipe, recipe)
+    apply_mode = live_push_apply_mode(
+        kind=kind,
+        restart_stack=restart_stack,
+        restart_reasons=restart_reasons,
+        ramclear_reasons=ramclear_reasons if kind == "slot" else (),
+        onehand_reload_reasons=onehand_reload_reasons,
+    )
+    effective_restart = apply_mode == "fullstack"
     use_slot = bool(effective_restart and kind == "slot")
+    use_onehand_reload = apply_mode == "onehand"
     plan = (
         None
-        if use_slot
+        if use_slot or use_onehand_reload
         else (plan_stack_restart(plan_src) if effective_restart else None)
     )
     stack_killed = False
     stack_detail = ""
     if need_slot_ramclear and not restart_stack:
         _lp_log("commit: forcing slot restart because ramclear is required")
+    if use_onehand_reload:
+        _lp_log(
+            "commit: OneHand reload only (Aurum stays up): "
+            + ", ".join(onehand_reload_reasons)
+        )
     if effective_restart and not use_slot and plan is None:
         stack_detail = (
             "No roulette stack plan on this PC. Settings will still be written."
@@ -4256,7 +4562,8 @@ def commit_live_push(
     ramclear_detail = ""
     start_noun = (
         "game-start"
-        if use_slot and slot_start_launcher(plan_src, dest) == "game-start"
+        if (use_slot or use_onehand_reload)
+        and slot_start_launcher(plan_src, dest) == "game-start"
         else "Bootstrap"
     )
     # A stop that *reached* the cabinet but left the game up falls through to
@@ -4337,9 +4644,9 @@ def commit_live_push(
 
     if use_slot and effective_restart and not errors:
         _emit(progress, f"Ensuring game is stopped before {start_noun}…")
-        ok_stop, stop_detail = run_slot_stack_kill(plan_src)
+        ok_stop, stop_detail = run_slot_stack_kill(plan_src, stop_aurum=False)
         stack_detail = f"{stack_detail}\n{stop_detail}".strip()
-        _lp_log(f"pre-start kill ok={ok_stop} {stop_detail[:400]}")
+        _lp_log(f"pre-start kill ok={ok_stop} stop_aurum=False {stop_detail[:400]}")
         if not ok_stop:
             errors = (
                 "Settings written, but OneHand/Bootstrap was still running — "
@@ -4367,6 +4674,54 @@ def commit_live_push(
                 f"Settings written, but stack did not start: {_short_fail(start_detail)} "
                 f"(log: {log_path})",
             )
+    elif use_onehand_reload and written and not errors:
+        _emit(progress, "Reloading OneHand (Aurum stays up)…")
+        ok_stop, stop_detail = run_slot_stack_kill(plan_src, stop_aurum=False)
+        stack_killed = ok_stop
+        stack_detail = f"{stack_detail}\n{stop_detail}".strip()
+        _lp_log(
+            f"onehand reload kill ok={ok_stop} stop_aurum=False {stop_detail[:400]}"
+        )
+        if not ok_stop:
+            host = unc_host_from_target(plan_src) or "the cabinet"
+            hint = winrm_failure_hint(stop_detail, host)
+            errors = (
+                (
+                    f"Settings written ({len(written)} file(s)), but OneHand "
+                    f"could not be reloaded on {host} — "
+                    f"{_short_fail(stop_detail)} {hint} (log: {log_path})"
+                ).strip(),
+            )
+        else:
+            _emit(progress, f"Starting {start_noun} on the cabinet…")
+            ok, start_detail = run_slot_stack_start(plan_src, dest=dest)
+            stack_started = ok
+            stack_detail = f"{stack_detail}\n{start_detail}".strip()
+            if ok:
+                stack_detail = (
+                    f"{stack_detail}\nOneHand reloaded (Aurum left running)."
+                ).strip()
+            elif not errors:
+                errors = (
+                    f"Settings written, but the game did not start: "
+                    f"{_short_fail(start_detail)} (log: {log_path})",
+                )
+
+    sas_lock_note = ""
+    wrote_sas = sections is None or "sas" in sections
+    if (
+        kind == "slot"
+        and written
+        and (wrote_sas or bool(recipe.sas.lock_game_when_no_comms))
+    ):
+        try:
+            sas_lock_note = probe_sas_lock_state(plan_src, dest)
+        except Exception as exc:  # noqa: BLE001
+            _lp_log(f"sas lock probe skipped: {exc}")
+            sas_lock_note = ""
+        if sas_lock_note:
+            stack_detail = f"{stack_detail}\n{sas_lock_note}".strip()
+            _lp_log(f"sas lock probe {sas_lock_note}")
 
     _lp_log(
         f"commit end killed={stack_killed} started={stack_started} "
@@ -4383,4 +4738,5 @@ def commit_live_push(
         sections=tuple(sorted(sections)) if sections is not None else (),
         ramclear_ran=ramclear_ran,
         ramclear_detail=ramclear_detail,
+        sas_lock_note=sas_lock_note,
     )

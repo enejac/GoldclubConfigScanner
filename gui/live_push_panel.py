@@ -101,12 +101,15 @@ from config_scanner.live_push import (
     live_push_catalog,
     live_push_ramclear_notice,
     live_push_ramclear_reasons,
+    live_push_apply_mode,
+    live_push_onehand_reload_reasons,
     live_push_restart_required_reasons,
     live_push_restart_required_text,
-    stack_detail_worth_showing,
+    LIVE_PUSH_APPLY_SLOTLOG_HINT,
     LIVE_PUSH_RAMCLEAR_RESTART_TITLE,
     LIVE_PUSH_RESTART_REQUIRED_TITLE,
     LIVE_PUSH_WRITE_AND_RESTART,
+    format_live_push_apply_status,
     load_live_cabinet,
     market_combo_label,
     ordered_live_markets,
@@ -966,6 +969,7 @@ class LivePushPanel(QWidget):
         self._sas_aft = QCheckBox("AFT enabled")
         self._sas_aft.setChecked(True)
         self._sas_lock = QCheckBox("Lock game when no SAS comms")
+        self._sas_lock.setToolTip(LIVE_OPTION_HELP.get("Lock when no SAS", ""))
         self._sas_channels: dict[str, QCheckBox] = {}
         sas.addRow(self._sas_enabled)
         sas.addRow("Address", self._sas_address)
@@ -1261,9 +1265,8 @@ class LivePushPanel(QWidget):
         self._restart = QCheckBox("Restart game after write")
         self._restart.setChecked(True)
         self._restart.setToolTip(
-            "The game only reads these settings when it starts. Leave this on so "
-            "Apply stops the game, writes the files, then starts it again. If you "
-            "turn it off, Apply warns you and asks before writing."
+            "Full stack restart (Aurum / SAS / hardware). Cashout-only Apply "
+            "always reloads OneHand and leaves Aurum up, even if this is off."
         )
         self._restart.toggled.connect(self._sync_commit_button)
         self._full_pack = QCheckBox("Write full pack")
@@ -1295,11 +1298,20 @@ class LivePushPanel(QWidget):
         self._status = QLabel("")
         self._status.setWordWrap(True)
 
+        self._apply_result = QLabel("")
+        self._apply_result.setObjectName("liveApplyResult")
+        self._apply_result.setWordWrap(True)
+        self._apply_result.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self._apply_result.hide()
+
         opts = QVBoxLayout()
         opts.setContentsMargins(0, 0, 0, 0)
         opts.setSpacing(4)
         opts.addLayout(flags)
         opts.addWidget(self._status)
+        opts.addWidget(self._apply_result)
 
         self._commit = QPushButton("Apply")
         self._commit.setObjectName("primary")
@@ -3208,9 +3220,9 @@ class LivePushPanel(QWidget):
         else:
             self._commit.setText("Apply")
             self._commit.setToolTip(
-                "Write the orange (changed) fields. The running game will keep the "
-                "old settings, so Apply will ask you to write and restart. "
-                "Red fields block Apply."
+                "Write the orange (changed) fields. Cashout-only reloads "
+                "OneHand (Aurum stays up). Other fields keep the running "
+                "game unless Restart is checked. Red fields block Apply."
             )
 
     def _confirm_restart_required(
@@ -3320,8 +3332,21 @@ class LivePushPanel(QWidget):
             skip_apply_confirm = True
         force_restart = bool(ramclear_why) and kind == "slot"
         effective_restart = restart or force_restart
+        apply_mode = live_push_apply_mode(
+            kind=kind,
+            restart_stack=effective_restart,
+            restart_reasons=restart_reasons,
+            ramclear_reasons=ramclear_why if kind == "slot" else (),
+            onehand_reload_reasons=live_push_onehand_reload_reasons(live, after),
+        )
         if not skip_apply_confirm:
-            if effective_restart and kind == "slot":
+            if apply_mode == "onehand":
+                extra = (
+                    "\n\nOneHand will reload so the cashout button is live. "
+                    "Aurum, SAS, and hardware services stay up "
+                    "(not a full stack restart)."
+                )
+            elif apply_mode == "fullstack" and kind == "slot":
                 extra = (
                     "\n\nOneHand will stop, the files will be written, then Bootstrap "
                     "(Debug) or slot\\game-start.exe (Release) starts. "
@@ -3331,7 +3356,7 @@ class LivePushPanel(QWidget):
                     extra += (
                         "\n(Restart is required because a RAM clear will run.)"
                     )
-            elif effective_restart:
+            elif apply_mode == "fullstack":
                 extra = (
                     "\n\nThe game will stop, the files will be written, then the stack starts again. "
                     "Windows will not reboot."
@@ -3543,36 +3568,30 @@ class LivePushPanel(QWidget):
     def _ui_active(self) -> bool:
         return (not self._closing) and self.isVisible()
 
+    def _set_apply_result(self, text: str, *, kind: str = "ok") -> None:
+        """Keep the last Apply outcome on-screen (no success popup)."""
+        colors = {"ok": "#7dcea0", "error": "#e07070", "info": "#9ecbff"}
+        body = (text or "").strip()
+        self._apply_result.setText(body)
+        self._apply_result.setStyleSheet(
+            f"color: {colors.get(kind, colors['ok'])};"
+        )
+        self._apply_result.setVisible(bool(body))
+
     def _on_finished(self, result: object) -> None:
         self._set_busy(False)
         if not self._ui_active():
             return
         if not isinstance(result, LivePushResult):
             self._status.setText("Apply failed.")
+            self._set_apply_result("Apply failed.", kind="error")
             return
-        bits = [
-            f"Wrote {len(result.written)} file(s).",
-        ]
-        if result.sections:
-            bits.append(f"Sections: {', '.join(result.sections)}.")
-        if result.backup_dir:
-            bits.append(f"Backup: {result.backup_dir}")
-        if result.skipped:
-            bits.append(f"Skipped {len(result.skipped)}.")
-        if result.stack_killed:
-            bits.append("Game was stopped.")
-        if result.ramclear_ran:
-            bits.append("RAM clear ran.")
-        elif result.ramclear_detail:
-            bits.append(result.ramclear_detail.splitlines()[0][:120])
-        if result.stack_started:
-            bits.append("Game started.")
-        elif result.stack_detail:
-            tail = result.stack_detail.splitlines()[-1]
-            if stack_detail_worth_showing(tail, result.errors):
-                bits.append(tail)
-        text = " ".join(bits)
+        text = format_live_push_apply_status(result)
         if result.errors:
+            self._set_apply_result(
+                text + "\n" + "\n".join(result.errors[:8]),
+                kind="error",
+            )
             QMessageBox.warning(
                 self,
                 "Apply finished with errors",
@@ -3583,14 +3602,7 @@ class LivePushPanel(QWidget):
         self._last_backup_dir = result.backup_dir or ""
         self._last_apply_since = datetime.now().astimezone()
         self._slotlog_findings = []
-        QMessageBox.information(
-            self,
-            "Apply complete",
-            text
-            + "\n\nAfter the game starts, Config Scanner will review SlotLog "
-            "for misconfig (invalid market, denoms, SAS lock). "
-            "You can also click Check SlotLog.",
-        )
+        self._set_apply_result(f"{text}\n{LIVE_PUSH_APPLY_SLOTLOG_HINT}")
         self._status.setText(text)
         self._load()
         if result.stack_started:

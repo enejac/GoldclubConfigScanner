@@ -76,6 +76,9 @@ def test_watch_script_absorbs_escape_and_bounces_hw() -> None:
     assert "OneHand already running" in src
     assert "not Escape" in src
     assert "HWSubsys already Running - skip bounce" in src
+    assert "function Get-AurumRunning" in src
+    assert "function Get-HwStackReady" in src
+    assert "Get-HwStackReady" in src
     assert "Global\\GoldClub-Start-SlotGameWatch" in src
     assert "game-start returned but OneHand still running" in src
     code = "\n".join(
@@ -97,6 +100,10 @@ def test_slot_start_script_waits_for_onehand_not_bios2() -> None:
     assert "OneHand did not start after Bootstrap" in script
     assert "Live Push started BiOS2 menu instead of OneHand" in script
     assert "Get-Process -Name Bootstrap,OneHand" not in script
+    assert "Ensure-GoldClubAurumRunning" in script
+    assert script.index("Ensure-GoldClubAurumRunning") < script.index(
+        "GoldClub-LivePush-Start"
+    )
 
 
 def test_ensure_hw_stack_refuses_filtered_token() -> None:
@@ -108,6 +115,8 @@ def test_ensure_hw_stack_refuses_filtered_token() -> None:
     assert "SettleSec" in src
     assert "waiting for G: GOLDCLUB before starting services" in src
     assert "function Test-GoldClubReady" in src
+    assert "Aurum Running" in src
+    assert "Aurum not Running" in src
 
 
 def test_unlock_task_starts_services_after_g_ready() -> None:

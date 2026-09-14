@@ -1088,6 +1088,182 @@ def test_lock_when_no_sas_is_not_restart_or_ramclear() -> None:
     assert "RAM clear" not in body
 
 
+def test_format_live_push_apply_status_includes_files_and_game() -> None:
+    from config_scanner.live_push import (
+        LIVE_PUSH_APPLY_SLOTLOG_HINT,
+        LivePushResult,
+        format_live_push_apply_status,
+    )
+
+    result = LivePushResult(
+        ("slot/themes/mgconfig.xml",),
+        (),
+        (),
+        True,
+        True,
+        "OneHand reloaded (Aurum left running).",
+        sections=("mgconfig",),
+    )
+    text = format_live_push_apply_status(result)
+    assert "Wrote 1 file(s)." in text
+    assert "Sections: mgconfig." in text
+    assert "Game was stopped." in text
+    assert "Game started." in text
+    assert "invalid market" in LIVE_PUSH_APPLY_SLOTLOG_HINT
+    assert "Check SlotLog" in LIVE_PUSH_APPLY_SLOTLOG_HINT
+
+
+def test_cashout_modes_include_cashless() -> None:
+    from config_scanner.live_push import CASHOUT_MODES, LIVE_OPTION_HELP
+
+    assert CASHOUT_MODES == ("Ticket", "Handpay", "Cashless")
+    help_text = LIVE_OPTION_HELP["Cashout button"]
+    assert "Cashless" in help_text
+    assert "not a restart-required" in help_text.casefold()
+    assert "CashoutButtonMode" in help_text
+
+
+def test_cashout_only_is_not_restart_or_ramclear() -> None:
+    from config_scanner.live_push import (
+        live_push_apply_mode,
+        live_push_onehand_reload_reasons,
+        live_push_ramclear_reasons,
+        live_push_restart_required_reasons,
+    )
+    from config_scanner.slot_setup import SlotSetupRecipe
+
+    live = SlotSetupRecipe()
+    live.play_limits.cashout_button_mode = "Ticket"
+    form = SlotSetupRecipe.from_dict(live.to_dict())
+    form.play_limits.cashout_button_mode = "Cashless"
+    assert live_push_restart_required_reasons(live, form) == ()
+    assert live_push_ramclear_reasons(live, form) == ()
+    assert live_push_onehand_reload_reasons(live, form) == ("Cashout button",)
+    assert live_push_apply_mode(
+        kind="slot",
+        restart_stack=False,
+        onehand_reload_reasons=("Cashout button",),
+    ) == "onehand"
+    assert live_push_apply_mode(
+        kind="slot",
+        restart_stack=True,
+        onehand_reload_reasons=("Cashout button",),
+    ) == "onehand"
+    assert live_push_apply_mode(
+        kind="slot",
+        restart_stack=True,
+        restart_reasons=("SAS enable / AFT",),
+        onehand_reload_reasons=("Cashout button",),
+    ) == "fullstack"
+    assert live_push_apply_mode(
+        kind="slot",
+        restart_stack=False,
+        restart_reasons=("market",),
+        onehand_reload_reasons=("Cashout button",),
+    ) == "write"
+
+
+def _track_slot_restack(monkeypatch) -> list[str]:
+    order: list[str] = []
+
+    def _kill(_target, *, stop_aurum=True):
+        order.append("slot-kill")
+        order.append(f"stop_aurum={stop_aurum}")
+        return True, "stopped"
+
+    def _start(_target, dest=None):
+        order.append("slot-start")
+        return True, "game-start"
+
+    monkeypatch.setattr("config_scanner.live_push.goldclub_stack_kind", lambda _r: "slot")
+    monkeypatch.setattr("config_scanner.live_push.run_slot_stack_kill", _kill)
+    monkeypatch.setattr("config_scanner.live_push.run_slot_stack_start", _start)
+    monkeypatch.setattr(
+        "config_scanner.live_push.restart_slot_hwsubsys",
+        lambda *_a, **_k: (order.append("hwsubsys") or True, "hw ok"),
+    )
+    monkeypatch.setattr(
+        "config_scanner.live_push.run_slot_ramclear",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("no ramclear")),
+    )
+    monkeypatch.setattr(
+        "config_scanner.live_push.run_stack_kill",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("roulette kill")),
+    )
+    return order
+
+
+def test_commit_cashout_only_reloads_onehand_not_fullstack(
+    tmp_path: Path, monkeypatch
+) -> None:
+    gold = _fake_goldclub(tmp_path)
+    recipe = load_recipe_from_goldclub(gold, label="live")
+    assert recipe.play_limits.cashout_button_mode == "Ticket"
+    recipe.play_limits.cashout_button_mode = "Cashless"
+    order = _track_slot_restack(monkeypatch)
+    result = commit_live_push(
+        recipe,
+        gold,
+        restart_stack=False,
+        scan_target=str(gold),
+        work_parent=tmp_path / "work-cashout",
+        backup=False,
+    )
+    assert result.ok, result.errors
+    assert result.stack_started is True
+    assert order == ["slot-kill", "stop_aurum=False", "slot-start"]
+    assert "OneHand reloaded" in result.stack_detail
+    mg = (gold / "slot" / "themes" / "mgconfig.xml").read_text(encoding="utf-8")
+    assert "<CashoutButtonMode>Cashless</CashoutButtonMode>" in mg
+
+
+def test_commit_cashout_only_skips_fullstack_when_restart_checked(
+    tmp_path: Path, monkeypatch
+) -> None:
+    gold = _fake_goldclub(tmp_path)
+    recipe = load_recipe_from_goldclub(gold, label="live")
+    recipe.play_limits.cashout_button_mode = "Cashless"
+    order = _track_slot_restack(monkeypatch)
+    result = commit_live_push(
+        recipe,
+        gold,
+        restart_stack=True,
+        scan_target=str(gold),
+        work_parent=tmp_path / "work-cashout-restart",
+        backup=False,
+    )
+    assert result.ok, result.errors
+    assert order == ["slot-kill", "stop_aurum=False", "slot-start"]
+    assert "hwsubsys" not in order
+
+
+def test_commit_cashout_plus_aft_still_fullstacks(
+    tmp_path: Path, monkeypatch
+) -> None:
+    gold = _fake_goldclub(tmp_path)
+    recipe = load_recipe_from_goldclub(gold, label="live")
+    recipe.play_limits.cashout_button_mode = "Cashless"
+    recipe.sas.aft_enabled = not bool(recipe.sas.aft_enabled)
+    order = _track_slot_restack(monkeypatch)
+    result = commit_live_push(
+        recipe,
+        gold,
+        restart_stack=True,
+        scan_target=str(gold),
+        work_parent=tmp_path / "work-cashout-aft",
+        backup=False,
+    )
+    assert result.ok, result.errors
+    assert order == [
+        "slot-kill",
+        "stop_aurum=True",
+        "hwsubsys",
+        "slot-kill",
+        "stop_aurum=False",
+        "slot-start",
+    ]
+
+
 def test_live_push_restart_required_reasons_full_pack_and_licences() -> None:
     from config_scanner.live_push import live_push_restart_required_reasons
     from config_scanner.slot_setup import SlotSetupRecipe
@@ -1506,11 +1682,39 @@ def test_summary_line_drops_a_fact_the_error_already_states() -> None:
     assert stack_detail_worth_showing("  Game   stopped. ", ("Game stopped.",)) is False
 
 
-def test_apply_summary_uses_the_dedupe_helper() -> None:
-    src = (
-        Path(__file__).resolve().parents[1] / "gui" / "live_push_panel.py"
-    ).read_text(encoding="utf-8")
-    assert "stack_detail_worth_showing(tail, result.errors)" in src
+def test_apply_status_line_skips_the_repeat(tmp_path: Path) -> None:
+    """format_live_push_apply_status must not open by repeating the error."""
+    from config_scanner.live_push import LivePushResult, format_live_push_apply_status
+
+    errors = (
+        "Settings written (7 file(s)), but WinRM (TCP 5985) is not answering "
+        "on 10.0.0.76, so the game could not be restarted from here.",
+    )
+    result = LivePushResult(
+        written=(str(tmp_path / "mgconfig.xml"),),
+        skipped=(),
+        errors=errors,
+        stack_killed=False,
+        stack_started=False,
+        stack_detail=_WINRM_5985_DEAD,
+        sections=("mgconfig",),
+    )
+    text = format_live_push_apply_status(result)
+    assert "Wrote 1 file(s)." in text
+    assert "WinRM" not in text
+
+    kept = format_live_push_apply_status(
+        LivePushResult(
+            written=(str(tmp_path / "mgconfig.xml"),),
+            skipped=(),
+            errors=("Settings written, but RAM clear failed.",),
+            stack_killed=False,
+            stack_started=False,
+            stack_detail="Slot stop failed: STILL: OneHand",
+            sections=("mgconfig",),
+        )
+    )
+    assert "STILL: OneHand" in kept
 
 
 def test_commit_stop_failed_with_ramclear_tells_operator(
@@ -1553,8 +1757,9 @@ def test_commit_slot_uses_bootstrap_not_ruleta(tmp_path: Path, monkeypatch) -> N
 
     monkeypatch.setattr("config_scanner.live_push.goldclub_stack_kind", lambda _r: "slot")
 
-    def _kill(_target):
+    def _kill(_target, *, stop_aurum=True):
         order.append("slot-kill")
+        order.append(f"stop_aurum={stop_aurum}")
         return True, "stopped"
 
     def _start(_target, dest=None):
@@ -1580,7 +1785,14 @@ def test_commit_slot_uses_bootstrap_not_ruleta(tmp_path: Path, monkeypatch) -> N
         work_parent=tmp_path / "work",
     )
     assert result.ok
-    assert order == ["slot-kill", "hwsubsys", "slot-kill", "slot-start"]
+    assert order == [
+        "slot-kill",
+        "stop_aurum=True",
+        "hwsubsys",
+        "slot-kill",
+        "stop_aurum=False",
+        "slot-start",
+    ]
     assert result.stack_killed is True
     assert result.stack_started is True
     assert result.written
@@ -1644,6 +1856,7 @@ def test_restart_slot_hwsubsys_script_uses_goldclub_service_name() -> None:
     assert "Get-Service -Name 'HWSubsys'" not in src
     assert "exit 1" in src
     assert "Start-Sleep -Seconds 12" in src
+    assert "Stop-Service -Name $aurum.Name" in lp._SLOT_KILL_SCRIPT
     assert "Start-SlotGameWatch" in lp._SLOT_KILL_SCRIPT
     assert "Start-SlotGameWatch.ps1" in lp._SLOT_KILL_SCRIPT
     assert "Stop-SlotWatchers" in lp._SLOT_KILL_SCRIPT
@@ -1660,10 +1873,21 @@ def test_restart_slot_hwsubsys_script_uses_goldclub_service_name() -> None:
     assert "return $false" not in lp._SLOT_KILL_SCRIPT
     src_hw = inspect.getsource(lp.restart_slot_hwsubsys)
     assert "hardware subsystem not installed" in src_hw
+    assert "Aurum not Running" in src_hw
+    assert "GoldClub.Aurum.Services wait=" in src_hw
+    write_kill = lp._slot_kill_script(stop_aurum=True)
+    keep_kill = lp._slot_kill_script(stop_aurum=False)
+    assert "Stop-Service -Name $aurum.Name" in write_kill
+    assert "Stop-Service -Name $aurum.Name" not in keep_kill
+    assert "leave Aurum Running" in keep_kill
+    start = lp._slot_start_script((r"G:\slot\game-start.exe",), launcher="game-start")
+    assert "Ensure-GoldClubAurumRunning" in start
+    assert "GoldClub-Ensure-HwStack" in start
     wd = lp._slot_bootstrap_watchdog_script((r"G:\Bootstrap.exe",))
     assert lp._SLOT_WATCHDOG_MARKER in wd
     assert "ConfigScanner" in wd
     assert r"G:\Bootstrap.exe" in wd
+    assert "Ensure-GoldClubAurumRunning" in wd
     src_local = inspect.getsource(lp._run_local_powershell)
     assert "-EncodedCommand" in src_local
     assert '"-Command"' not in src_local
@@ -2016,3 +2240,96 @@ def test_cabinet_ip_prefill_selects_last_octet() -> None:
     assert (text[start : start + length], start) == ("9", 7)
     assert cabinet_ip_prefill("") == ("", 0, 0)
     assert cabinet_ip_prefill("host")[2] == 0
+
+
+def test_lock_when_no_sas_help_is_honest() -> None:
+    from config_scanner.live_push import FIELD_HELP, LIVE_OPTION_HELP
+
+    text = LIVE_OPTION_HELP["Lock when no SAS"]
+    assert text == FIELD_HELP["Lock when no SAS"]
+    assert "31100" in text
+    assert "not lock now" in text.casefold()
+    assert "LockGameWhenNoComms" in text
+    panel = (
+        Path(__file__).resolve().parents[1] / "gui" / "live_push_panel.py"
+    ).read_text(encoding="utf-8")
+    assert 'LIVE_OPTION_HELP.get("Lock when no SAS"' in panel
+    # The note reaches the status line through format_live_push_apply_status.
+    src = (
+        Path(__file__).resolve().parents[1] / "config_scanner" / "live_push.py"
+    ).read_text(encoding="utf-8")
+    status = src.split("def format_live_push_apply_status", 1)[1].split(
+        "\n@dataclass", 1
+    )[0]
+    assert "result.sas_lock_note" in status
+
+
+def test_format_sas_lock_probe_line_up_and_down() -> None:
+    from config_scanner.live_push import (
+        format_sas_lock_probe_line,
+        parse_sas_lock_probe_blob,
+    )
+
+    up = format_sas_lock_probe_line(lock_on=True, port_31100_up=True)
+    assert "SAS 31100 is up" in up
+    assert "stays unlocked" in up
+    down = format_sas_lock_probe_line(lock_on=True, port_31100_up=False)
+    assert "31100 is down" in down
+    assert "NO SAS COMMUNICATIONS" in down
+    assert format_sas_lock_probe_line(lock_on=False, port_31100_up=True) == ""
+    assert parse_sas_lock_probe_blob("AURUM=1 PORT31100=1") == (True, True)
+    assert parse_sas_lock_probe_blob("AURUM=0 PORT31100=0") == (False, False)
+    assert parse_sas_lock_probe_blob("nope") == (None, None)
+
+
+def test_commit_appends_sas_lock_probe_line(tmp_path: Path, monkeypatch) -> None:
+    gold = _fake_goldclub(tmp_path)
+    recipe = load_recipe_from_goldclub(gold, label="live")
+    recipe.sas.address = 5
+
+    monkeypatch.setattr("config_scanner.live_push.goldclub_stack_kind", lambda _r: "slot")
+    monkeypatch.setattr(
+        "config_scanner.live_push.run_slot_stack_kill",
+        lambda *_a, **_k: (True, "stopped"),
+    )
+    monkeypatch.setattr(
+        "config_scanner.live_push.restart_slot_hwsubsys",
+        lambda *_a, **_k: (True, "hw ok"),
+    )
+    monkeypatch.setattr(
+        "config_scanner.live_push.run_slot_stack_start",
+        lambda *_a, **_k: (True, "bootstrap"),
+    )
+    monkeypatch.setattr(
+        "config_scanner.live_push.probe_sas_lock_comms",
+        lambda *_a, **_k: (True, True),
+    )
+
+    result = commit_live_push(
+        recipe,
+        gold,
+        restart_stack=True,
+        scan_target=str(gold),
+        work_parent=tmp_path / "work",
+        backup=False,
+    )
+    assert result.ok, result.errors
+    assert "SAS 31100 is up" in result.sas_lock_note
+    assert "stays unlocked" in result.stack_detail
+
+    monkeypatch.setattr(
+        "config_scanner.live_push.probe_sas_lock_comms",
+        lambda *_a, **_k: (True, False),
+    )
+    recipe.sas.address = 6
+    down = commit_live_push(
+        recipe,
+        gold,
+        restart_stack=True,
+        scan_target=str(gold),
+        work_parent=tmp_path / "work2",
+        backup=False,
+    )
+    assert down.ok, down.errors
+    assert "31100 is down" in down.sas_lock_note
+    assert "NO SAS COMMUNICATIONS" in down.sas_lock_note

@@ -198,6 +198,9 @@ class ConfigScannerWindow(QMainWindow):
         self._simple.show_push()
 
     def closeEvent(self, event) -> None:  # noqa: ANN001, N802
+        from config_scanner.app_shutdown import notify_window_closing
+
+        notify_window_closing()
         if self._simple is not None:
             self._simple.mark_closing()
         if self._scanner is not None and hasattr(self._scanner, "mark_closing"):
@@ -265,14 +268,25 @@ def run_config_scanner_app(
     install_title_bar_theme_filter(app, SettingsManager.get_theme)
     apply_theme(app, SettingsManager.get_theme())
 
-    win = ConfigScannerWindow(
-        apply_pack=Path(apply_pack) if apply_pack else None,
-        country_pack=Path(country_pack) if country_pack else None,
-        companion_pack=Path(companion_pack) if companion_pack else None,
-        restore_b2u=Path(restore_b2u) if restore_b2u else None,
-        snapshots=snapshots,
+    from config_scanner.app_shutdown import (
+        clear_real_app_session,
+        mark_real_app_session,
+        shutdown_runtime,
     )
-    win.show()
-    ensure_native_resizable_frame(win)
-    schedule_title_bar_theme(win, SettingsManager.get_theme())
-    return app.exec()
+
+    mark_real_app_session()
+    try:
+        win = ConfigScannerWindow(
+            apply_pack=Path(apply_pack) if apply_pack else None,
+            country_pack=Path(country_pack) if country_pack else None,
+            companion_pack=Path(companion_pack) if companion_pack else None,
+            restore_b2u=Path(restore_b2u) if restore_b2u else None,
+            snapshots=snapshots,
+        )
+        win.show()
+        ensure_native_resizable_frame(win)
+        schedule_title_bar_theme(win, SettingsManager.get_theme())
+        return app.exec()
+    finally:
+        shutdown_runtime(instance_lock=instance_lock)
+        clear_real_app_session()

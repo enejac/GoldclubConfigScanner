@@ -131,6 +131,22 @@ if (-not $hw -or $hw.Status -ne 'Running') {
     exit 1
 }
 
+$au = $null
+$auDeadline = (Get-Date).AddSeconds(25)
+do {
+    $au = Get-NamedGoldClubService 'GoldClub.Aurum.Services'
+    if ($au -and $au.Status -eq 'Running') { break }
+    Start-Sleep -Milliseconds 400
+    if ($au) { $au.Refresh() }
+} while ((Get-Date) -lt $auDeadline)
+if (-not $au) {
+    Write-HwStackLog 'Aurum missing'
+} elseif ($au.Status -ne 'Running') {
+    Write-HwStackLog ("Aurum not Running (" + [string]$au.Status + ")")
+} else {
+    Write-HwStackLog 'Aurum Running'
+}
+
 if ($SettleSec -gt 0) {
     Write-HwStackLog "settle ${SettleSec}s"
     Start-Sleep -Seconds $SettleSec

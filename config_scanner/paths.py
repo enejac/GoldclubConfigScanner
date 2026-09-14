@@ -146,8 +146,9 @@ def ensure_tool_data(root: Path) -> None:
 
 @dataclass(frozen=True)
 class ToolConfig:
+    """Install-local tool folder. Game trees live in profiles.json."""
+
     game_drive: str | None
-    build_version_relative_path: str
     scan_roots: list[str]
     include_patterns: list[str]
     parallel_workers: int
@@ -167,13 +168,11 @@ def load_tool_config(root: Path | None = None) -> ToolConfig:
             raise FileNotFoundError(f"Config file not found: {config_path}")
     data = json.loads(config_path.read_text(encoding="utf-8"))
     return ToolConfig(
-        game_drive=data.get("gameDrive"),
-        build_version_relative_path=data.get(
-            "buildVersionRelativePath", "ruleta\\BuildVersion.txt"
-        ).replace("\\", "/"),
-        scan_roots=list(data.get("scanRoots", ["config"])),
+        game_drive=data.get("gameDrive") or data.get("game_drive"),
+        scan_roots=list(data.get("scanRoots") or []),
         include_patterns=list(
-            data.get("includePatterns", ["*.xml", "*.ini", "*.conf", "*.json", "*.dat"])
+            data.get("includePatterns")
+            or ["*.xml", "*.ini", "*.conf", "*.json", "*.dat"]
         ),
         parallel_workers=int(data.get("parallelWorkers", 8)),
         snapshots_dir=data.get("snapshotsDir", "snapshots"),
