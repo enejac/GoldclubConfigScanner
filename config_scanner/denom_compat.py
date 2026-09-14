@@ -31,6 +31,7 @@ from config_scanner.slot_setup import (
     goldclub_root_from_target,
     read_mgconfig_denoms,
     read_play_limits,
+    validate_language_installed,
     validate_onehand_target_market,
 )
 
@@ -1003,6 +1004,9 @@ def validate_live_push_recipe(
     errors = list(validate_denom_configuration(live, proposed, goldclub).errors)
     errors.extend(
         validate_onehand_target_market(proposed.jurisdiction.tag, goldclub)
+    )
+    errors.extend(
+        validate_language_installed(proposed.mg_identity.language, goldclub)
     )
     return errors
 

@@ -68,6 +68,11 @@ _CLIENTS_SET_REL = "Services/aurum/config/SASControler1/ClientsSet.xml"
 _SAS_SETUP_REL = "Services/aurum/config/SASControler1/SASsetupData.xml"
 _AURUM_SETUP_REL = "Services/aurum/config/AurumSetup.xml"
 _OTICKET_REL = "bios/etc/application/slot/oticket.xml"
+# OneHand 2.0.1+ ships its UI strings as slot\languages\<code>.xml with a
+# languages.xml catalog (code -> display name). The pack's selectable
+# languages (first = initial) live in jurisdiction_config <Languages>.
+_LANGUAGES_DIR_REL = "slot/languages"
+_LANGUAGES_CATALOG_REL = "slot/languages/languages.xml"
 _MAGICWHEEL_REL = "slot/themes/magicwheel_Config.xml"
 # Newer OneHand / gamepack trees also keep wheel knobs on the theme file
 # named by mgconfig MagicWheelPath, or only in jurisdiction_config.
@@ -1761,8 +1766,15 @@ def patch_mgconfig_locale(
     settings: JurisdictionSettings,
     *,
     language: str | None = None,
+    language_in_pack: bool = False,
 ) -> None:
-    """Write TargetMarket / CultureName / CurrencyName / Language into mgconfig.xml."""
+    """Write TargetMarket / CultureName / CurrencyName / Language into mgconfig.xml.
+
+    With *language_in_pack* (jurisdiction_config carries ``<Languages>``)
+    the legacy ``<Language>`` element is only refreshed when the mgconfig
+    already has one - newer OneHand ignores it, so creating it would only
+    fake a change.
+    """
     tree = _parse_xml(src)
     root = tree.getroot()
     existing_market = _existing_target_market(root)
@@ -1801,8 +1813,81 @@ def patch_mgconfig_locale(
             if sym is not None:
                 sym.text = settings.currency_symbol
     if language:
-        _set_text(root, "Language", language)
+        _write_mgconfig_language(root, language, language_in_pack=language_in_pack)
     _write_tree(tree, dest)
+
+
+def _write_mgconfig_language(
+    root: ET.Element, language: str, *, language_in_pack: bool
+) -> None:
+    existing = _find_child(root, "Language")
+    if existing is None:
+        existing = _find_desc(root, "Language")
+    if existing is not None:
+        existing.text = language
+        return
+    if not language_in_pack:
+        _set_text(root, "Language", language)
+
+
+_FLAG_TOKEN_RE = re.compile(r"(flag_)([A-Za-z]+)", re.IGNORECASE)
+
+
+def _retarget_flag_path(text: str, language: str) -> str:
+    """``...\\flag_spanish_pressed.dds`` -> ``...\\flag_english_pressed.dds``."""
+    token = re.sub(r"[^a-z0-9]+", "", language.casefold())
+    if not token:
+        return text
+    return _FLAG_TOKEN_RE.sub(lambda m: f"{m.group(1)}{token}", text, count=1)
+
+
+def set_pack_initial_language(root: ET.Element, language: str) -> bool:
+    """Make *language* the first ``<Languages>`` entry (OneHand's initial one).
+
+    Reorders an existing ``LanguageButtonStateSetting``; when the pack has
+    no entry for it, clones the first one and retargets its flag textures
+    (``flag_<name>.dds`` / ``.png`` follows whatever that file uses).
+    Returns ``False`` when the file has no ``<Languages>`` block at all
+    (legacy image - mgconfig ``<Language>`` is the right place then).
+    """
+    want = (language or "").strip()
+    if not want:
+        return False
+    langs = _find_child(root, "Languages")
+    if langs is None:
+        langs = _find_desc(root, "Languages")
+    if langs is None:
+        return False
+    states = _language_state_settings(langs)
+    match = None
+    for state in states:
+        name_el = _find_child(state, "StateName")
+        if name_el is not None and (name_el.text or "").strip().casefold() == want.casefold():
+            match = state
+            break
+    if match is None:
+        if not states:
+            return False
+        import copy
+
+        match = copy.deepcopy(states[0])
+        name_el = _find_child(match, "StateName")
+        if name_el is None:
+            name_el = _ensure_child(match, "StateName")
+        name_el.text = want
+        for child in match:
+            if _local(child.tag).endswith("TexturePath") and child.text:
+                child.text = _retarget_flag_path(child.text, want)
+    else:
+        if states and states[0] is match:
+            return True
+        langs.remove(match)
+    # Keep any leading comment/whitespace-only nodes where they are; insert
+    # right before the first remaining state setting.
+    remaining = _language_state_settings(langs)
+    index = list(langs).index(remaining[0]) if remaining else len(langs)
+    langs.insert(index, match)
+    return True
 
 
 def patch_jurisdiction_config(
@@ -1813,11 +1898,14 @@ def patch_jurisdiction_config(
     single_denomination: int | None = None,
     play_limits: PlayLimitsSettings | None = None,
     create_pack_fields: bool = False,
+    language: str | None = None,
 ) -> None:
     tree = _parse_xml(src)
     root = tree.getroot()
     if settings.tag:
         _set_text(root, "Tag", settings.tag)
+    if language:
+        set_pack_initial_language(root, language)
     if settings.culture_name:
         info = _find_child(root, "CultureInformation")
         if info is None:
@@ -1874,6 +1962,13 @@ def read_mg_identity(goldclub: Path) -> MgIdentitySettings:
         lang = _find_desc(root, "Language")
     if lang is not None:
         out.language = (lang.text or "").strip()
+    if not out.language:
+        # 2.0.1 / 3.0.0 images have no mgconfig <Language> (only the
+        # <LanguageKey> toggle); the initial language is the first entry
+        # of jurisdiction_config <Languages>.
+        pack = read_pack_languages(goldclub)
+        if pack:
+            out.language = pack[0]
     inac = _find_child(root, "InactivitySecondsToGameSelector")
     if inac is not None and (inac.text or "").strip().lstrip("-").isdigit():
         out.inactivity_seconds_to_game_selector = int((inac.text or "").strip())
@@ -1881,6 +1976,207 @@ def read_mg_identity(goldclub: Path) -> MgIdentitySettings:
     if jfile is not None and (jfile.text or "").strip():
         out.jurisdiction_settings_file = (jfile.text or "").strip()
     return out
+
+
+@dataclass(frozen=True)
+class InstalledLanguage:
+    """One ``slot\\languages\\<code>.xml`` translation the cabinet ships."""
+
+    code: str  # "es"
+    name: str  # "Spanish"
+
+
+@dataclass
+class CabinetLanguages:
+    """What one cabinet can show, and what its pack currently selects.
+
+    ``installed`` comes from ``slot\\languages`` (catalog + translation
+    files), ``pack`` from ``jurisdiction_config`` ``<Languages>`` in order
+    (first = initial), ``mgconfig`` from the legacy ``<Language>`` element.
+    Read per Goldclub root - every EGM has its own set.
+    """
+
+    installed: tuple[InstalledLanguage, ...] = ()
+    pack: tuple[str, ...] = ()
+    mgconfig: str = ""
+
+    @property
+    def initial(self) -> str:
+        return self.pack[0] if self.pack else self.mgconfig
+
+    @property
+    def names(self) -> tuple[str, ...]:
+        return tuple(item.name for item in self.installed)
+
+    def find(self, text: str) -> InstalledLanguage | None:
+        """Match a display name or a code, case-insensitively."""
+        want = (text or "").strip().casefold()
+        if not want:
+            return None
+        for item in self.installed:
+            if item.name.casefold() == want or item.code.casefold() == want:
+                return item
+        return None
+
+    def is_installed(self, text: str) -> bool:
+        return self.find(text) is not None
+
+    def code_for(self, name: str) -> str:
+        found = self.find(name)
+        return found.code if found is not None else ""
+
+
+# Per-root memo filled by the load worker so GUI-thread validation never
+# lists slot\languages over SMB. Keyed by casefolded root path.
+_INSTALLED_LANGUAGE_MEMO: dict[str, tuple[InstalledLanguage, ...]] = {}
+
+
+def _languages_memo_key(goldclub: Path) -> str:
+    return str(goldclub_root_from_target(goldclub)).casefold().rstrip("\\/")
+
+
+def read_installed_languages(goldclub: Path) -> tuple[InstalledLanguage, ...]:
+    """Languages this cabinet can actually display.
+
+    ``languages.xml`` gives ``<language id="es">Spanish</language>``; an
+    entry counts only when ``slot\\languages\\es.xml`` exists. Without a
+    catalog the translation files themselves are listed (name = code).
+    """
+    root = goldclub_root_from_target(goldclub)
+    folder = _resolve_goldclub_rel(root, _LANGUAGES_DIR_REL)
+    out: list[InstalledLanguage] = []
+    if folder is None:
+        _INSTALLED_LANGUAGE_MEMO[_languages_memo_key(root)] = ()
+        return ()
+    try:
+        files = {
+            p.stem.casefold(): p
+            for p in folder.iterdir()
+            if p.suffix.casefold() == ".xml" and p.name.casefold() != "languages.xml"
+        }
+    except OSError:
+        files = {}
+    catalog = folder / "languages.xml"
+    seen: set[str] = set()
+    try:
+        if catalog.is_file():
+            croot = _parse_xml(catalog).getroot()
+            for el in croot.iter():
+                if _local(el.tag) != "language":
+                    continue
+                code = (el.get("id") or "").strip()
+                name = (el.text or "").strip() or code
+                if not code or code.casefold() not in files:
+                    continue
+                if code.casefold() in seen:
+                    continue
+                seen.add(code.casefold())
+                out.append(InstalledLanguage(code=code, name=name))
+    except (ET.ParseError, OSError):
+        pass
+    if not out:
+        for key in sorted(files):
+            code = files[key].stem
+            out.append(InstalledLanguage(code=code, name=code))
+    result = tuple(out)
+    _INSTALLED_LANGUAGE_MEMO[_languages_memo_key(root)] = result
+    return result
+
+
+def installed_languages_cached(goldclub: Path) -> tuple[InstalledLanguage, ...] | None:
+    """Memoised :func:`read_installed_languages` result, or ``None`` if never read."""
+    try:
+        return _INSTALLED_LANGUAGE_MEMO.get(_languages_memo_key(Path(goldclub)))
+    except (OSError, ValueError):
+        return None
+
+
+def _language_state_settings(languages_el: ET.Element) -> list[ET.Element]:
+    return [
+        child
+        for child in languages_el
+        if _local(child.tag) == "LanguageButtonStateSetting"
+    ]
+
+
+def read_pack_languages(goldclub: Path) -> tuple[str, ...]:
+    """``jurisdiction_config`` ``<Languages>`` StateNames in file order."""
+    root = goldclub_root_from_target(goldclub)
+    path = _resolve_goldclub_rel(root, _JURISDICTION_REL)
+    if path is None:
+        return ()
+    try:
+        if not path.is_file():
+            return ()
+        jroot = _parse_xml(path).getroot()
+    except (ET.ParseError, OSError):
+        return ()
+    langs = _find_child(jroot, "Languages")
+    if langs is None:
+        langs = _find_desc(jroot, "Languages")
+    if langs is None:
+        return ()
+    names: list[str] = []
+    for state in _language_state_settings(langs):
+        name_el = _find_child(state, "StateName")
+        name = (name_el.text or "").strip() if name_el is not None else ""
+        if name and name.casefold() not in {n.casefold() for n in names}:
+            names.append(name)
+    return tuple(names)
+
+
+def read_cabinet_languages(goldclub: Path) -> CabinetLanguages:
+    """Installed + pack + legacy mgconfig language for one Goldclub root."""
+    root = goldclub_root_from_target(goldclub)
+    mg = ""
+    path = root / _MGCONFIG_REL
+    try:
+        if path.is_file():
+            mroot = _parse_xml(path).getroot()
+            el = _find_child(mroot, "Language")
+            if el is None:
+                el = _find_desc(mroot, "Language")
+            if el is not None:
+                mg = (el.text or "").strip()
+    except (ET.ParseError, OSError):
+        mg = ""
+    return CabinetLanguages(
+        installed=read_installed_languages(root),
+        pack=read_pack_languages(root),
+        mgconfig=mg,
+    )
+
+
+def validate_language_installed(
+    proposed_language: str,
+    goldclub: Path,
+    *,
+    installed: tuple[InstalledLanguage, ...] | None = None,
+) -> list[str]:
+    """Reject a language the cabinet has no ``slot\\languages\\<code>.xml`` for.
+
+    Uses the load-time memo when available so the GUI thread does not list
+    the share. Cabinets without a ``slot\\languages`` folder (pre-2.0.1
+    images) are not checked.
+    """
+    want = (proposed_language or "").strip()
+    if not want:
+        return []
+    have = installed
+    if have is None:
+        have = installed_languages_cached(goldclub)
+    if have is None:
+        have = read_installed_languages(goldclub)
+    if not have:
+        return []
+    langs = CabinetLanguages(installed=have)
+    if langs.is_installed(want):
+        return []
+    listing = ", ".join(f"{item.name} ({item.code})" for item in have)
+    return [
+        f"Language '{want}' is not installed on this cabinet. "
+        f"slot\\languages has: {listing}."
+    ]
 
 
 def read_aurum_identity(goldclub: Path) -> AurumIdentitySettings:
@@ -2359,6 +2655,8 @@ def patch_mgconfig_denoms(
     denomination_list: list[int],
     credit_rate_values: list[int],
     identity: MgIdentitySettings | None = None,
+    *,
+    language_in_pack: bool = False,
 ) -> None:
     tree = _parse_xml(src)
     root = tree.getroot()
@@ -2384,7 +2682,9 @@ def patch_mgconfig_denoms(
         if identity.machine_id_template:
             _set_text(root, "MachineID", identity.machine_id_template)
         if identity.language:
-            _set_text(root, "Language", identity.language)
+            _write_mgconfig_language(
+                root, identity.language, language_in_pack=language_in_pack
+            )
         if identity.inactivity_seconds_to_game_selector is not None:
             _set_text(
                 root,
@@ -3307,6 +3607,13 @@ def build_config_pack(
     needs_display = _normalize_display_mode(recipe.display_mode) is not None
     live_limits = read_limit_setup(live)
     needs_limit = limit_setup_changed(live_limits, recipe.limit_setup)
+    # 2.0.1+ packs select the language in jurisdiction_config <Languages>;
+    # mgconfig <Language> is only honoured (and only written) on older images.
+    pack_languages = read_pack_languages(live)
+    language_in_pack = bool(pack_languages)
+    language_for_pack = (
+        (recipe.mg_identity.language or "").strip() if language_in_pack else ""
+    )
     needs_mg = bool(
         recipe.denomination_list
         or recipe.credit_rate_values
@@ -3332,6 +3639,7 @@ def build_config_pack(
                 recipe.denomination_list,
                 recipe.credit_rate_values,
                 identity=recipe.mg_identity,
+                language_in_pack=language_in_pack,
             )
             # Then locale onto the staged copy (skip when only retargeting displays).
             locale_requested = bool(
@@ -3357,6 +3665,7 @@ def build_config_pack(
                     dest_mg,
                     recipe.jurisdiction,
                     language=recipe.mg_identity.language or None,
+                    language_in_pack=language_in_pack,
                 )
             if pl.touches_mgconfig():
                 patch_mgconfig_play(dest_mg, dest_mg, pl)
@@ -3400,6 +3709,7 @@ def build_config_pack(
         or recipe.jurisdiction.culture_name
         or want_jur_mw
         or single_denom is not None
+        or language_for_pack
     ):
         jsrc = live / _JURISDICTION_REL
         create_pack = not dedicated_magicwheel_file_exists(live)
@@ -3407,7 +3717,7 @@ def build_config_pack(
             create_pack = not dedicated_magicwheel_file_exists(live)
             _stage(
                 _JURISDICTION_REL,
-                lambda s, d, denom=single_denom, create=create_pack: (
+                lambda s, d, denom=single_denom, create=create_pack, lang=language_for_pack: (
                     patch_jurisdiction_config(
                         s,
                         d,
@@ -3415,6 +3725,7 @@ def build_config_pack(
                         single_denomination=denom,
                         play_limits=pl,
                         create_pack_fields=create,
+                        language=lang or None,
                     )
                 ),
             )

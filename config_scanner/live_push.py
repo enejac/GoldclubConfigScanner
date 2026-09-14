@@ -64,6 +64,8 @@ from config_scanner.slot_setup import (
     normalize_mei_bill_tokens_for_currency,
     read_display_mode,
     read_ticket_printer_active,
+    CabinetLanguages,
+    read_cabinet_languages,
     recipe_from_jurisdiction_profile,
     sas_channel_flags_differ,
     LIMIT_SETUP_FIELDS,
@@ -1324,7 +1326,7 @@ _LABEL_SECTIONS: dict[str, frozenset[str]] = {
     "Currency": frozenset({"mgconfig", "jurisdiction", "hardware", "aurum"}),
     "Currency symbol": frozenset({"mgconfig", "jurisdiction"}),
     "Culture": frozenset({"mgconfig", "jurisdiction"}),
-    "Language": frozenset({"mgconfig"}),
+    "Language": frozenset({"mgconfig", "jurisdiction"}),
     "Market": frozenset({"mgconfig", "jurisdiction"}),
     "Denoms (cents)": frozenset(
         {"mgconfig", "jurisdiction", "link2win", "magicwheel", "math"}
@@ -2116,7 +2118,10 @@ LIVE_OPTION_HELP: dict[str, str] = {
         "(e.g. en-TT, en-JM)."
     ),
     "Language": (
-        "Game language code in mgconfig (empty on many images means default English)."
+        "Initial game language. On 2.0.1+ images this is the first entry of "
+        "jurisdiction_config <Languages> and the list offers only the "
+        "translations installed in slot\\languages on this cabinet; older "
+        "images use mgconfig <Language>."
     ),
     "Market": (
         "Target market / jurisdiction tag (mgconfig TargetMarket). Choosing a "
@@ -2290,7 +2295,7 @@ LIVE_FIELD_CONFIG_RELS: dict[str, tuple[str, ...]] = {
     "Currency": (_MGCONFIG_REL, _JURISDICTION_REL, _HARDWARE_CONFIG_REL),
     "Currency symbol": (_JURISDICTION_REL, _MGCONFIG_REL),
     "Culture": (_JURISDICTION_REL,),
-    "Language": (_MGCONFIG_REL,),
+    "Language": (_JURISDICTION_REL, _MGCONFIG_REL),
     "Market": (_MGCONFIG_REL, _JURISDICTION_REL),
     "Denoms (cents)": (
         _MGCONFIG_REL,
@@ -3133,6 +3138,8 @@ class LiveLoadOutcome:
     # not a slot). Read on the worker so the GUI thread never touches SMB.
     onehand_markets: frozenset[str] | None = None
     ticket_printer_active: bool = False
+    # slot\languages catalog + jurisdiction_config <Languages> of this root.
+    languages: CabinetLanguages | None = None
     # True for the early callback that carries only ``root`` + ``recipe``.
     partial: bool = False
 
@@ -3236,6 +3243,9 @@ def load_live_cabinet(
             f_printer = submit(
                 _quiet("ticket printer flag", read_ticket_printer_active, False), root
             )
+            f_langs = submit(
+                _quiet("cabinet languages", read_cabinet_languages, None), root
+            )
             f_corrupt = submit(
                 _quiet("display corruption scan", live_display_corruption_errors, {}),
                 root,
@@ -3258,6 +3268,7 @@ def load_live_cabinet(
             onehand = f_onehand.result()
             markets = f_markets.result()
             printer_on = bool(f_printer.result())
+            languages = f_langs.result()
             corrupt = f_corrupt.result() or {}
             if f_math is not None:
                 f_math.result()
@@ -3277,6 +3288,7 @@ def load_live_cabinet(
             onehand_build=onehand,
             onehand_markets=markets,
             ticket_printer_active=printer_on,
+            languages=languages,
         )
     except Exception as exc:  # noqa: BLE001
         return LiveLoadOutcome(
