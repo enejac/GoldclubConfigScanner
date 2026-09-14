@@ -1030,6 +1030,126 @@ def test_live_push_ramclear_reasons_empty_aurum() -> None:
     assert any("aurum" in r.casefold() and "missing" in r.casefold() for r in reasons)
 
 
+def test_live_push_restart_required_reasons_empty_when_unchanged() -> None:
+    from config_scanner.live_push import live_push_restart_required_reasons
+    from config_scanner.slot_setup import SlotSetupRecipe
+
+    live = SlotSetupRecipe()
+    form = SlotSetupRecipe.from_dict(live.to_dict())
+    assert live_push_restart_required_reasons(live, form) == ()
+
+
+def test_live_push_restart_required_reasons_groups_significant_fields() -> None:
+    from config_scanner.live_push import live_push_restart_required_reasons
+    from config_scanner.slot_setup import SlotSetupRecipe
+
+    live = SlotSetupRecipe()
+    live.jurisdiction.currency_name = "TTD"
+    live.hardware_currency_name = "TTD"
+    live.mg_identity.language = "English"
+    live.jurisdiction.tag = "TrinidadTobago"
+    live.display_mode = "2"
+    live.sas.enabled = True
+    live.sas.address = 1
+
+    form = SlotSetupRecipe.from_dict(live.to_dict())
+    form.jurisdiction.currency_name = "USD"
+    form.hardware_currency_name = "USD"
+    form.mg_identity.language = "Spanish"
+    form.jurisdiction.tag = "Colombia"
+    form.display_mode = "3"
+    form.sas.enabled = False
+    reasons = live_push_restart_required_reasons(live, form)
+    assert "currency, denoms, or bet steps" in reasons
+    assert "language or country flag" in reasons
+    assert "market" in reasons
+    assert "display layout or button deck" in reasons
+    assert "SAS enable / AFT" in reasons
+
+
+def test_lock_when_no_sas_is_not_restart_or_ramclear() -> None:
+    from config_scanner.live_push import (
+        live_push_ramclear_reasons,
+        live_push_restart_required_reasons,
+        live_push_restart_required_text,
+    )
+    from config_scanner.slot_setup import SlotSetupRecipe
+
+    live = SlotSetupRecipe()
+    form = SlotSetupRecipe.from_dict(live.to_dict())
+    form.sas.lock_game_when_no_comms = False
+    form.sas.address = 12
+    assert live_push_restart_required_reasons(live, form) == ()
+    assert live_push_ramclear_reasons(live, form) == ()
+    body = live_push_restart_required_text(
+        kind="slot",
+        change_lines=["Lock when no SAS: on → off"],
+    )
+    assert "RAM clear" not in body
+
+
+def test_live_push_restart_required_reasons_full_pack_and_licences() -> None:
+    from config_scanner.live_push import live_push_restart_required_reasons
+    from config_scanner.slot_setup import SlotSetupRecipe
+
+    live = SlotSetupRecipe()
+    same = SlotSetupRecipe.from_dict(live.to_dict())
+    assert live_push_restart_required_reasons(
+        live, same, full_pack=True, push_licences=True
+    ) == ("full config pack rewrite", "licence files")
+
+
+def test_live_push_restart_required_text_is_plain_language() -> None:
+    from config_scanner.live_push import (
+        LIVE_PUSH_RAMCLEAR_RESTART_TITLE,
+        LIVE_PUSH_RESTART_REQUIRED_TITLE,
+        LIVE_PUSH_WRITE_AND_RESTART,
+        live_push_ramclear_notice,
+        live_push_restart_required_text,
+    )
+
+    assert LIVE_PUSH_RESTART_REQUIRED_TITLE == "Full stack restart required"
+    assert LIVE_PUSH_RAMCLEAR_RESTART_TITLE == "RAM clear and restart required"
+    assert LIVE_PUSH_WRITE_AND_RESTART == "Write and restart"
+    notice = live_push_ramclear_notice(("currency TTD → USD", "denomination list"))
+    assert "RAM clear will run after write" in notice
+    assert "currency TTD → USD" in notice
+    assert "denomination list" in notice
+    assert "resets meters" in notice
+    assert live_push_ramclear_notice(()) == ""
+    body = live_push_restart_required_text(
+        kind="slot",
+        change_lines=["Currency: TTD → USD"],
+        ramclear_reasons=("currency TTD → USD",),
+    )
+    assert "keep the old settings" in body
+    assert "full stack restart is required" in body.casefold()
+    assert "Currency: TTD → USD" in body
+    assert "RAM clear will run after write" in body
+    assert "resets meters" in body
+    assert "Windows will not reboot" in body
+    roulette = live_push_restart_required_text(
+        kind="roulette",
+        change_lines=["Language: English → Spanish"],
+    )
+    assert "start the stack again" in roulette
+    assert "RAM clear" not in roulette
+
+
+def test_live_push_restart_required_dialog_wired() -> None:
+    src = (
+        Path(__file__).resolve().parents[1] / "gui" / "live_push_panel.py"
+    ).read_text(encoding="utf-8")
+    assert "LIVE_PUSH_RESTART_REQUIRED_TITLE" in src
+    assert "LIVE_PUSH_RAMCLEAR_RESTART_TITLE" in src
+    assert "LIVE_PUSH_WRITE_AND_RESTART" in src
+    assert "live_push_ramclear_notice" in src
+    assert "_confirm_restart_required" in src
+    assert "live_push_restart_required_reasons" in src
+    assert "self._restart.setChecked(True)" in src
+    assert "skip_apply_confirm" in src
+
+
 def test_pick_onehand_allowed_market_prefers_stable() -> None:
     from config_scanner.slot_setup import pick_onehand_allowed_market
 

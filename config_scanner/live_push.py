@@ -1430,6 +1430,134 @@ def live_push_ramclear_reasons(
     return tuple(reasons)
 
 
+LIVE_PUSH_RESTART_REQUIRED_TITLE = "Full stack restart required"
+LIVE_PUSH_RAMCLEAR_RESTART_TITLE = "RAM clear and restart required"
+LIVE_PUSH_WRITE_AND_RESTART = "Write and restart"
+
+# Only writes that will not appear (or will NRE) until restack / ramclear.
+# SAS address, lock-when-no-comms, and channel checkboxes are ordinary
+# deltas — they use the normal Apply confirm, not this warning.
+_SAS_RESTART_LABELS = frozenset({"SAS enabled", "AFT", "Funds transfer"})
+_CURRENCY_RESTART_LABELS = frozenset(
+    {"Currency", "Currency symbol", "Denoms (cents)", "Bet multipliers"}
+)
+_LANGUAGE_RESTART_LABELS = frozenset(
+    {"Language", COUNTRY_FLAG_LABEL, "Culture"}
+)
+_DISPLAY_RESTART_LABELS = frozenset({"Display layout", "Button deck"})
+_BILL_TICKET_RESTART_LABELS = frozenset(
+    {"Bill protocol", "Ticket printer"}
+)
+
+
+def live_push_ramclear_notice(reasons: Sequence[str]) -> str:
+    """Operator line when a slot RAM clear will run. Empty if none."""
+    if not reasons:
+        return ""
+    return (
+        "A RAM clear will run after write (required for: "
+        + ", ".join(reasons)
+        + "). That resets meters."
+    )
+
+
+def live_push_restart_reason_for_label(label: str) -> str | None:
+    """Group name if this snapshot label needs the restart warning, else None."""
+    if label in _CURRENCY_RESTART_LABELS:
+        return "currency, denoms, or bet steps"
+    if label in _LANGUAGE_RESTART_LABELS:
+        return "language or country flag"
+    if label == "Market":
+        return "market"
+    if label in _DISPLAY_RESTART_LABELS:
+        return "display layout or button deck"
+    if label in _SAS_RESTART_LABELS:
+        return "SAS enable / AFT"
+    if label in _BILL_TICKET_RESTART_LABELS:
+        return "bill or ticket protocol"
+    return None
+
+
+def live_push_restart_required_reasons(
+    live: SlotSetupRecipe,
+    form: SlotSetupRecipe,
+    *,
+    full_pack: bool = False,
+    push_licences: bool = False,
+    goldclub: Path | None = None,
+) -> tuple[str, ...]:
+    """Why Apply must restart — empty for ordinary deltas such as SAS lock.
+
+    Currency / denoms / bets, language, market, display, SAS enable or AFT,
+    Link2Win restage, licence copy, and Write full pack. Not lock-when-no-comms,
+    SAS address, or channel checkboxes.
+    """
+    reasons: list[str] = []
+    seen: set[str] = set()
+
+    def _add(reason: str | None) -> None:
+        if reason and reason not in seen:
+            seen.add(reason)
+            reasons.append(reason)
+
+    for line in recipe_change_lines(live, form):
+        label = line.split(":", 1)[0].strip()
+        _add(live_push_restart_reason_for_label(label))
+    if goldclub is not None:
+        from config_scanner.denom_compat import link2win_restage_change_line
+
+        if link2win_restage_change_line(live, form, Path(goldclub)):
+            _add("Link2Win math files")
+    if full_pack:
+        _add("full config pack rewrite")
+    if push_licences:
+        _add("licence files")
+    return tuple(reasons)
+
+
+def live_push_restart_required_text(
+    *,
+    kind: str,
+    change_lines: Sequence[str],
+    ramclear_reasons: Sequence[str] = (),
+    full_pack: bool = False,
+    backup: bool = False,
+    push_licences: bool = False,
+) -> str:
+    """Plain-language body for the restart-required Apply dialog."""
+    parts: list[str] = [
+        "The game is still running, so it will keep the old settings.",
+    ]
+    ramclear_line = live_push_ramclear_notice(ramclear_reasons)
+    if ramclear_line:
+        parts.append(ramclear_line)
+    parts.append("A full stack restart is required before the new settings appear.")
+    if change_lines:
+        parts.append("What will be written:\n• " + "\n• ".join(change_lines))
+    elif full_pack:
+        parts.append("The full Live Push config pack will be rewritten.")
+    if full_pack and change_lines:
+        parts.append("Full pack: all Live Push config files will be rewritten.")
+    if backup:
+        parts.append("A backup of those live files is taken first.")
+    if push_licences:
+        parts.append(
+            "Missing licence XML / licence.dll will be copied next to "
+            "OneHand (existing licence files are not overwritten)."
+        )
+    if kind == "slot":
+        parts.append(
+            "Write and restart will stop the game, write the files, then "
+            "start it again. Windows will not reboot."
+        )
+    else:
+        parts.append(
+            "Write and restart will stop the game, write the files, then "
+            "start the stack again. Windows will not reboot."
+        )
+    return "\n\n".join(parts)
+
+
 def run_slot_ramclear(scan_target: str) -> tuple[bool, str]:
     """Run the vendor slot ramclear maintenance task (game must already be stopped)."""
     from config_scanner.cabinet_repairs import (
