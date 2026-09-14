@@ -31,6 +31,8 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFrame,
     QHBoxLayout,
     QHeaderView,
@@ -587,9 +589,10 @@ class ConfigScannerTabWidget(QFrame):
         self._last_scan_software_count = 0
         self._last_scan_software_ok = False
         self._last_scan_user_warnings: tuple[str, ...] = ()
-        # After Confirm → scan live config first, then write this snapshot.
+        # After Confirm → optionally scan live config, then write this snapshot.
         self._pending_write_snapshot: str | None = None
         self._pending_write_scope: str = WriteScope.FULL.value
+        self._pending_create_backup = False
         self._presave_snapshot_for_write: str | None = None
         self._pending_is_revert = False
         self._pending_stack_plan = None
@@ -991,7 +994,7 @@ class ConfigScannerTabWidget(QFrame):
 
         self._write_baseline_btn = QPushButton("Restore to machine")
         self._write_baseline_btn.setToolTip(
-            "Save live config first (rollback snapshot), then restore using the scope below."
+            "Restore using the scope below. Tick Create a backup on confirm if you want an undo snapshot."
         )
         self._write_baseline_btn.clicked.connect(self._on_write_baseline_from_compare)
         self._write_baseline_btn.setVisible(False)
@@ -1574,8 +1577,8 @@ class ConfigScannerTabWidget(QFrame):
             self._write_baseline_btn.setVisible(True)
             restore_row.addWidget(self._write_baseline_btn, stretch=0)
             hint = QLabel(
-                "Restore puts config + software back. Live config is saved first. "
-                "Apply below changes one setting at a time."
+                "Restore puts config + software back. Backup is off unless you tick "
+                "Create a backup. Apply below changes one setting at a time."
             )
             hint.setStyleSheet(styles["legend"])
             hint.setWordWrap(True)
@@ -2182,8 +2185,8 @@ class ConfigScannerTabWidget(QFrame):
             btn = "Restore to machine"
             act = "Restore reference to machine"
             tip = (
-                "Save live config as a rollback snapshot, then restore the reference "
-                "archive (all config except serialport/ and EGM identity)."
+                "Restore the reference archive (all config except serialport/ "
+                "and EGM identity). Tick Create a backup on confirm to save live first."
             )
         elif scope is WriteScope.NO_PAYTABLE:
             btn = f"Restore {short} to machine"
@@ -2201,8 +2204,8 @@ class ConfigScannerTabWidget(QFrame):
             btn = f"Restore {short} to machine"
             act = f"Restore {short} to machine"
             tip = (
-                f"Save live config first, then restore only {short} files from the "
-                "reference snapshot. Serialport/ is never bulk-written."
+                f"Restore only {short} files from the reference snapshot. "
+                "Serialport/ is never bulk-written."
             )
         if hasattr(self, "_write_baseline_btn"):
             self._write_baseline_btn.setText(btn)
@@ -2844,6 +2847,41 @@ class ConfigScannerTabWidget(QFrame):
         self._set_busy(True)
         schedule_delete_snapshot(self._pool, self._service, snapshot_name, self._emitter)
 
+    def _ask_restore_confirm(self, prompt: str, *, kind: str) -> bool | None:
+        """Yes/No restore confirm. Returns whether to snapshot live first, or None."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Config Scanner — confirm restore")
+        lay = QVBoxLayout(dlg)
+        text = QLabel(prompt)
+        text.setWordWrap(True)
+        text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        lay.addWidget(text)
+        backup = QCheckBox("Create a backup")
+        backup.setChecked(False)
+        noun = "slot software" if kind == "slot" else "Ruleta software"
+        backup.setToolTip(
+            f"Save what's running now (config + {noun}) as a snapshot you can "
+            "revert to. Off by default — restore writes without that extra scan."
+        )
+        lay.addWidget(backup)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Yes | QDialogButtonBox.StandardButton.No
+        )
+        no_btn = buttons.button(QDialogButtonBox.StandardButton.No)
+        yes_btn = buttons.button(QDialogButtonBox.StandardButton.Yes)
+        if no_btn is not None:
+            no_btn.setDefault(True)
+            no_btn.setAutoDefault(True)
+        if yes_btn is not None:
+            yes_btn.setAutoDefault(False)
+            yes_btn.setDefault(False)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        lay.addWidget(buttons)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return bool(backup.isChecked())
+
     def _confirm_write_snapshot(
         self,
         snapshot_name: str,
@@ -2943,8 +2981,7 @@ class ConfigScannerTabWidget(QFrame):
                 f"  Profile: {profile_line}\n"
                 f"  Machine: {scan_target}\n\n"
                 "Yes will:\n"
-                f"{undo_backup_step_line(snap_kind)}\n"
-                f"2. {step_two}\n"
+                f"1. {step_two}\n"
             )
             if plan is not None:
                 if self._auto_start_stack_enabled():
@@ -2959,10 +2996,10 @@ class ConfigScannerTabWidget(QFrame):
                     stop_bit = "Stop OneHand/Bootstrap before writing;"
                 else:
                     stop_bit = "Stop the GoldClub stack (Kill-All) before writing;"
-                prompt += f"3. {stop_bit}{start_bit}\n"
+                prompt += f"2. {stop_bit}{start_bit}\n"
             else:
                 prompt += (
-                    "3. Offline disk: config is written only (no stack stop).\n"
+                    "2. Offline disk: config is written only (no stack stop).\n"
                 )
             prompt += (
                 "\nLive licence XML and serialport maps are never overwritten.\n"
@@ -3001,33 +3038,31 @@ class ConfigScannerTabWidget(QFrame):
             )
             return
 
+        create_backup = True
         if not revert_from:
-            reply = QMessageBox.question(
-                self,
-                "Config Scanner — confirm restore",
-                prompt,
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            if reply != QMessageBox.StandardButton.Yes:
+            create_backup = self._ask_restore_confirm(prompt, kind=snap_kind)
+            if create_backup is None:
                 self._pending_stack_plan = None
                 return
 
-        # Preserve live config *and* the live Ruleta binaries, so the undo point
-        # puts the machine back without depending on a software_versions pack.
+        # Backup is opt-in on restore. Revert still snapshots live first.
         self._pending_scan_and_compare = False
         self._pending_create_snapshot = False
-        self._pending_include_software = True
+        self._pending_create_backup = bool(create_backup)
+        self._pending_include_software = bool(create_backup)
         self._pending_write_snapshot = snapshot_name
         self._pending_write_scope = scope.value
         self._presave_snapshot_for_write = None
         if revert_from:
             self._pending_is_revert = True
 
-        self._append_status(
-            f"Saving live config, then restoring {snapshot_name} …",
-            force=True,
-        )
+        if create_backup:
+            self._append_status(
+                f"Saving live config, then restoring {snapshot_name} …",
+                force=True,
+            )
+        else:
+            self._append_status(f"Restoring {snapshot_name} …", force=True)
         self._set_busy(True, op="scan")
         schedule_prepare_scan_target(
             self._pool,
@@ -3040,6 +3075,7 @@ class ConfigScannerTabWidget(QFrame):
         self._pending_write_snapshot = None
         self._pending_write_scope = WriteScope.FULL.value
         self._pending_include_software = False
+        self._pending_create_backup = False
         self._presave_snapshot_for_write = None
         self._pending_is_revert = False
         self._pending_stack_plan = None
@@ -3168,7 +3204,7 @@ class ConfigScannerTabWidget(QFrame):
                     "Game stop failed — writing snapshot over SMB. " + detail,
                     force=True,
                 )
-            self._begin_pre_restore_scan()
+            self._begin_pending_restore_after_stop()
             return
         if phase == "start":
             self._set_busy(False)
@@ -3258,6 +3294,7 @@ class ConfigScannerTabWidget(QFrame):
         )
         self._pending_write_snapshot = None
         self._pending_write_scope = WriteScope.FULL.value
+        self._pending_create_backup = False
         self._presave_snapshot_for_write = None
         self._pending_is_revert = False
         if not will_autostart:
@@ -3671,6 +3708,28 @@ class ConfigScannerTabWidget(QFrame):
             else:
                 QMessageBox.warning(self, "Config Scanner", message)
 
+    def _begin_restore_apply(self) -> None:
+        """Write the pending snapshot with no extra live scan."""
+        pending = self._pending_write_snapshot
+        if not pending:
+            return
+        self._set_busy(True)
+        schedule_apply_snapshot(
+            self._pool,
+            self._service,
+            pending,
+            self._drive_edit.text().strip(),
+            self._emitter,
+            write_scope=self._pending_write_scope,
+            is_revert=bool(self._pending_is_revert),
+        )
+
+    def _begin_pending_restore_after_stop(self) -> None:
+        if self._pending_create_backup:
+            self._begin_pre_restore_scan()
+            return
+        self._begin_restore_apply()
+
     def _begin_pre_restore_scan(self) -> None:
         """Presave live config, then write the pending snapshot over SMB."""
         target = self._drive_edit.text().strip()
@@ -3703,7 +3762,7 @@ class ConfigScannerTabWidget(QFrame):
                     + winrm_skip_detail(host),
                     force=True,
                 )
-                self._begin_pre_restore_scan()
+                self._begin_pending_restore_after_stop()
                 return
             self._pending_stack_phase = "kill"
             self._set_busy(True, op="stack_kill")
@@ -3722,6 +3781,9 @@ class ConfigScannerTabWidget(QFrame):
                 phase="kill",
                 **self._stack_trial_kwargs(phase="kill"),
             )
+            return
+        if self._pending_write_snapshot:
+            self._begin_pending_restore_after_stop()
             return
         if self._busy_op != "scan":
             self._set_busy(True, op="scan")

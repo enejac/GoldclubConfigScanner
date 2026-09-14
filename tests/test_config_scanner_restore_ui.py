@@ -190,9 +190,27 @@ def test_revert_uses_recorded_write_scope() -> None:
 
 def test_swap_confirm_asks_backup_in_the_same_dialog() -> None:
     assert "Swap this machine to:" in SRC
-    assert "undo_backup_step_line" in SRC
+    assert 'QCheckBox("Create a backup")' in SRC
+    assert "backup.setChecked(False)" in SRC
+    assert "_ask_restore_confirm" in SRC
+    assert "_pending_create_backup" in SRC
+    assert "_begin_restore_apply" in SRC
     assert "How it works:" not in SRC
     assert "Config Scanner — confirm restore" in SRC
+
+
+def test_restore_skips_presave_when_backup_unchecked() -> None:
+    confirm = SRC.split("def _confirm_write_snapshot", 1)[1].split("\n    def ", 1)[0]
+    assert "_pending_create_backup = bool(create_backup)" in confirm
+    assert "_pending_include_software = bool(create_backup)" in confirm
+    after_stop = SRC.split("def _begin_pending_restore_after_stop", 1)[1].split(
+        "\n    def ", 1
+    )[0]
+    assert "self._begin_pre_restore_scan()" in after_stop
+    assert "self._begin_restore_apply()" in after_stop
+    ready = SRC.split("def _on_scan_target_ready", 1)[1].split("\n    def ", 1)[0]
+    assert "if self._pending_write_snapshot:" in ready
+    assert "self._begin_pending_restore_after_stop()" in ready
 
 
 def test_live_game_version_banner_is_bold() -> None:
@@ -204,13 +222,10 @@ def test_live_game_version_banner_is_bold() -> None:
 
 
 def test_pre_restore_undo_point_captures_ruleta_binaries() -> None:
-    """The snapshot taken before a restore must be able to put the exe back."""
-    marker = "self._pending_include_software = True"
-    assert marker in SRC
-    at = SRC.find(marker)
-    write = SRC.find("self._pending_write_snapshot = snapshot_name", at)
-    assert write != -1 and write - at < 200
-    assert "_pending_include_software = False\n        self._pending_write_snapshot" not in SRC
+    """When Create a backup is ticked, the undo scan includes live binaries."""
+    confirm = SRC.split("def _confirm_write_snapshot", 1)[1].split("\n    def ", 1)[0]
+    assert "_pending_include_software = bool(create_backup)" in confirm
+    assert "self._pending_write_snapshot = snapshot_name" in confirm
 
 
 def test_restore_stops_when_undo_point_has_no_binaries() -> None:

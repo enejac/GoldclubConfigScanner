@@ -7,6 +7,7 @@ from config_scanner.egm_ui_labels import (
     encrypted_setup_legend,
     full_snapshot_saved_message,
     game_kind_from_profile_id,
+    restore_snapshot_tooltip,
     rollback_summary,
     set_baseline_tooltip,
     software_files_summary_line,
@@ -132,3 +133,9 @@ def test_slot_tooltips_never_mention_ruleta() -> None:
     assert "OneHand.exe" in detect_target_tooltip("slot")
     assert "Ruleta.exe" in detect_target_tooltip("roulette")
     assert "ruleta" in encrypted_setup_legend("roulette").casefold()
+
+
+def test_restore_tooltip_does_not_promise_an_auto_backup() -> None:
+    text = restore_snapshot_tooltip("slot")
+    assert "saved first" not in text.casefold()
+    assert "Create a backup" in text
