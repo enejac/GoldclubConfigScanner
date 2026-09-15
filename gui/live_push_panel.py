@@ -850,6 +850,9 @@ class LivePushPanel(QWidget):
         self._path.setPlaceholderText(r"\\host\slot  or  C:\Goldclub")
         self._path.setClearButtonEnabled(True)
         self._path.setToolTip(self._cabinet.toolTip())
+        self._cabinet.setCompleter(None)
+        self._path.returnPressed.connect(self._load)
+        self._path.installEventFilter(self)
         cab.addWidget(self._cabinet, stretch=1)
         this_pc = QPushButton("This PC")
         this_pc.setToolTip(
@@ -1496,7 +1499,7 @@ class LivePushPanel(QWidget):
         if "No Goldclub" in status:
             self._fade_detect_status(
                 f"No Goldclub on this PC — {len(found)} cabinet(s) online. "
-                "Pick an IP from the dropdown or type the last digits and press Load.",
+                "Pick an IP from the dropdown or type the last digits and press Enter.",
                 kind="ask",
             )
 
@@ -1584,12 +1587,12 @@ class LivePushPanel(QWidget):
         if self._fleet_ips:
             self._fade_detect_status(
                 f"No Goldclub on this PC — {len(self._fleet_ips)} cabinet(s) online. "
-                "Pick an IP from the dropdown or type the last digits and press Load.",
+                "Pick an IP from the dropdown or type the last digits and press Enter.",
                 kind="ask",
             )
             return
         self._fade_detect_status(
-            "No Goldclub on this PC — type the cabinet's last IP digits and press Load.",
+            "No Goldclub on this PC — type the cabinet's last IP digits and press Enter.",
             kind="ask",
         )
 
@@ -1817,6 +1820,14 @@ class LivePushPanel(QWidget):
                 lab.installEventFilter(self)
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        from gui.cabinet_target_row import combo_popup_is_open, is_cabinet_load_enter
+
+        path = getattr(self, "_path", None)
+        if path is not None and watched is path and is_cabinet_load_enter(
+            event, popup_open=combo_popup_is_open(getattr(self, "_cabinet", None))
+        ):
+            self._load()
+            return True
         if mouse_release_shows_tip(watched, event):
             return True
         return super().eventFilter(watched, event)

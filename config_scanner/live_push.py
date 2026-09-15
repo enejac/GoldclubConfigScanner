@@ -2202,6 +2202,20 @@ THIS_PC_MISSING_STATUS = (
 _IPV4_HOST_RE = re.compile(r"^(?:\d{1,3}\.){3}\d{1,3}$")
 
 
+def normalize_typed_ipv4(host: str) -> str:
+    """``10.0.0.076`` → ``10.0.0.76`` so last-octet edits stay a real address."""
+    parts = (host or "").split(".")
+    if len(parts) != 4:
+        return host
+    try:
+        nums = [int(part, 10) for part in parts]
+    except ValueError:
+        return host
+    if any(n < 0 or n > 255 for n in nums):
+        return host
+    return ".".join(str(n) for n in nums)
+
+
 def _exists_quick(path: Path, *, timeout_sec: float = 0.3) -> bool:
     """``Path.exists`` that gives up quickly (locked BitLocker volumes hang otherwise)."""
     import threading
@@ -2413,6 +2427,11 @@ def strip_cabinet_combo_label(raw: str) -> str:
     return text
 
 
+def cabinet_field_text(raw: str) -> str:
+    """Operator Cabinet text: drop quotes and a trailing ``(GST…)`` label."""
+    return strip_cabinet_combo_label(raw)
+
+
 def cabinet_cache_key(raw: str) -> str:
     """Stable key for the serial cache: lab IP when present, else normalized path."""
     text = strip_cabinet_combo_label(raw)
@@ -2462,17 +2481,24 @@ def live_targets_for_ip(raw: str) -> tuple[str, ...]:
     """UNC Goldclub roots for a typed cabinet IP or pasted share."""
     from config_scanner.build_version import normalize_scan_target
 
-    text = strip_cabinet_combo_label((raw or "").strip().strip('"'))
+    text = strip_cabinet_combo_label(raw)
     if not text:
         return ()
     if text.startswith("\\\\"):
+        rest = text[2:]
+        host, sep, tail = rest.partition("\\")
+        if _IPV4_HOST_RE.fullmatch(host):
+            host = normalize_typed_ipv4(host)
+            text = rf"\\{host}\{tail}" if sep else rf"\\{host}"
         return (normalize_scan_target(text),)
     first, sep, rest = text.partition("\\")
     if _IPV4_HOST_RE.fullmatch(first) and sep and rest.strip():
+        first = normalize_typed_ipv4(first)
         return (normalize_scan_target(rf"\\{first}\{rest.strip()}"),)
     host = first.strip()
     if not _IPV4_HOST_RE.fullmatch(host):
         return ()
+    host = normalize_typed_ipv4(host)
     return (
         rf"\\{host}\c$\Goldclub",
         rf"\\{host}\slot",
@@ -2505,10 +2531,11 @@ def resolve_live_target_from_user(
     probe: bool = True,
 ) -> str:
     """Local path, pasted UNC, or first reachable share for a typed IP."""
-    text = strip_cabinet_combo_label((raw or "").strip().strip('"'))
+    text = strip_cabinet_combo_label(raw)
     if not text:
         return ""
-    if not text.startswith("\\\\") and not _IPV4_HOST_RE.fullmatch(text.split("\\", 1)[0]):
+    head = text.split("\\", 1)[0]
+    if not text.startswith("\\\\") and not _IPV4_HOST_RE.fullmatch(head):
         return text
     candidates = live_targets_for_ip(text)
     if not candidates:
