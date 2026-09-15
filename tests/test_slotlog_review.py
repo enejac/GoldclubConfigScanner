@@ -344,7 +344,7 @@ def test_live_push_panel_wires_slotlog_check() -> None:
     chunk = src[start : start + 1500]
     assert "resolve_goldclub_for_slotlog" in chunk
     assert "if not goldclub.is_dir()" not in chunk
-    assert "wait_sec=90.0" in src
+    assert "_pending_slotlog_wait = 90.0" in src
     assert "format_live_push_apply_status" in src
     assert 'QMessageBox.information(\n            self,\n            "Apply complete"' not in src
     assert "_set_apply_result" in src

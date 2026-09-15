@@ -2427,19 +2427,16 @@ def math_settings_unreadable_reason(goldclub: Path, theme: str) -> str | None:
     try:
         if not path.is_file():
             return (
-                f"{name}: MathSettings.xml is not present; "
-                "RTP and bet steps cannot be changed."
+                f"{name}: MathSettings.xml is not present; RTP cannot be changed."
             )
         root = _parse_xml(path).getroot()
     except (ET.ParseError, OSError, ValueError):
         return (
-            f"{name}: MathSettings.xml cannot be decoded; "
-            "RTP and bet steps cannot be changed."
+            f"{name}: MathSettings.xml cannot be decoded; RTP cannot be changed."
         )
     if _find_desc(root, "DenomConfigSettings") is None:
         return (
-            f"{name}: MathSettings.xml cannot be decoded; "
-            "RTP and bet steps cannot be changed."
+            f"{name}: MathSettings.xml cannot be decoded; RTP cannot be changed."
         )
     return None
 
@@ -3717,22 +3714,13 @@ def build_config_pack(
                     continue
                 rel = f"slot/themes/{theme}/MathSettings.xml"
                 src = live / rel
-                named = math.theme not in ("", "*")
-                reason = math_settings_unreadable_reason(live, theme)
-                if reason:
-                    if named:
-                        raise ValueError(reason)
+                if not src.is_file():
                     continue
                 dest = pack_dir / rel
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 try:
                     patch_math_settings(src, dest, math)
-                except (ET.ParseError, OSError, ValueError) as exc:
-                    if named:
-                        raise ValueError(
-                            f"{theme}: MathSettings.xml cannot be decoded; "
-                            "RTP and bet steps cannot be changed."
-                        ) from exc
+                except (ET.ParseError, OSError, ValueError):
                     continue
                 written.append(normalize_rel_path(rel))
         if pl.bet_multipliers:

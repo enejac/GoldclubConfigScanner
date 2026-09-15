@@ -774,6 +774,7 @@ class LivePushPanel(QWidget):
         self._live_baseline_key: tuple[int, str] | None = None
         self._last_backup_dir = ""
         self._last_apply_since: datetime | None = None
+        self._pending_slotlog_wait: float | None = None
         self._review_emitter = _PushEmitter()
         self._review_emitter.progress.connect(self._on_progress)
         self._review_emitter.finished.connect(self._on_slotlog_review_finished)
@@ -2053,47 +2054,50 @@ class LivePushPanel(QWidget):
         silent = self._silent_load
         self._silent_load = False
         self._set_busy(False)
-        if not isinstance(outcome, LiveLoadOutcome):
-            self._status.setText("Load failed.")
-            self._set_onehand_build_label(None)
-            return
-        if outcome.error or outcome.recipe is None:
-            msg = load_error_dialog_text(outcome.error)
-            if not silent:
-                self._warn_load(msg)
-            self._status.setText(msg)
-            self._goldclub = None
-            self._display_corruption = {}
-            self._cabinet_languages = None
-            self._fill_language_combo()
-            self._update_licence_ui(None)
-            self._set_onehand_build_label(None)
-            self._sync_magic_wheel_ui(False)
-            self._paint_live_highlights()
-            return
-        self._loaded = outcome.recipe
-        self._goldclub = outcome.root
-        self._sync_magic_wheel_ui(outcome.has_magic_wheel_gamepack)
-        self._show_resolved_target(outcome.root)
-        self._remember_cabinet(self._path.text().strip())
-        self._display_corruption = dict(outcome.display_corruption or {})
-        self._set_onehand_build_label(outcome.onehand_build)
-        if outcome.root is not None:
-            # Read on the worker (OneHand.exe is ~9.5 MB over SMB); never
-            # re-scan it on the GUI thread.
-            self._onehand_markets = outcome.onehand_markets
-            self._fill_market_combo(keep=outcome.recipe.jurisdiction.tag)
-            # Languages are per cabinet (slot\languages differs between
-            # EGMs); rebuild the combo from this root before filling the form.
-            self._cabinet_languages = outcome.languages
-            self._fill_language_combo(keep=outcome.recipe.mg_identity.language)
-        self._fill_form(outcome.recipe)
-        self._update_ticket_hint(
-            outcome.root, printer_on=outcome.ticket_printer_active
-        )
-        self._update_licence_ui(outcome.licence, goldclub=outcome.root)
-        self._status.setText(outcome.status)
-        self._refresh_changes()
+        try:
+            if not isinstance(outcome, LiveLoadOutcome):
+                self._status.setText("Load failed.")
+                self._set_onehand_build_label(None)
+                return
+            if outcome.error or outcome.recipe is None:
+                msg = load_error_dialog_text(outcome.error)
+                if not silent:
+                    self._warn_load(msg)
+                self._status.setText(msg)
+                self._goldclub = None
+                self._display_corruption = {}
+                self._cabinet_languages = None
+                self._fill_language_combo()
+                self._update_licence_ui(None)
+                self._set_onehand_build_label(None)
+                self._sync_magic_wheel_ui(False)
+                self._paint_live_highlights()
+                return
+            self._loaded = outcome.recipe
+            self._goldclub = outcome.root
+            self._sync_magic_wheel_ui(outcome.has_magic_wheel_gamepack)
+            self._show_resolved_target(outcome.root)
+            self._remember_cabinet(self._path.text().strip())
+            self._display_corruption = dict(outcome.display_corruption or {})
+            self._set_onehand_build_label(outcome.onehand_build)
+            if outcome.root is not None:
+                # Read on the worker (OneHand.exe is ~9.5 MB over SMB); never
+                # re-scan it on the GUI thread.
+                self._onehand_markets = outcome.onehand_markets
+                self._fill_market_combo(keep=outcome.recipe.jurisdiction.tag)
+                # Languages are per cabinet (slot\languages differs between
+                # EGMs); rebuild the combo from this root before filling the form.
+                self._cabinet_languages = outcome.languages
+                self._fill_language_combo(keep=outcome.recipe.mg_identity.language)
+            self._fill_form(outcome.recipe)
+            self._update_ticket_hint(
+                outcome.root, printer_on=outcome.ticket_printer_active
+            )
+            self._update_licence_ui(outcome.licence, goldclub=outcome.root)
+            self._status.setText(outcome.status)
+            self._refresh_changes()
+        finally:
+            self._flush_pending_slotlog()
 
     def _show_resolved_target(self, root: Path | None) -> None:
         """Reflect the local root the loader chose over the .111 / This PC default."""
@@ -3788,32 +3792,46 @@ class LivePushPanel(QWidget):
         self._slotlog_findings = []
         self._set_apply_result(f"{text}\n{LIVE_PUSH_APPLY_SLOTLOG_HINT}")
         self._status.setText(text)
+        # SlotLog must not probe the combo label while Load is still reconnecting
+        # (that pops "Goldclub not found: \\host\\c$\\Goldclub (GST20664)" instantly).
+        self._pending_slotlog_wait = 90.0 if result.stack_started else 5.0
         self._load()
-        if result.stack_started:
-            self._start_slotlog_review(wait_sec=90.0)
-        else:
-            self._start_slotlog_review(wait_sec=5.0)
+        if not self._busy:
+            self._flush_pending_slotlog()
 
     def _check_slotlog_clicked(self) -> None:
         if self._busy or self._dallas_busy:
             return
         self._start_slotlog_review(wait_sec=0.0)
 
+    def _flush_pending_slotlog(self) -> None:
+        wait = self._pending_slotlog_wait
+        if wait is None:
+            return
+        self._pending_slotlog_wait = None
+        if not self._ui_active():
+            return
+        self._start_slotlog_review(wait_sec=wait)
+
     def _start_slotlog_review(self, *, wait_sec: float) -> None:
-        raw = self._path.text().strip()
-        if not raw:
+        from config_scanner.live_push import strip_cabinet_combo_label
+
+        raw = strip_cabinet_combo_label(self._path.text())
+        if not raw and self._goldclub is None:
             QMessageBox.warning(self, "SlotLog", "Load a cabinet path first.")
             return
-        offline = self._cabinet_offline_message(raw)
+        offline = self._cabinet_offline_message(raw or str(self._goldclub or ""))
         if offline:
             self._status.setText(offline.splitlines()[0])
-            QMessageBox.warning(self, "SlotLog", offline)
+            if wait_sec <= 0:
+                QMessageBox.warning(self, "SlotLog", offline)
             return
         goldclub, err = resolve_goldclub_for_slotlog(self._goldclub, raw)
         if goldclub is None:
-            QMessageBox.warning(
-                self, "SlotLog", err or f"Goldclub not found:\n{raw}"
-            )
+            msg = err or f"Goldclub not found:\n{raw}"
+            self._status.setText(msg.splitlines()[0])
+            if wait_sec <= 0:
+                QMessageBox.warning(self, "SlotLog", msg)
             return
         since = self._last_apply_since
         if since is None:

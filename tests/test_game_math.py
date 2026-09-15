@@ -265,12 +265,24 @@ def test_rtp_blocked_when_mathsettings_missing(tmp_path: Path) -> None:
         "not present" in err
         for err in validate_live_push_recipe(recipe_live, recipe_form, gold)
     )
-    try:
-        build_config_pack(recipe_form, gold, tmp_path / "missing-math-pack")
-    except ValueError as exc:
-        assert "not present" in str(exc)
-    else:
-        raise AssertionError("expected pack to refuse a missing MathSettings.xml")
+    build_config_pack(recipe_form, gold, tmp_path / "missing-math-pack")
+    assert not (
+        tmp_path / "missing-math-pack" / "slot" / "themes" / "GhostTheme" / "MathSettings.xml"
+    ).is_file()
+
+
+def test_bet_steps_ok_when_mathsettings_missing(tmp_path: Path) -> None:
+    gold = _fake_goldclub(tmp_path)
+    live = [_row("CloversAreReallyWild", bets=[4, 8, 12, 16, 20, 32, 40], rtp="return_94_0")]
+    form = clone_math_rows(live)
+    form[0].bet_multipliers = [4, 8, 12, 16]
+    assert theme_math_write_errors(gold, live, form) == []
+    recipe_live = SlotSetupRecipe(math=live)
+    recipe_form = SlotSetupRecipe(math=form)
+    assert not any(
+        "MathSettings.xml" in err
+        for err in validate_live_push_recipe(recipe_live, recipe_form, gold)
+    )
 
 
 def test_rtp_blocked_when_mathsettings_undecodable(tmp_path: Path) -> None:

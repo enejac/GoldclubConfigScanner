@@ -703,6 +703,46 @@ def test_apply_success_stays_in_panel_not_popup(
     assert panel._apply_result.isVisible()
 
 
+def test_slotlog_waits_until_load_finishes(
+    qt_app: QApplication, monkeypatch
+) -> None:
+    from config_scanner.live_push import LivePushResult
+    from gui.live_push_panel import LivePushPanel
+
+    panel = LivePushPanel(autoload=False)
+    panel.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    panel.show()
+    qt_app.processEvents()
+    calls: list[float] = []
+    monkeypatch.setattr(
+        panel, "_start_slotlog_review", lambda **k: calls.append(float(k["wait_sec"]))
+    )
+
+    def _load_keeps_busy() -> None:
+        panel._busy = True
+
+    monkeypatch.setattr(panel, "_load", _load_keeps_busy)
+    panel._on_finished(
+        LivePushResult(
+            ("slot/themes/PR3_RedZone/MathSettings.xml",),
+            (),
+            (),
+            True,
+            True,
+            "Game started.",
+            sections=("math",),
+        )
+    )
+    qt_app.processEvents()
+    assert calls == []
+    assert panel._pending_slotlog_wait == 90.0
+
+    panel._on_load_finished(object())
+    qt_app.processEvents()
+    assert calls == [90.0]
+    assert panel._pending_slotlog_wait is None
+
+
 def test_door_switch_defaults_match_111_and_auto_unlock_all(
     qt_app: QApplication,
 ) -> None:
