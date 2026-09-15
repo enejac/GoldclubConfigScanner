@@ -5,6 +5,7 @@ Updated automatically when a PR is merged.
 
 ## 2026-09-15
 
+- Live Push: edit bet steps and RTP per game ([#77](https://github.com/enejac/GoldclubConfigScanner/pull/77))
 - Live Push: Check SlotLog uses the loaded Goldclub root, not typed c$ ([#76](https://github.com/enejac/GoldclubConfigScanner/pull/76))
 - Cabinet dropdown: serial labels + auto-resolve bare IPs ([#75](https://github.com/enejac/GoldclubConfigScanner/pull/75))
 - Snapshots: keep licence XML in Licenses and the WIBU stub in slot only ([#74](https://github.com/enejac/GoldclubConfigScanner/pull/74))
