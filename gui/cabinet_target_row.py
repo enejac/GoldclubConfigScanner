@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from config_manager import SettingsManager
+from gui.cabinet_smb_tick import CabinetPathCombo, CabinetSmbTickController
 from config_scanner.live_push import (
     THIS_PC_GOLDCLUB,
     THIS_PC_MISSING_STATUS,
@@ -199,9 +200,10 @@ class CabinetTargetRow(QWidget):
         self._label = QLabel(label)
         lay.addWidget(self._label)
 
-        self._combo = QComboBox()
+        self._combo = CabinetPathCombo()
         self._combo.setEditable(True)
         self._combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self._smb_ticks = CabinetSmbTickController(self._combo)
         self._combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._combo.setToolTip(CABINET_FIELD_TOOLTIP)
         edit = self._combo.lineEdit()

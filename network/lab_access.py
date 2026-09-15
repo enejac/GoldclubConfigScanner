@@ -355,6 +355,41 @@ def lab_lan_ip_from_text(raw: str) -> str | None:
     return None
 
 
+def smb_host_from_cabinet_target(raw: str) -> str | None:
+    """Host to probe for SMB: lab IP, any IPv4, or a UNC hostname.
+
+    Local Goldclub roots (``C:\\Goldclub``, ``G:``) return None.
+    """
+    text = (raw or "").strip().strip('"').replace("/", "\\")
+    if not text:
+        return None
+    ip = lab_lan_ip_from_text(text)
+    if ip:
+        return ip
+    if text.startswith("\\\\"):
+        host = text.lstrip("\\").split("\\", 1)[0].strip()
+        return host or None
+    first = text.split("\\", 1)[0].strip()
+    if _IPV4_RE.fullmatch(first):
+        octets = [int(p) for p in first.split(".")]
+        if all(0 <= o <= 255 for o in octets):
+            return first
+    return None
+
+
+def host_answers_smb(host: str, *, timeout_sec: float = 0.25) -> bool:
+    """True when *host* accepts SMB (TCP 445, else 139)."""
+    return _host_answers_smb((host or "").strip(), timeout_sec=timeout_sec)
+
+
+def cabinet_target_answers_smb(target: str, *, timeout_sec: float = 0.25) -> bool:
+    """True when this cabinet path's host is answering SMB."""
+    host = smb_host_from_cabinet_target(target)
+    if not host:
+        return False
+    return host_answers_smb(host, timeout_sec=timeout_sec)
+
+
 def this_pc_lab_lan_ips() -> frozenset[str]:
     """This machine's 10.0.0.x addresses — skip them when listing remote cabinets."""
     keys: set[str] = set()

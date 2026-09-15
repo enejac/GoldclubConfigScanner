@@ -46,6 +46,7 @@ from PySide6.QtGui import QBrush, QColor, QPalette
 
 from config_manager import SettingsManager
 from gui.busy_spinner import BusySpinner
+from gui.cabinet_smb_tick import CabinetPathCombo, CabinetSmbTickController
 from config_scanner.bill_tokens_view import (
     apply_bill_token_accept,
     bill_tokens_all_match,
@@ -793,9 +794,10 @@ class LivePushPanel(QWidget):
 
         cab = QHBoxLayout()
         cab.addWidget(QLabel("Cabinet:"))
-        self._cabinet = QComboBox()
+        self._cabinet = CabinetPathCombo()
         self._cabinet.setEditable(True)
         self._cabinet.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self._smb_ticks = CabinetSmbTickController(self._cabinet)
         self._cabinet.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
         )
