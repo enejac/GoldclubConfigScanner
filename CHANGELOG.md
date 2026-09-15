@@ -5,6 +5,7 @@ Updated automatically when a PR is merged.
 
 ## 2026-09-15
 
+- Live Push: refuse RTP writes when MathSettings.xml is missing ([#84](https://github.com/enejac/GoldclubConfigScanner/pull/84))
 - Live Push: Games/math Reset actually updates the radios ([#83](https://github.com/enejac/GoldclubConfigScanner/pull/83))
 - Live Push: write ticket printer receiptId when flipping JCM/TRANSACT ([#82](https://github.com/enejac/GoldclubConfigScanner/pull/82))
 - Cabinet dropdown: green tick when SMB is up ([#81](https://github.com/enejac/GoldclubConfigScanner/pull/81))
