@@ -216,6 +216,46 @@ def test_live_targets_for_typed_ip() -> None:
     assert live_targets_for_ip("not-an-ip") == ()
 
 
+def test_cabinet_combo_label_round_trip() -> None:
+    from config_scanner.live_push import (
+        cabinet_cache_key,
+        format_cabinet_combo_label,
+        resolve_live_target_from_user,
+        strip_cabinet_combo_label,
+    )
+
+    assert format_cabinet_combo_label("10.0.0.76", "GST20661") == "10.0.0.76 (GST20661)"
+    assert format_cabinet_combo_label(r"\\10.0.0.111\c$\Goldclub", "gst22377") == (
+        r"\\10.0.0.111\c$\Goldclub (GST22377)"
+    )
+    assert format_cabinet_combo_label("10.0.0.76", "") == "10.0.0.76"
+    assert strip_cabinet_combo_label("10.0.0.76 (GST20661)") == "10.0.0.76"
+    assert strip_cabinet_combo_label(r"\\10.0.0.111\c$\Goldclub (GST22377)") == (
+        r"\\10.0.0.111\c$\Goldclub"
+    )
+    assert strip_cabinet_combo_label("10.0.0.76") == "10.0.0.76"
+    assert cabinet_cache_key(r"\\10.0.0.76\c$\Goldclub (GST20661)") == "10.0.0.76"
+    assert cabinet_cache_key("10.0.0.76") == "10.0.0.76"
+    # Load still expands a labeled bare IP.
+    assert resolve_live_target_from_user("10.0.0.76 (GST20661)", probe=False) == (
+        r"\\10.0.0.76\c$\Goldclub"
+    )
+
+
+def test_cabinet_hint_needs_resolve_for_bare_ip_only() -> None:
+    from config_scanner.live_push import cabinet_hint_needs_resolve
+
+    assert cabinet_hint_needs_resolve("10.0.0.76") is True
+    assert cabinet_hint_needs_resolve("10.0.0.111") is True
+    # Already a candidate root — Load would not expand further.
+    assert cabinet_hint_needs_resolve(r"\\10.0.0.76\c$\Goldclub") is False
+    assert cabinet_hint_needs_resolve(r"\\10.0.0.76\slot") is False
+    assert cabinet_hint_needs_resolve("") is False
+    assert cabinet_hint_needs_resolve("not-an-ip") is False
+    assert cabinet_hint_needs_resolve("10.0.0") is False  # incomplete octet list
+    assert cabinet_hint_needs_resolve(r"C:\Goldclub") is False
+
+
 def test_this_pc_live_target_none_when_not_a_cabinet(tmp_path: Path) -> None:
     missing = tmp_path / "no-goldclub"
     assert this_pc_live_target(local_candidates=(str(missing),)) is None

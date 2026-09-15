@@ -3,6 +3,10 @@
 What landed on `master`. One line per merged pull request, newest first.
 Updated automatically when a PR is merged.
 
+## 2026-09-15
+
+- Snapshots: keep licence XML in Licenses and the WIBU stub in slot only ([#74](https://github.com/enejac/GoldclubConfigScanner/pull/74))
+
 ## 2026-09-14
 
 - Say the dead WinRM channel once, not four times ([#73](https://github.com/enejac/GoldclubConfigScanner/pull/73))

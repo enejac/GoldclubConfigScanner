@@ -26,9 +26,12 @@ from config_manager import SettingsManager
 from config_scanner.live_push import (
     THIS_PC_GOLDCLUB,
     THIS_PC_MISSING_STATUS,
+    format_cabinet_combo_label,
     initial_live_cabinet_target,
     merge_live_target_history,
+    remember_cabinet_serial_for_target,
     resolve_live_target_from_user,
+    strip_cabinet_combo_label,
     this_pc_live_target,
 )
 
@@ -59,14 +62,32 @@ def shared_cabinet_target(*, fallback: str = "") -> str:
     return "" if text.upper().rstrip("\\") == "D:" else text
 
 
-def remember_shared_cabinet_target(target: str) -> list[str]:
+def remember_shared_cabinet_target(target: str, *, serial: str | None = None) -> list[str]:
     """Persist a cabinet path for *both* Live Push and Snapshots. Returns history."""
-    text = (target or "").strip()
+    text = strip_cabinet_combo_label(target)
     if not text:
         return SettingsManager.get_live_push_recent()
     recent = SettingsManager.remember_live_push_target(text)
     SettingsManager.set_config_scanner_game_drive(text)
+    # Cheap when *serial* is known; otherwise one small SMB/local read of
+    # ProductSerialNumber / mgconfig MachineID — never on every keystroke.
+    remember_cabinet_serial_for_target(text, serial=serial)
     return recent
+
+
+def _cabinet_item_label(path: str) -> str:
+    return format_cabinet_combo_label(path, SettingsManager.get_cabinet_serial(path))
+
+
+def _combo_has_path(combo: QComboBox, path: str) -> bool:
+    want = strip_cabinet_combo_label(path).replace("/", "\\").rstrip("\\").casefold()
+    for index in range(combo.count()):
+        data = combo.itemData(index)
+        raw = str(data) if data is not None else combo.itemText(index)
+        key = strip_cabinet_combo_label(raw).replace("/", "\\").rstrip("\\").casefold()
+        if key == want:
+            return True
+    return False
 
 
 def sort_fleet_ips(ips: list[str]) -> list[str]:
@@ -82,6 +103,40 @@ def sort_fleet_ips(ips: list[str]) -> list[str]:
 class _FleetScanEmitter(QObject):
     found = Signal(str)
     finished = Signal(object)
+
+
+class _SerialPeekEmitter(QObject):
+    done = Signal(str, str)  # host/path, serial
+
+
+class _SerialPeekRunnable(QRunnable):
+    """One tiny SMB/local read of ProductSerialNumber — never blocks the UI."""
+
+    def __init__(self, target: str, emitter: _SerialPeekEmitter) -> None:
+        super().__init__()
+        self.setAutoDelete(True)
+        self._target = (target or "").strip()
+        self._emitter = emitter
+
+    def run(self) -> None:
+        try:
+            from config_scanner.app_shutdown import is_shutting_down
+            from config_scanner.build_version import read_machine_serial_from_target
+            from network.cabinet_identity import read_cabinet_machine_name_from_state
+            from network.lab_access import lab_lan_ip_from_text
+
+            if is_shutting_down() or not self._target:
+                return
+            sn = read_machine_serial_from_target(self._target) or ""
+            if not sn:
+                ip = lab_lan_ip_from_text(self._target)
+                if ip:
+                    sn = read_cabinet_machine_name_from_state(ip) or ""
+            sn = (sn or "").strip().upper()
+            if sn:
+                self._emitter.done.emit(self._target, sn)
+        except Exception:  # noqa: BLE001
+            return
 
 
 class _FleetScanRunnable(QRunnable):
@@ -134,6 +189,9 @@ class CabinetTargetRow(QWidget):
         self._fleet_emitter = _FleetScanEmitter()
         self._fleet_emitter.found.connect(self._on_fleet_found)
         self._fleet_emitter.finished.connect(self._on_fleet_finished)
+        self._serial_emitter = _SerialPeekEmitter()
+        self._serial_emitter.done.connect(self._on_serial_peeked)
+        self._serial_peeking: set[str] = set()
 
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -190,14 +248,16 @@ class CabinetTargetRow(QWidget):
         return self._load
 
     def text(self) -> str:
-        return self._edit.text().strip()
+        return strip_cabinet_combo_label(self._edit.text())
 
     def set_text(self, text: str, *, silent: bool = False) -> None:
+        path = strip_cabinet_combo_label(text)
+        shown = _cabinet_item_label(path) if path else ""
         if silent:
             self._combo.blockSignals(True)
             self._edit.blockSignals(True)
         try:
-            self._edit.setText((text or "").strip())
+            self._edit.setText(shown)
         finally:
             if silent:
                 self._edit.blockSignals(False)
@@ -211,25 +271,29 @@ class CabinetTargetRow(QWidget):
     def refresh_history(self, *, current: str | None = None) -> None:
         """Rebuild the dropdown from the shared recent list (newest first)."""
         recent = SettingsManager.get_live_push_recent()
-        typed = self.text() if current is None else (current or "").strip()
+        typed = self.text() if current is None else strip_cabinet_combo_label(current)
         items = merge_live_target_history(typed, recent)
         self._combo.blockSignals(True)
         try:
             self._combo.clear()
             for item in items:
-                self._combo.addItem(item)
+                self._combo.addItem(_cabinet_item_label(item), item)
             for ip in self._fleet_ips:
-                if self._combo.findText(ip) < 0:
-                    self._combo.addItem(ip)
-            self._combo.setEditText(typed)
+                if not _combo_has_path(self._combo, ip):
+                    self._combo.addItem(_cabinet_item_label(ip), ip)
+            self._combo.setEditText(_cabinet_item_label(typed) if typed else "")
         finally:
             self._combo.blockSignals(False)
+        for item in items:
+            self._peek_serial_if_needed(item)
+        for ip in self._fleet_ips:
+            self._peek_serial_if_needed(ip)
 
-    def remember(self, target: str) -> None:
-        text = (target or "").strip()
+    def remember(self, target: str, *, serial: str | None = None) -> None:
+        text = strip_cabinet_combo_label(target)
         if not text:
             return
-        remember_shared_cabinet_target(text)
+        remember_shared_cabinet_target(text, serial=serial)
         self.refresh_history(current=text)
 
     def sync_from_settings(self) -> bool:
@@ -258,24 +322,27 @@ class CabinetTargetRow(QWidget):
         text = str(ip or "").strip()
         if text:
             self.apply_fleet_ips([text])
+            self._peek_serial_if_needed(text)
 
     def _on_fleet_finished(self, ips: object) -> None:
         self._fleet_scanning = False
         found = [str(i).strip() for i in ips if str(i).strip()] if isinstance(ips, (list, tuple)) else []
         self.apply_fleet_ips(found)
+        for ip in found:
+            self._peek_serial_if_needed(ip)
         self.fleet_finished.emit(list(self._fleet_ips))
 
     def apply_fleet_ips(self, ips: list[str]) -> None:
         """Add live 10.0.0.x hosts to the dropdown; keep the typed value + selection."""
         self._fleet_ips = sort_fleet_ips(self._fleet_ips + list(ips))
-        typed = self._combo.currentText()
+        typed = self._edit.text()
         sel_start = self._edit.selectionStart()
         sel_len = len(self._edit.selectedText())
         self._combo.blockSignals(True)
         try:
             for ip in self._fleet_ips:
-                if self._combo.findText(ip) < 0:
-                    self._combo.addItem(ip)
+                if not _combo_has_path(self._combo, ip):
+                    self._combo.addItem(_cabinet_item_label(ip), ip)
             self._combo.setEditText(typed)
             if sel_len > 0 and sel_start >= 0:
                 self._edit.setSelection(sel_start, sel_len)
@@ -285,10 +352,47 @@ class CabinetTargetRow(QWidget):
     def fleet_ips(self) -> list[str]:
         return list(self._fleet_ips)
 
+    def _peek_serial_if_needed(self, target: str) -> None:
+        text = strip_cabinet_combo_label(target)
+        if not text or SettingsManager.get_cabinet_serial(text):
+            return
+        key = text.replace("/", "\\").rstrip("\\").casefold()
+        if key in self._serial_peeking:
+            return
+        self._serial_peeking.add(key)
+        QThreadPool.globalInstance().start(_SerialPeekRunnable(text, self._serial_emitter))
+
+    def _on_serial_peeked(self, target: object, serial: object) -> None:
+        path = strip_cabinet_combo_label(str(target or ""))
+        sn = str(serial or "").strip().upper()
+        key = path.replace("/", "\\").rstrip("\\").casefold()
+        self._serial_peeking.discard(key)
+        if not path or not sn:
+            return
+        SettingsManager.remember_cabinet_serial(path, sn)
+        typed = self.text()
+        # Refresh labels without disturbing what the operator is typing.
+        self._combo.blockSignals(True)
+        try:
+            for index in range(self._combo.count()):
+                data = self._combo.itemData(index)
+                raw = str(data) if data is not None else self._combo.itemText(index)
+                item_path = strip_cabinet_combo_label(raw)
+                if item_path.replace("/", "\\").rstrip("\\").casefold() != key:
+                    continue
+                self._combo.setItemText(index, _cabinet_item_label(item_path))
+                self._combo.setItemData(index, item_path)
+            if typed.replace("/", "\\").rstrip("\\").casefold() == key:
+                self._combo.setEditText(_cabinet_item_label(path))
+        finally:
+            self._combo.blockSignals(False)
+
     # -- actions -----------------------------------------------------------
     def normalized_target(self) -> str:
         """Typed IP → UNC Goldclub root (no network probe); paths pass through."""
-        raw = self.text()
+        index = self._combo.currentIndex()
+        data = self._combo.itemData(index) if index >= 0 else None
+        raw = strip_cabinet_combo_label(str(data) if data else self.text())
         if not raw:
             return ""
         resolved = resolve_live_target_from_user(raw, probe=False)
