@@ -5,6 +5,7 @@ Updated automatically when a PR is merged.
 
 ## 2026-09-15
 
+- Cabinet dropdown: green tick when SMB is up ([#81](https://github.com/enejac/GoldclubConfigScanner/pull/81))
 - Load cabinet when Enter is pressed after changing the IP ([#80](https://github.com/enejac/GoldclubConfigScanner/pull/80))
 - Live Push: make Games/math Reset restore the live RTP and bets ([#79](https://github.com/enejac/GoldclubConfigScanner/pull/79))
 - Live Push: show Magic wheel only when the gamepack has it ([#78](https://github.com/enejac/GoldclubConfigScanner/pull/78))
