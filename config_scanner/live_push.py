@@ -3620,7 +3620,7 @@ def resolve_goldclub_for_slotlog(
     """
     if loaded is not None:
         return Path(loaded), ""
-    raw = (typed or "").strip()
+    raw = strip_cabinet_combo_label(typed)
     if not raw:
         return None, "Load a cabinet path first."
     return prepare_live_goldclub(raw)

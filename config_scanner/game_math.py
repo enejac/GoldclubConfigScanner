@@ -204,24 +204,6 @@ def offered_bet_steps(
     return values
 
 
-def theme_math_row_dirty(
-    live_row: MathDenomSettings | None, row: MathDenomSettings
-) -> bool:
-    """True when RTP or bet steps differ from live, or the theme was not loaded."""
-    if live_row is None:
-        return bool(
-            (row.theme or "").strip()
-            and (row.theme or "").strip() != "*"
-            and (
-                (row.return_percent or "").strip()
-                or list(row.bet_multipliers or [])
-            )
-        )
-    if (live_row.return_percent or "") != (row.return_percent or ""):
-        return True
-    return not math_bets_equal(live_row.bet_multipliers, row.bet_multipliers)
-
-
 def theme_rtp_errors(
     live_rows: Sequence[MathDenomSettings],
     form_rows: Sequence[MathDenomSettings],
@@ -258,12 +240,23 @@ def theme_rtp_errors(
     return errors
 
 
+def theme_rtp_changed(
+    live_row: MathDenomSettings | None, row: MathDenomSettings
+) -> bool:
+    new = (row.return_percent or "").strip()
+    old = (live_row.return_percent or "").strip() if live_row is not None else ""
+    return new != old
+
+
 def theme_math_write_errors(
     goldclub: Path,
     live_rows: Sequence[MathDenomSettings],
     form_rows: Sequence[MathDenomSettings],
 ) -> list[str]:
-    """Block RTP / bet writes when MathSettings.xml is missing or undecodable."""
+    """Block RTP writes when MathSettings.xml is missing or undecodable.
+
+    Bet-step edits do not require a file check; they stay on the live ladder.
+    """
     live_map = math_by_theme(live_rows)
     errors = theme_rtp_errors(live_rows, form_rows)
     seen = set(errors)
@@ -271,7 +264,7 @@ def theme_math_write_errors(
         theme = (row.theme or "").strip()
         if not theme or theme == "*":
             continue
-        if not theme_math_row_dirty(live_map.get(theme), row):
+        if not theme_rtp_changed(live_map.get(theme), row):
             continue
         reason = math_settings_unreadable_reason(goldclub, theme)
         if reason and reason not in seen:
