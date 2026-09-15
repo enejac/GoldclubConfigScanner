@@ -1434,6 +1434,8 @@ class LivePushPanel(QWidget):
 
     def _apply_fleet_ips(self, ips: list[str]) -> None:
         """Add live 10.0.0.x hosts to the Cabinet dropdown; keep the typed value."""
+        from config_scanner.live_push import format_cabinet_combo_label, strip_cabinet_combo_label
+
         incoming = [ip.strip() for ip in ips if str(ip).strip()]
         have = set(self._fleet_ips)
         for ip in incoming:
@@ -1454,13 +1456,25 @@ class LivePushPanel(QWidget):
         edit = combo.lineEdit()
         sel_start = edit.selectionStart() if edit is not None else -1
         sel_len = len(edit.selectedText()) if edit is not None else 0
-        existing = {combo.itemText(i) for i in range(combo.count())}
+        existing: set[str] = set()
+        for i in range(combo.count()):
+            data = combo.itemData(i)
+            raw = str(data) if data is not None else combo.itemText(i)
+            existing.add(
+                strip_cabinet_combo_label(raw).replace("/", "\\").rstrip("\\").casefold()
+            )
         combo.blockSignals(True)
         try:
             for ip in self._fleet_ips:
-                if ip not in existing:
-                    combo.addItem(ip)
-                    existing.add(ip)
+                key = ip.replace("/", "\\").rstrip("\\").casefold()
+                if key not in existing:
+                    combo.addItem(
+                        format_cabinet_combo_label(
+                            ip, SettingsManager.get_cabinet_serial(ip)
+                        ),
+                        ip,
+                    )
+                    existing.add(key)
             combo.setEditText(typed)
             if edit is not None and sel_len > 0 and sel_start >= 0:
                 edit.setSelection(sel_start, sel_len)
@@ -1795,26 +1809,42 @@ class LivePushPanel(QWidget):
     def _fill_cabinet_history(
         self, recent: list[str] | tuple[str, ...] | None, *, current: str = ""
     ) -> None:
+        from config_scanner.live_push import (
+            format_cabinet_combo_label,
+            strip_cabinet_combo_label,
+        )
+
         combo = getattr(self, "_cabinet", None)
         if combo is None:
             return
-        items = merge_live_target_history(current, recent)
+        path = strip_cabinet_combo_label(current)
+        items = merge_live_target_history(path, recent)
         combo.blockSignals(True)
         combo.clear()
         for item in items:
-            combo.addItem(item)
-        combo.setEditText(current.strip())
+            label = format_cabinet_combo_label(
+                item, SettingsManager.get_cabinet_serial(item)
+            )
+            combo.addItem(label, item)
+        combo.setEditText(
+            format_cabinet_combo_label(path, SettingsManager.get_cabinet_serial(path))
+            if path
+            else ""
+        )
         combo.blockSignals(False)
         if self._fleet_ips:
             self._apply_fleet_ips([])
 
     def _remember_cabinet(self, target: str) -> None:
-        text = (target or "").strip()
-        if not text:
-            return
+        from config_scanner.live_push import strip_cabinet_combo_label
         from gui.cabinet_target_row import remember_shared_cabinet_target
 
+        text = strip_cabinet_combo_label(target)
+        if not text:
+            return
         # Shared with Snapshots: both screens open on the cabinet used last.
+        # Serial is cached here (one small read) so the dropdown can show
+        # ``10.0.0.76 (GST20661)`` without SMB on every keystroke.
         recent = remember_shared_cabinet_target(text)
         self._fill_cabinet_history(recent, current=text)
 
@@ -1881,7 +1911,9 @@ class LivePushPanel(QWidget):
     def _load(self) -> None:
         if self._busy:
             return
-        raw = self._path.text().strip()
+        from config_scanner.live_push import strip_cabinet_combo_label
+
+        raw = strip_cabinet_combo_label(self._path.text())
         if not raw:
             self._warn_load(
                 "No local Goldclub found. Type a cabinet IP (10.0.0.x) or browse a folder."

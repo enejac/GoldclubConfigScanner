@@ -625,6 +625,8 @@ class ConfigScannerTabWidget(QFrame):
             lambda msg: self._append_status(msg, force=True)
         )
         self._load_requested_pending = False
+        # Tab / click-away should expand a bare IP the same way Load does.
+        self._resolve_after_validate = False
         root.addWidget(self._target_row)
 
         # --- Slim toolbar ---
@@ -1062,7 +1064,7 @@ class ConfigScannerTabWidget(QFrame):
         self._update_data_path_label()
         QTimer.singleShot(0, self._apply_snapshot_table_column_widths)
         self._rebuild_changes_panel(None)
-        self._validate_pending = self._drive_edit.text().strip()
+        self._validate_pending = self._target_row.text()
         QTimer.singleShot(0, self._run_target_validation)
         self._refresh_egm_ui_strings()
         # Path is set before textChanged is connected; enable Create now.
@@ -1626,7 +1628,7 @@ class ConfigScannerTabWidget(QFrame):
         """
         target = ""
         if hasattr(self, "_drive_edit"):
-            target = self._drive_edit.text().strip()
+            target = self._target_row.text()
         pid = profile_id or getattr(self._service, "profile_id", None)
         cache_key = ((pid or "").casefold(), target.casefold())
         cached = getattr(self, "_game_kind_cache", None)
@@ -1918,7 +1920,7 @@ class ConfigScannerTabWidget(QFrame):
     def _on_repair_cabinet_clicked(self) -> None:
         if self._busy:
             return
-        scan_target = self._drive_edit.text().strip()
+        scan_target = self._target_row.text()
         if not scan_target:
             QMessageBox.warning(
                 self,
@@ -1934,7 +1936,7 @@ class ConfigScannerTabWidget(QFrame):
     def _on_clear_error30_clicked(self) -> None:
         if self._busy or not uses_trial_keypad(self._game_kind()):
             return
-        scan_target = self._drive_edit.text().strip()
+        scan_target = self._target_row.text()
         if not scan_target:
             QMessageBox.warning(
                 self,
@@ -1998,7 +2000,7 @@ class ConfigScannerTabWidget(QFrame):
     def _on_restore_slot_licence_clicked(self) -> None:
         if self._busy:
             return
-        scan_target = self._drive_edit.text().strip()
+        scan_target = self._target_row.text()
         if not scan_target:
             QMessageBox.warning(
                 self,
@@ -2052,7 +2054,7 @@ class ConfigScannerTabWidget(QFrame):
         QMessageBox.information(self, "Config Scanner", body)
 
     def _on_llave_password_clicked(self) -> None:
-        scan_target = self._drive_edit.text().strip()
+        scan_target = self._target_row.text()
         if not scan_target:
             QMessageBox.warning(
                 self,
@@ -2134,7 +2136,7 @@ class ConfigScannerTabWidget(QFrame):
             self._refresh_revert_ui()
             return
 
-        scan_target = self._drive_edit.text().strip()
+        scan_target = self._target_row.text()
         if not scan_target:
             QMessageBox.warning(
                 self,
@@ -2440,7 +2442,7 @@ class ConfigScannerTabWidget(QFrame):
         if value is None:
             return
 
-        scan_target = self._drive_edit.text().strip()
+        scan_target = self._target_row.text()
         if not scan_target:
             QMessageBox.warning(
                 self,
@@ -2513,7 +2515,7 @@ class ConfigScannerTabWidget(QFrame):
             )
             QMessageBox.warning(self, "Config Scanner", reason)
             return
-        scan_target = self._drive_edit.text().strip()
+        scan_target = self._target_row.text()
         if not scan_target:
             QMessageBox.warning(
                 self,
@@ -2626,7 +2628,7 @@ class ConfigScannerTabWidget(QFrame):
         self._live_sw_label.setVisible(True)
         target = ""
         if hasattr(self, "_drive_edit"):
-            target = self._drive_edit.text().strip()
+            target = self._target_row.text()
         self._live_sw_label.setToolTip(live_exe_version_tooltip(target, kind=kind))
 
     def _refresh_live_game_version(self) -> None:
@@ -2637,7 +2639,7 @@ class ConfigScannerTabWidget(QFrame):
         """
         if not hasattr(self, "_live_sw_label"):
             return
-        target = self._drive_edit.text().strip()
+        target = self._target_row.text()
         self._apply_live_sw_banner(None)
         if not self._target_valid or not target:
             return
@@ -2654,7 +2656,7 @@ class ConfigScannerTabWidget(QFrame):
     def _on_live_version_ready(self, target: str, version: str, seq: int = -1) -> None:
         if seq >= 0 and seq != self._live_version_seq:
             return
-        if (target or "").strip() != self._drive_edit.text().strip():
+        if (target or "").strip() != self._target_row.text():
             return
         self._apply_live_sw_banner(version or None)
 
@@ -2665,7 +2667,7 @@ class ConfigScannerTabWidget(QFrame):
     def _maybe_align_scan_target_to_snapshot(self, snapshot_name: str | None) -> None:
         if not snapshot_name or self._busy:
             return
-        scan_target = self._drive_edit.text().strip()
+        scan_target = self._target_row.text()
         if not scan_target:
             return
         resolved, note = self._service.resolve_restore_scan_target(
@@ -2912,7 +2914,7 @@ class ConfigScannerTabWidget(QFrame):
             )
             return
 
-        scan_target = self._drive_edit.text().strip()
+        scan_target = self._target_row.text()
         if not scan_target:
             QMessageBox.warning(
                 self,
@@ -3116,7 +3118,7 @@ class ConfigScannerTabWidget(QFrame):
     def _on_start_stack_clicked(self) -> None:
         if self._busy:
             return
-        scan_target = self._drive_edit.text().strip()
+        scan_target = self._target_row.text()
         plan = plan_stack_restart(scan_target)
         if plan is None:
             QMessageBox.information(
@@ -3144,7 +3146,7 @@ class ConfigScannerTabWidget(QFrame):
     def _offer_stack_start_after_write(self, title: str, body: str) -> None:
         """Ask to start the game after a write that already stopped the stack."""
         plan = self._pending_stack_plan or plan_stack_restart(
-            self._drive_edit.text().strip()
+            self._target_row.text()
         )
         if plan is None:
             QMessageBox.information(self, title, body)
@@ -3184,7 +3186,7 @@ class ConfigScannerTabWidget(QFrame):
             plan,
             self._emitter,
             phase="start",
-            scan_target=self._drive_edit.text().strip(),
+            scan_target=self._target_row.text(),
         )
     def _on_stack_restart_finished(self, ok: bool, detail: str) -> None:
         phase = self._pending_stack_phase
@@ -3199,7 +3201,7 @@ class ConfigScannerTabWidget(QFrame):
                     from config_scanner.build_version import scan_target_path
                     from network.ruleta_stack_probe import verify_stack_clear_for_swap
 
-                    target = self._drive_edit.text().strip()
+                    target = self._target_row.text()
                     host = (plan.host if plan is not None else None) or None
                     dest_ruleta = scan_target_path(target) / "ruleta"
                     clear, block_detail = verify_stack_clear_for_swap(
@@ -3248,7 +3250,7 @@ class ConfigScannerTabWidget(QFrame):
                     f"{body}\n\nStack restarted: {detail}",
                 )
                 if offer_llave:
-                    scan_target = self._drive_edit.text().strip()
+                    scan_target = self._target_row.text()
                     if scan_target:
                         self._prompt_llave_trial_password(scan_target, after_restart=True)
             else:
@@ -3281,7 +3283,7 @@ class ConfigScannerTabWidget(QFrame):
             )
             if self._offer_llave_after_restart:
                 self._offer_llave_after_restart = False
-                scan_target = self._drive_edit.text().strip()
+                scan_target = self._target_row.text()
                 if scan_target:
                     self._prompt_llave_trial_password(scan_target, after_restart=True)
             return
@@ -3347,7 +3349,7 @@ class ConfigScannerTabWidget(QFrame):
                             snapshot_name=presave,
                             restored_from=wrote,
                             write_scope=wrote_scope,
-                            scan_target=self._drive_edit.text().strip(),
+                            scan_target=self._target_row.text(),
                         )
                 else:
                     body = f"Restored {scope_txt} from:\n{wrote}"
@@ -3360,7 +3362,7 @@ class ConfigScannerTabWidget(QFrame):
                             snapshot_name=presave,
                             restored_from=wrote,
                             write_scope=wrote_scope,
-                            scan_target=self._drive_edit.text().strip(),
+                            scan_target=self._target_row.text(),
                         )
                     else:
                         body += (
@@ -3446,7 +3448,7 @@ class ConfigScannerTabWidget(QFrame):
         snap = self._pending_write_snapshot or ""
         kwargs: dict = {
             "service": self._service,
-            "scan_target": self._drive_edit.text().strip(),
+            "scan_target": self._target_row.text(),
             "snapshot_name": snap,
         }
         if phase == "kill":
@@ -3509,7 +3511,7 @@ class ConfigScannerTabWidget(QFrame):
                     self,
                     "Config Scanner",
                     "Scan finished but found 0 config files — switch aborted.\n\n"
-                    f"Scan target: {self._drive_edit.text().strip()}",
+                    f"Scan target: {self._target_row.text()}",
                 )
                 return
             for note in result.warnings:
@@ -3524,7 +3526,7 @@ class ConfigScannerTabWidget(QFrame):
             try:
                 trial_notes = self._service.capture_rollback_trial_bind(
                     result.snapshot_name,
-                    self._drive_edit.text().strip(),
+                    self._target_row.text(),
                 )
                 for note in trial_notes:
                     self._append_status(f"rollback trial: {note}", force=True)
@@ -3547,7 +3549,7 @@ class ConfigScannerTabWidget(QFrame):
                 self._pool,
                 self._service,
                 pending_write,
-                self._drive_edit.text().strip(),
+                self._target_row.text(),
                 self._emitter,
                 write_scope=self._pending_write_scope,
                 is_revert=bool(self._pending_is_revert),
@@ -3575,7 +3577,7 @@ class ConfigScannerTabWidget(QFrame):
                     self,
                     "Config Scanner",
                     "Scan finished but found 0 config files.\n\n"
-                    f"Scan target: {self._drive_edit.text().strip()}\n\n"
+                    f"Scan target: {self._target_row.text()}\n\n"
                     "Use the game root (e.g. \\\\10.0.0.90\\c$\\Goldclub or D:), "
                     "not the ConfigScanner tools folder. Confirm config\\ exists under that root.",
                 )
@@ -3662,7 +3664,7 @@ class ConfigScannerTabWidget(QFrame):
         """Adopt the cabinet Live Push used last. True when the field changed."""
         if self._busy or not self._target_row.sync_from_settings():
             return False
-        target = self._drive_edit.text().strip()
+        target = self._target_row.text()
         self._append_status(f"Using last cabinet — {target}", force=True)
         self._persist_drive()
         self._validate_timer.stop()
@@ -3681,17 +3683,17 @@ class ConfigScannerTabWidget(QFrame):
 
     def _remember_valid_target(self) -> None:
         """Share a proven Goldclub root with Live Push (and the legacy drive key)."""
-        text = self._drive_edit.text().strip()
+        text = self._target_row.text()
         if text:
             self._target_row.remember(text)
 
     def _autoload_or_detect(self) -> None:
         """Same as Live Push: load the remembered cabinet; detect only if empty."""
-        target = self._drive_edit.text().strip() or shared_cabinet_target(
+        target = self._target_row.text() or shared_cabinet_target(
             fallback=SettingsManager.get_config_scanner_game_drive()
         )
         if target:
-            if self._drive_edit.text().strip() != target:
+            if self._target_row.text() != target:
                 self._drive_edit.setText(target)
             self._on_target_load_requested(target)
             return
@@ -3700,7 +3702,7 @@ class ConfigScannerTabWidget(QFrame):
     def _schedule_startup_auto_detect(self) -> None:
         from gui.thin_progress import set_app_busy
 
-        saved_target = self._drive_edit.text().strip() or shared_cabinet_target(
+        saved_target = self._target_row.text() or shared_cabinet_target(
             fallback=SettingsManager.get_config_scanner_game_drive()
         )
         set_app_busy(True, (id(self), "startup"))
@@ -3710,7 +3712,7 @@ class ConfigScannerTabWidget(QFrame):
         if self._busy:
             return
         self._auto_detect_only = True
-        hint = self._drive_edit.text().strip() or None
+        hint = self._target_row.text() or None
         self._set_busy(True, op="detect")
         schedule_auto_detect(self._pool, self._service, hint, self._emitter, silent=silent)
 
@@ -3753,7 +3755,7 @@ class ConfigScannerTabWidget(QFrame):
             self._pool,
             self._service,
             pending,
-            self._drive_edit.text().strip(),
+            self._target_row.text(),
             self._emitter,
             write_scope=self._pending_write_scope,
             is_revert=bool(self._pending_is_revert),
@@ -3767,7 +3769,7 @@ class ConfigScannerTabWidget(QFrame):
 
     def _begin_pre_restore_scan(self) -> None:
         """Presave live config, then write the pending snapshot over SMB."""
-        target = self._drive_edit.text().strip()
+        target = self._target_row.text()
         self._set_busy(True, op="scan")
         schedule_scan(
             self._pool,
@@ -3863,7 +3865,7 @@ class ConfigScannerTabWidget(QFrame):
         schedule_load_snapshots(self._pool, self._service, self._emitter)
 
     def _persist_drive(self) -> None:
-        SettingsManager.set_config_scanner_game_drive(self._drive_edit.text().strip())
+        SettingsManager.set_config_scanner_game_drive(self._target_row.text())
 
     def _set_scan_progress_active(self, active: bool) -> None:
         """Toggle the reserved busy line (local + app-wide) without layout jump."""
@@ -3897,7 +3899,7 @@ class ConfigScannerTabWidget(QFrame):
 
     def _refresh_action_enabled(self) -> None:
         busy = self._busy
-        has_target = bool(self._drive_edit.text().strip())
+        has_target = bool(self._target_row.text())
         can_scan = (not busy) and has_target
         self._scan_btn.setEnabled(can_scan)
         if hasattr(self, "_create_snapshot_btn"):
@@ -4015,12 +4017,12 @@ class ConfigScannerTabWidget(QFrame):
             self._append_status("Working…")
             return
         if self._target_valid:
-            target = self._drive_edit.text().strip()
+            target = self._target_row.text()
             ready = f"Ready — valid target: {target}"
             if self._last_scan_snapshot_name:
                 ready = f"{ready} | Last scan: {self._last_scan_snapshot_name}"
             self._append_status(ready)
-        elif self._drive_edit.text().strip():
+        elif self._target_row.text():
             self._last_scan_snapshot_name = None
             self._append_status(
                 "No valid game root at this path — Auto-detect or fix Scan target."
@@ -4033,7 +4035,7 @@ class ConfigScannerTabWidget(QFrame):
 
     def _on_drive_text_changed(self, _text: str = "") -> None:
         self._game_kind_cache = None
-        text = self._drive_edit.text().strip()
+        text = self._target_row.text()
         if not text:
             self._target_valid = False
             self._validate_timer.stop()
@@ -4045,9 +4047,13 @@ class ConfigScannerTabWidget(QFrame):
         # echo from combo rebuilds. A real edit changes the string.
         if text == self._validate_pending:
             return
-        if self._target_valid:
+        was_valid = self._target_valid
+        if was_valid:
             self._target_valid = False
-            self._refresh_action_enabled()
+        # Create full snapshot only needs a non-empty path. Waiting on the
+        # SMB validate left it gray after the field was cleared until Load.
+        self._refresh_action_enabled()
+        if was_valid:
             self._refresh_live_game_version()
         self._append_status("Checking scan target…")
         self._validate_timer.start(400)
@@ -4055,6 +4061,12 @@ class ConfigScannerTabWidget(QFrame):
     def _on_drive_editing_finished(self) -> None:
         self._persist_drive()
         self._validate_timer.stop()
+        text = self._target_row.text()
+        if not text:
+            self._run_target_validation()
+            return
+        # Tab / click away: expand a bare IP like Load, without needing the button.
+        self._resolve_after_validate = True
         self._run_target_validation()
 
     def mark_closing(self) -> None:
@@ -4064,7 +4076,7 @@ class ConfigScannerTabWidget(QFrame):
         return (not self._closing) and self.isVisible()
 
     def _run_target_validation(self) -> None:
-        text = self._drive_edit.text().strip()
+        text = self._target_row.text()
         self._validate_seq += 1
         self._validate_pending = text
         seq = self._validate_seq
@@ -4087,7 +4099,7 @@ class ConfigScannerTabWidget(QFrame):
 
         set_app_busy(False, (id(self), "validate"))
         set_app_busy(False, (id(self), "startup"))
-        current = self._drive_edit.text().strip()
+        current = self._target_row.text()
         if path != current:
             return
         self._target_valid = bool(valid and current)
@@ -4101,14 +4113,20 @@ class ConfigScannerTabWidget(QFrame):
         self._refresh_action_enabled()
         if self._target_valid:
             self._remember_valid_target()
-        if self._load_requested_pending:
-            self._load_requested_pending = False
-            if self._target_valid:
+        want_resolve = self._load_requested_pending or self._resolve_after_validate
+        load_click = self._load_requested_pending
+        self._load_requested_pending = False
+        self._resolve_after_validate = False
+        if self._target_valid:
+            if load_click or want_resolve:
                 self._append_status(f"Loaded cabinet — {current}", force=True)
-            else:
-                # Same as Live Push: an IP / share that is not a Goldclub root
-                # itself is resolved (c$\Goldclub, slot, ...) instead of failing.
-                self._run_auto_detect(silent=False)
+            return
+        # Not a Goldclub root yet. Expand a bare IP / incomplete share the same
+        # way Load does, so Create full snapshot works without the button.
+        from config_scanner.live_push import cabinet_hint_needs_resolve
+
+        if want_resolve or cabinet_hint_needs_resolve(current):
+            self._run_auto_detect(silent=not load_click and not want_resolve)
 
     def _on_progress(self, message: str) -> None:
         self._append_status(message, force=True)
@@ -4310,7 +4328,7 @@ class ConfigScannerTabWidget(QFrame):
         self._start_live_scan(compare_after=False, include_software=True)
 
     def _start_live_scan(self, *, compare_after: bool, include_software: bool) -> None:
-        if self._busy or not self._drive_edit.text().strip():
+        if self._busy or not self._target_row.text():
             return
         self._clear_pending_write_state()
         self._pending_scan_and_compare = compare_after
@@ -4318,14 +4336,14 @@ class ConfigScannerTabWidget(QFrame):
         self._pending_include_software = include_software
         kind = "Scan started" if compare_after else "Full snapshot started"
         self._append_status(
-            f"{kind}: {self._drive_edit.text().strip()}",
+            f"{kind}: {self._target_row.text()}",
             force=True,
         )
         self._set_busy(True, op="scan")
         schedule_prepare_scan_target(
             self._pool,
             self._service,
-            self._drive_edit.text().strip(),
+            self._target_row.text(),
             self._emitter,
         )
 

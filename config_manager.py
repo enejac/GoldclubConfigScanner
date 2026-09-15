@@ -32,6 +32,7 @@ _KEY_CONFIG_SCANNER_AUTO_START_STACK = "config_scanner/auto_start_stack"
 _KEY_CONFIG_SCANNER_RESTORE_BACKUP = "config_scanner/restore_backup"
 _KEY_LIVE_PUSH_TARGET = "config_scanner/live_push_target"
 _KEY_LIVE_PUSH_RECENT = "config_scanner/live_push_recent_json"
+_KEY_CABINET_SERIALS = "config_scanner/cabinet_serial_by_host_json"
 LIVE_PUSH_RECENT_LIMIT = 8
 _KEY_CS_WIN_GEOMETRY = "config_scanner/window/geometry"
 _KEY_CS_WIN_X = "config_scanner/window/x"
@@ -289,9 +290,10 @@ class SettingsManager:
         from config_scanner.live_push import (
             is_scratch_cabinet_target,
             merge_live_target_history,
+            strip_cabinet_combo_label,
         )
 
-        newest = str(target).strip()
+        newest = strip_cabinet_combo_label(str(target).strip())
         if not newest or is_scratch_cabinet_target(newest):
             return SettingsManager.get_live_push_recent()
         merged = merge_live_target_history(
@@ -302,6 +304,55 @@ class SettingsManager:
         s.setValue(_KEY_LIVE_PUSH_RECENT, json.dumps(merged))
         s.sync()
         return merged
+
+    @staticmethod
+    def get_cabinet_serials() -> dict[str, str]:
+        """Cached MachineName / GST##### keyed by host IP or local path."""
+        from config_scanner.live_push import cabinet_cache_key
+
+        v = SettingsManager._s().value(_KEY_CABINET_SERIALS, "{}")
+        raw = str(v).strip() if v is not None else "{}"
+        try:
+            data = json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            data = {}
+        if not isinstance(data, dict):
+            return {}
+        out: dict[str, str] = {}
+        for key, serial in data.items():
+            host = cabinet_cache_key(str(key))
+            sn = str(serial or "").strip().upper()
+            if host and sn:
+                out[host] = sn
+        return out
+
+    @staticmethod
+    def get_cabinet_serial(target: str) -> str:
+        """Cached serial for *target*, or empty when unknown."""
+        from config_scanner.live_push import cabinet_cache_key
+
+        key = cabinet_cache_key(target)
+        if not key:
+            return ""
+        return SettingsManager.get_cabinet_serials().get(key, "")
+
+    @staticmethod
+    def remember_cabinet_serial(target: str, serial: str) -> str:
+        """Store *serial* for the host/path of *target*. Returns the stored token."""
+        from config_scanner.live_push import cabinet_cache_key
+
+        key = cabinet_cache_key(target)
+        sn = str(serial or "").strip().upper()
+        if not key or not sn:
+            return ""
+        data = SettingsManager.get_cabinet_serials()
+        if data.get(key) == sn:
+            return sn
+        data[key] = sn
+        s = SettingsManager._s()
+        s.setValue(_KEY_CABINET_SERIALS, json.dumps(data, sort_keys=True))
+        s.sync()
+        return sn
 
     @staticmethod
     def get_ai_helper_model_path() -> str:
