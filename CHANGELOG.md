@@ -5,6 +5,7 @@ Updated automatically when a PR is merged.
 
 ## 2026-09-15
 
+- Live Push: Games/math Reset actually updates the radios ([#83](https://github.com/enejac/GoldclubConfigScanner/pull/83))
 - Live Push: write ticket printer receiptId when flipping JCM/TRANSACT ([#82](https://github.com/enejac/GoldclubConfigScanner/pull/82))
 - Cabinet dropdown: green tick when SMB is up ([#81](https://github.com/enejac/GoldclubConfigScanner/pull/81))
 - Load cabinet when Enter is pressed after changing the IP ([#80](https://github.com/enejac/GoldclubConfigScanner/pull/80))
