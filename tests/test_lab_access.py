@@ -252,3 +252,28 @@ def test_discover_priority_hosts_are_probed_first() -> None:
     assert live == ["10.0.0.76"]
     assert order[0] == "10.0.0.76"
     assert "10.0.0.1" in order
+
+
+def test_smb_host_from_cabinet_target() -> None:
+    assert la.smb_host_from_cabinet_target(r"\\10.0.0.76\c$\Goldclub") == "10.0.0.76"
+    assert la.smb_host_from_cabinet_target("10.0.0.28") == "10.0.0.28"
+    assert la.smb_host_from_cabinet_target(r"\\10.0.0.111\slot (GST22377)") == "10.0.0.111"
+    assert la.smb_host_from_cabinet_target(r"C:\Goldclub") is None
+    assert la.smb_host_from_cabinet_target("G:") is None
+    assert la.smb_host_from_cabinet_target("") is None
+
+
+def test_cabinet_target_answers_smb_uses_host_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[str] = []
+
+    def fake(host: str, *, timeout_sec: float = 0.25) -> bool:
+        seen.append(host)
+        return host == "10.0.0.76"
+
+    monkeypatch.setattr(la, "_host_answers_smb", fake)
+    assert la.cabinet_target_answers_smb(r"\\10.0.0.76\c$\Goldclub") is True
+    assert la.cabinet_target_answers_smb("10.0.0.28") is False
+    assert la.cabinet_target_answers_smb(r"C:\Goldclub") is False
+    assert seen == ["10.0.0.76", "10.0.0.28"]
