@@ -5,6 +5,7 @@ Updated automatically when a PR is merged.
 
 ## 2026-09-15
 
+- Cabinet dropdown: serial labels + auto-resolve bare IPs ([#75](https://github.com/enejac/GoldclubConfigScanner/pull/75))
 - Snapshots: keep licence XML in Licenses and the WIBU stub in slot only ([#74](https://github.com/enejac/GoldclubConfigScanner/pull/74))
 
 ## 2026-09-14
