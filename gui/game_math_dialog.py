@@ -148,9 +148,13 @@ class GameMathDialog(QDialog):
     def _live_for(self, theme: str) -> MathDenomSettings | None:
         return math_by_theme(self._live).get((theme or "").strip())
 
-    def _rebuild_list(self, focus_theme: str = "") -> None:
-        self._flush_current()
+    def _rebuild_list(self, focus_theme: str = "", *, flush: bool = True) -> None:
+        if flush:
+            self._flush_current()
+        # Drop the widget source-of-truth so a later flush (list reselect)
+        # cannot write the old radios/checkboxes back over a reset.
         want = (focus_theme or self._current_theme or "").strip()
+        self._current_theme = ""
         self._list.blockSignals(True)
         self._list.clear()
         selected: QListWidgetItem | None = None
@@ -224,6 +228,8 @@ class GameMathDialog(QDialog):
             item = layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
+                widget.hide()
+                widget.setParent(None)
                 widget.deleteLater()
 
     def _show_row(self, row: MathDenomSettings | None) -> None:
@@ -325,9 +331,9 @@ class GameMathDialog(QDialog):
             if row.theme == live.theme:
                 self._rows[index] = clone_math_rows([live])[0]
                 break
-        self._current_theme = live.theme
-        self._rebuild_list(live.theme)
+        self._rebuild_list(live.theme, flush=False)
 
     def _reset_all(self) -> None:
+        keep = self._current_theme
         self._rows = clone_math_rows(self._live)
-        self._rebuild_list(self._current_theme)
+        self._rebuild_list(keep, flush=False)
