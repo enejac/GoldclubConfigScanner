@@ -464,11 +464,13 @@ def test_rejects_custom_bet_multipliers_for_market(tmp_path: Path) -> None:
     live.play_limits.bet_multipliers = [1, 2, 3, 4, 5, 8, 10, 12, 15]
 
     proposed = SlotSetupRecipe.from_dict(live.to_dict())
-    proposed.play_limits.bet_multipliers = [1, 5, 10, 20]
+    proposed.play_limits.bet_multipliers = []
+    safari = next(row for row in proposed.math if row.theme == "BigSafari_HnW")
+    safari.bet_multipliers = [1, 5, 10, 20]
 
     result = validate_denom_configuration(live, proposed, gold)
     assert not result.ok
-    assert any("Bet multipliers" in err for err in result.errors)
+    assert any("bet steps" in err for err in result.errors)
 
 
 def test_market_preset_denoms_are_allowed() -> None:

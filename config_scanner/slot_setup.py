@@ -274,6 +274,7 @@ class MathDenomSettings:
     fixed_bet: float | None = None
     bet_multipliers: list[int] = field(default_factory=list)
     return_percent: str | None = None
+    allowed_return_percents: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -542,6 +543,11 @@ class SlotSetupRecipe:
                 return_percent=(
                     str(m["return_percent"]) if m.get("return_percent") else None
                 ),
+                allowed_return_percents=[
+                    str(x).strip()
+                    for x in (m.get("allowed_return_percents") or [])
+                    if str(x).strip()
+                ],
             )
             for m in (data.get("math") or [])
             if isinstance(m, dict) and m.get("theme")
@@ -2364,6 +2370,21 @@ def patch_aurum_setup_placeholders(
     _write_tree(tree, dest)
 
 
+def _xml_string_list(parent: ET.Element | None) -> list[str]:
+    """Child element texts (``<string>`` / ``<ReturnPercent>``) in document order."""
+    if parent is None:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for child in parent:
+        text = (child.text or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
+
+
 def read_math_settings(goldclub: Path) -> list[MathDenomSettings]:
     themes = goldclub / "slot" / "themes"
     if not themes.is_dir():
@@ -2382,6 +2403,8 @@ def read_math_settings(goldclub: Path) -> list[MathDenomSettings]:
         mult_el = _find_child(denom, "DenominationMultiplier")
         fixed_el = _find_child(denom, "FixedBet")
         rtp_el = _find_child(denom, "ReturnPercent")
+        if rtp_el is None or not (rtp_el.text or "").strip():
+            rtp_el = _find_child(root, "CurrentReturnPercent")
         bets_el = _find_child(denom, "BetMultipliers")
         multipliers: list[int] = []
         if bets_el is not None:
@@ -2397,6 +2420,15 @@ def read_math_settings(goldclub: Path) -> list[MathDenomSettings]:
                 fixed = float(fixed_el.text.strip())
             except ValueError:
                 fixed = None
+        allowed = _xml_string_list(_find_child(root, "AllowedReturnPercents"))
+        for token in _xml_string_list(_find_child(denom, "AllowedReturnPercents")):
+            if token not in allowed:
+                allowed.append(token)
+        return_percent = (
+            (rtp_el.text or "").strip() if rtp_el is not None else ""
+        ) or None
+        if return_percent and return_percent not in allowed:
+            allowed.append(return_percent)
         out.append(
             MathDenomSettings(
                 theme=game_dir.name,
@@ -2405,10 +2437,8 @@ def read_math_settings(goldclub: Path) -> list[MathDenomSettings]:
                 ),
                 fixed_bet=fixed,
                 bet_multipliers=multipliers,
-                return_percent=(
-                    (rtp_el.text or "").strip() if rtp_el is not None else None
-                )
-                or None,
+                return_percent=return_percent,
+                allowed_return_percents=allowed,
             )
         )
     return out

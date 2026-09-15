@@ -970,22 +970,11 @@ def validate_denom_configuration(
                     f"{expected_avg}c average). Adjust Magic wheel or pick a valid denom."
                 )
 
-    bet_mults = list(proposed.play_limits.bet_multipliers or [])
-    if not bet_mults and proposed.math:
-        bet_mults = list(proposed.math[0].bet_multipliers or [])
-    live_mults = list(live.play_limits.bet_multipliers or [])
-    if not live_mults and live.math:
-        live_mults = list(live.math[0].bet_multipliers or [])
-    # Restriction is the market list only. Game packs do not veto steps:
-    # titles without MathSettings, plus RouletteGame / Link2WinFeature / data,
-    # simply do not receive the write. Link2Win Bet rows are not these multipliers.
-    if bet_mults != live_mults and bet_mults and live_mults:
-        allowed_bets = allowed_bet_profiles_for(currency, market)
-        if allowed_bets and tuple(bet_mults) not in allowed_bets:
-            errors.append(
-                "Bet multipliers do not match any approved bet setup for this market. "
-                "Use the market preset or leave bet multipliers unchanged."
-            )
+    from config_scanner.game_math import theme_bet_step_errors
+
+    # Live Push writes per-theme recipe.math. play_limits.bet_multipliers is
+    # leftover from market presets and must not veto a title's own ladder.
+    errors.extend(theme_bet_step_errors(live.math, proposed.math))
 
     return DenomValidation(
         errors=tuple(errors),

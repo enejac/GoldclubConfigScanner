@@ -149,8 +149,15 @@ from config_scanner.jurisdiction import (
     suggest_jurisdiction_label,
     upsert_jurisdiction,
 )
+from config_scanner.game_math import (
+    GAMES_MATH_LABEL,
+    clone_math_rows,
+    format_game_combo_label,
+    format_game_math_summary,
+)
 from gui.country_flag_row import CountryFlagsEditor
 from gui.create_market_dialog import CreateMarketDialog
+from gui.game_math_dialog import GameMathDialog
 from config_scanner.cs_sources import pick_cs_source_for_export, resolve_cs_source
 from config_scanner.cs_catalog import discover_leaves
 from config_scanner.live_cs_export import export_full_country_selector
@@ -750,6 +757,7 @@ class LivePushPanel(QWidget):
         self._refresh_timer.timeout.connect(self._refresh_changes_now)
         self._bill_accept: dict[str, QTableWidgetItem] = {}
         self._reset_bill_accept = True
+        self._math_edits: list = []
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(16, 12, 16, 12)
@@ -912,13 +920,43 @@ class LivePushPanel(QWidget):
         self._denoms = QComboBox()
         self._denoms.setEditable(True)
         self._refresh_denom_choices()
-        self._bets = QComboBox()
-        self._bets.setEditable(True)
-        self._bets.addItem("leave as-is", None)
-        for preset in self._catalog.get("bet_multipliers", ()):
-            self._bets.addItem(preset, preset)
+        self._games_math = QWidget()
+        self._games_math.setObjectName("liveGamesMath")
+        games_col = QVBoxLayout(self._games_math)
+        games_col.setContentsMargins(0, 0, 0, 2)
+        games_col.setSpacing(6)
+        games_row = QHBoxLayout()
+        games_row.setContentsMargins(0, 0, 0, 0)
+        games_row.setSpacing(10)
+        self._game_combo = QComboBox()
+        self._game_combo.setObjectName("liveGameMathCombo")
+        self._game_combo.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        self._game_combo.setMinimumContentsLength(18)
+        self._game_math_edit = QPushButton("Edit…")
+        self._game_math_edit.setObjectName("liveGameMathEdit")
+        self._game_math_edit.setEnabled(False)
+        self._game_math_edit.setMinimumWidth(72)
+        self._game_math_edit.clicked.connect(self._open_game_math_dialog)
+        games_row.addWidget(self._game_combo, stretch=1)
+        games_row.addWidget(self._game_math_edit, stretch=0)
+        games_col.addLayout(games_row)
+        self._game_math_summary = QLabel("Load a cabinet to edit per-game RTP and bets.")
+        self._game_math_summary.setObjectName("liveGameMathSummary")
+        self._game_math_summary.setWordWrap(True)
+        self._game_math_summary.setStyleSheet(
+            "color: #888; font-size: 12px; padding: 1px 2px 2px 2px; border: none;"
+        )
+        games_col.addWidget(self._game_math_summary)
+        denom.setVerticalSpacing(10)
         denom.addRow("Denoms (cents)", self._denoms)
-        denom.addRow("Bet multipliers", self._bets)
+        games_lab = QLabel(GAMES_MATH_LABEL)
+        games_lab.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop
+        )
+        games_lab.setContentsMargins(0, 8, 0, 0)
+        denom.addRow(games_lab, self._games_math)
         board.add_box(denom_box, 2)
 
         mw_box, mw = _group_form("Magic wheel")
@@ -1227,7 +1265,7 @@ class LivePushPanel(QWidget):
             self._language,
             self._market,
             self._denoms,
-            self._bets,
+            self._game_combo,
             self._default_bet,
             self._show_denom,
             self._mw_limit,
@@ -1562,7 +1600,7 @@ class LivePushPanel(QWidget):
             (COUNTRY_FLAG_LABEL, self._country_flags),
             ("Market", self._market),
             ("Denoms (cents)", self._denoms),
-            ("Bet multipliers", self._bets),
+            (GAMES_MATH_LABEL, self._games_math),
             ("Magic wheel limit", self._mw_limit),
             ("Magic wheel bet", self._mw_bet),
             ("Magic wheel enabled", self._mw_enabled),
@@ -1681,22 +1719,27 @@ class LivePushPanel(QWidget):
                 widget.setToolTip(tip)
                 self._sync_form_label_tooltip(widget, widget.toolTip())
                 continue
-            if state == "invalid":
-                widget.setStyleSheet(invalid_sheet)
-                widget.setToolTip(tip)
-            elif state == "advisory":
-                widget.setStyleSheet(advisory_sheet)
-                widget.setToolTip(tip)
-            elif state == "match":
-                widget.setStyleSheet(match_sheet)
-                widget.setToolTip(tip)
-            elif state in ("changed", "editable"):
-                widget.setStyleSheet(changed_sheet)
-                widget.setToolTip(tip)
-            else:
+            # Games / math is a combo + caption. Paint only the combo so the
+            # summary does not inherit a second bordered field box.
+            target = (
+                self._game_combo if widget is self._games_math else widget
+            )
+            if widget is self._games_math:
                 widget.setStyleSheet("")
-                widget.setToolTip(tip if tip else help_text)
-            self._sync_form_label_tooltip(widget, widget.toolTip())
+            if state == "invalid":
+                target.setStyleSheet(invalid_sheet)
+            elif state == "advisory":
+                target.setStyleSheet(advisory_sheet)
+            elif state == "match":
+                target.setStyleSheet(match_sheet)
+            elif state in ("changed", "editable"):
+                target.setStyleSheet(changed_sheet)
+            else:
+                target.setStyleSheet("")
+            tip_text = tip if tip else help_text
+            target.setToolTip(tip_text)
+            widget.setToolTip(tip_text)
+            self._sync_form_label_tooltip(widget, tip_text)
 
     def _field_label_for_widget(self, widget: QWidget) -> str:
         for label, field in self._live_field_widgets():
@@ -2281,15 +2324,7 @@ class LivePushPanel(QWidget):
             self._refresh_denom_choices(keep=denoms)
             _set_combo_code(self._denoms, denoms, editable_ok=False)
             pl = recipe.play_limits
-            bets = list(pl.bet_multipliers)
-            if not bets and recipe.math:
-                bets = list(recipe.math[0].bet_multipliers)
-            if bets:
-                _set_combo_code(
-                    self._bets, ", ".join(str(n) for n in bets)
-                )
-            else:
-                self._bets.setCurrentIndex(0)
+            self._set_math_edits(recipe.math)
             _set_optional_str(self._default_bet, pl.default_bet)
             _set_optional_bool(self._show_denom, pl.show_denom_selector)
             _set_optional_int(self._mw_limit, recipe.jurisdiction.magic_wheel_money_limit)
@@ -2353,6 +2388,51 @@ class LivePushPanel(QWidget):
             self._applying = False
         self._reset_bill_accept = True
         self._refresh_changes_now()
+
+    def _set_math_edits(self, rows) -> None:
+        self._math_edits = clone_math_rows(rows or [])
+        self._refresh_game_math_controls()
+
+    def _refresh_game_math_controls(self) -> None:
+        keep = self._game_combo.currentData()
+        self._game_combo.blockSignals(True)
+        self._game_combo.clear()
+        usable = [
+            row
+            for row in self._math_edits
+            if (row.theme or "").strip() and row.theme != "*"
+        ]
+        for row in usable:
+            self._game_combo.addItem(format_game_combo_label(row), row.theme)
+        if keep:
+            idx = self._game_combo.findData(keep)
+            if idx >= 0:
+                self._game_combo.setCurrentIndex(idx)
+        self._game_combo.blockSignals(False)
+        self._game_math_edit.setEnabled(bool(usable))
+        if usable:
+            self._game_math_summary.setText(format_game_math_summary(usable))
+        elif self._loaded is not None:
+            self._game_math_summary.setText("No eligible game MathSettings.xml on this cabinet.")
+        else:
+            self._game_math_summary.setText(
+                "Load a cabinet to edit per-game RTP and bets."
+            )
+
+    def _open_game_math_dialog(self) -> None:
+        live_rows = list(self._loaded.math) if self._loaded is not None else []
+        if not self._math_edits and not live_rows:
+            return
+        dialog = GameMathDialog(
+            self,
+            live_rows=live_rows or self._math_edits,
+            form_rows=self._math_edits or live_rows,
+            focus_theme=str(self._game_combo.currentData() or ""),
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self._set_math_edits(dialog.result_rows())
+        self._refresh_changes()
 
     def _on_switch_all_toggled(self, checked: bool) -> None:
         if self._applying:
@@ -2602,9 +2682,8 @@ class LivePushPanel(QWidget):
         if denoms:
             recipe.denomination_list = denoms
             recipe.credit_rate_values = list(denoms)
-        bets = self._parse_int_list(self._bets)
-        if bets:
-            recipe.play_limits.bet_multipliers = bets
+        recipe.math = clone_math_rows(self._math_edits)
+        recipe.play_limits.bet_multipliers = []
         default_bet = _optional_str(self._default_bet)
         if default_bet:
             recipe.play_limits.default_bet = default_bet
