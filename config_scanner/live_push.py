@@ -2374,7 +2374,7 @@ def merge_live_target_history(
     out: list[str] = []
     seen: set[str] = set()
     for raw in (newest, *(recent or ())):
-        text = str(raw or "").strip()
+        text = strip_cabinet_combo_label(str(raw or "").strip())
         if not text:
             continue
         key = text.replace("/", "\\").rstrip("\\").casefold()
@@ -2387,11 +2387,70 @@ def merge_live_target_history(
     return out
 
 
+_CABINET_LABEL_SERIAL_RE = re.compile(
+    r"^(?P<path>.*?)\s+\((?P<serial>[A-Za-z][A-Za-z0-9_-]{1,31})\)$"
+)
+
+
+def strip_cabinet_combo_label(raw: str) -> str:
+    """Drop a trailing `` (GST20661)`` so Load still gets a real path."""
+    text = (raw or "").strip().strip('"')
+    match = _CABINET_LABEL_SERIAL_RE.fullmatch(text)
+    if match:
+        return match.group("path").strip()
+    return text
+
+
+def cabinet_cache_key(raw: str) -> str:
+    """Stable key for the serial cache: lab IP when present, else normalized path."""
+    text = strip_cabinet_combo_label(raw)
+    if not text:
+        return ""
+    try:
+        from network.lab_access import lab_lan_ip_from_text
+
+        ip = lab_lan_ip_from_text(text)
+    except Exception:  # noqa: BLE001
+        ip = None
+    if ip:
+        return ip
+    return text.replace("/", "\\").rstrip("\\").casefold()
+
+
+def format_cabinet_combo_label(path: str, serial: str | None = None) -> str:
+    """Dropdown text: ``10.0.0.76 (GST20661)`` or the path alone when unknown."""
+    text = strip_cabinet_combo_label(path)
+    sn = (serial or "").strip().upper()
+    if not text:
+        return ""
+    if not sn:
+        return text
+    if f"({sn})" in text:
+        return text
+    return f"{text} ({sn})"
+
+
+def remember_cabinet_serial_for_target(
+    target: str, *, serial: str | None = None
+) -> str:
+    """Cache MachineName for *target*. Reads the cabinet only when *serial* is empty."""
+    from config_manager import SettingsManager
+    from config_scanner.build_version import read_machine_serial_from_target
+
+    text = strip_cabinet_combo_label(target)
+    sn = (serial or "").strip().upper()
+    if not sn and text:
+        sn = (read_machine_serial_from_target(text) or "").strip().upper()
+    if not text or not sn:
+        return ""
+    return SettingsManager.remember_cabinet_serial(text, sn)
+
+
 def live_targets_for_ip(raw: str) -> tuple[str, ...]:
     """UNC Goldclub roots for a typed cabinet IP or pasted share."""
     from config_scanner.build_version import normalize_scan_target
 
-    text = (raw or "").strip().strip('"')
+    text = strip_cabinet_combo_label((raw or "").strip().strip('"'))
     if not text:
         return ()
     if text.startswith("\\\\"):
@@ -2409,13 +2468,32 @@ def live_targets_for_ip(raw: str) -> tuple[str, ...]:
     )
 
 
+def cabinet_hint_needs_resolve(raw: str) -> bool:
+    """True for a bare IP (or incomplete share) that Load would expand.
+
+    A typed ``10.0.0.76`` is not a Goldclub root; Snapshots must expand it to
+    ``\\\\10.0.0.76\\c$\\Goldclub`` without waiting for the Load button.
+    A path that already is one of the candidate roots does not need another try.
+    """
+    text = (raw or "").strip().strip('"')
+    if not text:
+        return False
+    candidates = live_targets_for_ip(text)
+    if not candidates:
+        return False
+    key = text.replace("/", "\\").rstrip("\\").casefold()
+    return all(
+        c.replace("/", "\\").rstrip("\\").casefold() != key for c in candidates
+    )
+
+
 def resolve_live_target_from_user(
     raw: str,
     *,
     probe: bool = True,
 ) -> str:
     """Local path, pasted UNC, or first reachable share for a typed IP."""
-    text = (raw or "").strip().strip('"')
+    text = strip_cabinet_combo_label((raw or "").strip().strip('"'))
     if not text:
         return ""
     if not text.startswith("\\\\") and not _IPV4_HOST_RE.fullmatch(text.split("\\", 1)[0]):

@@ -61,7 +61,7 @@ def test_create_full_snapshot_is_a_toolbar_action() -> None:
     assert "_start_live_scan(compare_after=True, include_software=False)" in SRC
     start_scan = SRC.split("def _start_live_scan", 1)[1].split("def ", 1)[0]
     assert "not self._target_valid" not in start_scan
-    assert "not self._drive_edit.text().strip()" in start_scan
+    assert "not self._target_row.text()" in start_scan
     assert "can_scan = (not busy) and has_target" in SRC
     assert "_pending_create_snapshot" in SRC
     assert "_finish_create_full_snapshot" in SRC
@@ -113,6 +113,27 @@ def test_create_full_snapshot_is_green_and_autoloads_shared_cabinet() -> None:
         "def _clear_layout", 1
     )[0]
     assert "_refresh_action_enabled" in init_tail
+
+
+def test_typed_cabinet_enables_create_and_resolves_without_load() -> None:
+    """Typing a new IP must not leave Create gray until Load is pressed."""
+    changed = SRC.split("def _on_drive_text_changed", 1)[1].split("def ", 1)[0]
+    # Create lights up on every non-empty edit, not only when a prior path was valid.
+    assert "self._refresh_action_enabled()" in changed
+    assert changed.index("self._refresh_action_enabled()") < changed.index(
+        "self._validate_timer.start"
+    )
+
+    finished = SRC.split("def _on_drive_editing_finished", 1)[1].split("def ", 1)[0]
+    assert "self._resolve_after_validate = True" in finished
+    assert "_run_target_validation" in finished
+
+    validated = SRC.split("def _on_target_validated", 1)[1].split("def ", 1)[0]
+    assert "cabinet_hint_needs_resolve" in validated
+    assert "_resolve_after_validate" in validated
+    # Bare IP expands even when Load was not pressed.
+    assert "_run_auto_detect" in validated
+    assert "want_resolve or cabinet_hint_needs_resolve" in validated
 
 
 def test_full_snapshot_saved_message_includes_software() -> None:

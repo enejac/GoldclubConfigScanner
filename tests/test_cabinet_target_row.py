@@ -118,11 +118,44 @@ def test_row_history_fleet_and_sync(
     assert widget.sync_from_settings() is True
     assert widget.text() == r"\\10.0.0.111\c$\Goldclub"
     assert widget.sync_from_settings() is False
-    assert widget.combo().itemText(0) == r"\\10.0.0.111\c$\Goldclub"
+    assert widget.combo().itemText(0).startswith(r"\\10.0.0.111\c$\Goldclub")
 
+    monkeypatch.setattr(
+        row, "remember_cabinet_serial_for_target", lambda *_a, **_k: ""
+    )
     widget.remember(r"\\10.0.0.76\c$\Goldclub")
     assert SettingsManager.get_live_push_target() == r"\\10.0.0.76\c$\Goldclub"
     assert SettingsManager.get_config_scanner_game_drive() == r"\\10.0.0.76\c$\Goldclub"
+
+
+def test_row_shows_cached_serial_in_brackets(
+    qt_app: QApplication, isolated_settings: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from gui import cabinet_target_row as row
+
+    monkeypatch.setattr(row, "this_pc_live_target", lambda: None)
+    # Avoid background SMB peeks during the unit test.
+    monkeypatch.setattr(
+        row.CabinetTargetRow, "_peek_serial_if_needed", lambda self, _t: None
+    )
+    SettingsManager.remember_live_push_target(r"\\10.0.0.76\c$\Goldclub")
+    SettingsManager.remember_cabinet_serial("10.0.0.76", "GST20661")
+
+    widget = row.CabinetTargetRow()
+    assert widget.text() == r"\\10.0.0.76\c$\Goldclub"
+    assert widget.combo().itemText(0) == r"\\10.0.0.76\c$\Goldclub (GST20661)"
+    assert widget.combo().itemData(0) == r"\\10.0.0.76\c$\Goldclub"
+
+    widget.apply_fleet_ips(["10.0.0.76"])
+    labels = [widget.combo().itemText(i) for i in range(widget.combo().count())]
+    assert any("GST20661" in x for x in labels)
+
+
+def test_remember_cabinet_serial_cache(isolated_settings: str) -> None:
+    assert SettingsManager.get_cabinet_serial("10.0.0.76") == ""
+    SettingsManager.remember_cabinet_serial(r"\\10.0.0.76\c$\Goldclub", "gst20661")
+    assert SettingsManager.get_cabinet_serial("10.0.0.76") == "GST20661"
+    assert SettingsManager.get_cabinet_serial(r"\\10.0.0.76\slot") == "GST20661"
 
 
 def test_snapshots_tab_uses_shared_cabinet_row() -> None:
