@@ -10,6 +10,7 @@ from config_scanner.slot_setup import (
     SasSettings,
     SlotSetupRecipe,
     TICKET_HW_DRIVER,
+    TICKET_HW_RECEIPT_ID,
     TTD_MEI_BILL_TOKENS,
     apply_config_pack,
     build_config_pack,
@@ -661,7 +662,12 @@ def _add_ticket_printer(root: Path, protocol: str = "TRANSACT") -> None:
     )
 
 
-def _write_driverssetup(root: Path, driver_raw: str) -> None:
+def _write_driverssetup(
+    root: Path,
+    driver_raw: str,
+    receipt_id: str = "",
+) -> None:
+    receipt = receipt_id or TICKET_HW_RECEIPT_ID["JCM"]
     _write(
         root
         / "bios"
@@ -675,6 +681,7 @@ def _write_driverssetup(root: Path, driver_raw: str) -> None:
   <drivers>
     <item0>
       <aliasName>tito</aliasName>
+      <receiptId>{receipt}</receiptId>
       <driverRawName>{driver_raw}</driverRawName>
       <enabled>True</enabled>
       <options>
@@ -766,6 +773,8 @@ def test_ticket_protocol_pack_switches_hwsetup_and_quixant(tmp_path: Path) -> No
         / "configuration.xml"
     ).read_text(encoding="utf-8")
     assert TICKET_HW_DRIVER["TRANSACT"] in hw
+    assert TICKET_HW_RECEIPT_ID["TRANSACT"] in hw
+    assert TICKET_HW_RECEIPT_ID["JCM"] not in hw
     assert "tcp://127.0.0.1:30400" in hw
     assert 'xmlns="config"' in hw
     assert "ns0:" not in hw
@@ -777,7 +786,40 @@ def test_ticket_protocol_pack_switches_hwsetup_and_quixant(tmp_path: Path) -> No
     )
     back = dest_patch.read_text(encoding="utf-8")
     assert TICKET_HW_DRIVER["JCM"] in back
+    assert TICKET_HW_RECEIPT_ID["JCM"] in back
+    assert TICKET_HW_RECEIPT_ID["TRANSACT"] not in back
     assert "tcp://127.0.0.1:30400" in back
+
+
+def test_patch_tito_receipt_id_when_driver_already_matches(tmp_path: Path) -> None:
+    src = tmp_path / "configuration.xml"
+    _write(
+        src,
+        f"""<?xml version="1.0" encoding="utf-8"?>
+<config xmlns="config">
+  <drivers>
+    <item0>
+      <aliasName>light</aliasName>
+      <receiptId>a9309872-9681-4a29-a6aa-cce1388aec5b</receiptId>
+      <driverRawName>.[tcp://127.0.0.1:30500].[GoldClub.HW.Subsys.Driver.Hid.GoldClub.Light]</driverRawName>
+    </item0>
+    <item1>
+      <aliasName>tito</aliasName>
+      <receiptId>{TICKET_HW_RECEIPT_ID["JCM"]}</receiptId>
+      <driverRawName>.[GoldClub.HW.Subsys.Driver.INodeRoot].[tcp://127.0.0.1:30400].[{TICKET_HW_DRIVER["TRANSACT"]}]</driverRawName>
+    </item1>
+  </drivers>
+</config>
+""",
+    )
+    dest = tmp_path / "out.xml"
+    patch_tito_ticket_driver(src, dest, "TRANSACT")
+    text = dest.read_text(encoding="utf-8")
+    assert TICKET_HW_RECEIPT_ID["TRANSACT"] in text
+    assert TICKET_HW_RECEIPT_ID["JCM"] not in text
+    assert "a9309872-9681-4a29-a6aa-cce1388aec5b" in text
+    assert TICKET_HW_DRIVER["TRANSACT"] in text
+    assert "tcp://127.0.0.1:30400" in text
 
 
 def test_mei_bill_token_issues_flags_missing_98_and_code_103() -> None:
