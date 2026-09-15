@@ -2476,13 +2476,16 @@ class LivePushPanel(QWidget):
             )
 
     def _open_game_math_dialog(self) -> None:
-        live_rows = list(self._loaded.math) if self._loaded is not None else []
-        if not self._math_edits and not live_rows:
+        live_rows = (
+            clone_math_rows(self._loaded.math) if self._loaded is not None else []
+        )
+        form_rows = clone_math_rows(self._math_edits)
+        if not live_rows and not form_rows:
             return
         dialog = GameMathDialog(
             self,
-            live_rows=live_rows or self._math_edits,
-            form_rows=self._math_edits or live_rows,
+            live_rows=live_rows if live_rows else form_rows,
+            form_rows=form_rows if form_rows else live_rows,
             focus_theme=str(self._game_combo.currentData() or ""),
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:

@@ -148,40 +148,55 @@ class GameMathDialog(QDialog):
     def _live_for(self, theme: str) -> MathDenomSettings | None:
         return math_by_theme(self._live).get((theme or "").strip())
 
+    def _selected_theme(self) -> str:
+        item = self._list.currentItem()
+        if item is None:
+            return (self._current_theme or "").strip()
+        return str(item.data(Qt.ItemDataRole.UserRole) or "").strip()
+
     def _rebuild_list(self, focus_theme: str = "", *, flush: bool = True) -> None:
         if flush:
             self._flush_current()
-        # Drop the widget source-of-truth so a later flush (list reselect)
-        # cannot write the old radios/checkboxes back over a reset.
         want = (focus_theme or self._current_theme or "").strip()
         self._current_theme = ""
-        self._list.blockSignals(True)
-        self._list.clear()
-        selected: QListWidgetItem | None = None
-        needle = self._filter.text().casefold()
-        for row in self._rows:
-            if not (row.theme or "").strip() or row.theme == "*":
-                continue
-            label = format_game_combo_label(row)
-            if needle and needle not in label.casefold() and needle not in row.theme.casefold():
-                continue
-            item = QListWidgetItem(label)
-            item.setData(Qt.ItemDataRole.UserRole, row.theme)
-            if self._row_is_changed(row):
-                font = item.font()
-                font.setBold(True)
-                item.setFont(font)
-                item.setText(f"• {label}")
-            self._list.addItem(item)
-            if row.theme == want or selected is None:
-                selected = item
-        self._list.blockSignals(False)
-        if selected is not None:
-            self._list.setCurrentItem(selected)
-        elif self._list.count():
-            self._list.setCurrentRow(0)
-        else:
-            self._show_row(None)
+        self._loading = True
+        try:
+            self._list.blockSignals(True)
+            self._list.clear()
+            selected: QListWidgetItem | None = None
+            needle = self._filter.text().casefold()
+            for row in self._rows:
+                if not (row.theme or "").strip() or row.theme == "*":
+                    continue
+                label = format_game_combo_label(row)
+                if (
+                    needle
+                    and needle not in label.casefold()
+                    and needle not in row.theme.casefold()
+                ):
+                    continue
+                item = QListWidgetItem(label)
+                item.setData(Qt.ItemDataRole.UserRole, row.theme)
+                if self._row_is_changed(row):
+                    font = item.font()
+                    font.setBold(True)
+                    item.setFont(font)
+                    item.setText(f"• {label}")
+                self._list.addItem(item)
+                if row.theme == want or selected is None:
+                    selected = item
+            self._list.blockSignals(False)
+            if selected is not None:
+                self._list.setCurrentItem(selected)
+            elif self._list.count():
+                self._list.setCurrentRow(0)
+        finally:
+            self._loading = False
+        # Always repaint the detail pane. After a rebuild Qt may already have
+        # the first row selected, so currentItemChanged does not fire and the
+        # old 94% radios would stay on screen after Reset.
+        theme = self._selected_theme()
+        self._show_row(self._row_for(theme) if theme else None)
 
     def _apply_filter(self, _text: str = "") -> None:
         self._rebuild_list(self._current_theme)
@@ -212,7 +227,7 @@ class GameMathDialog(QDialog):
         if row is None:
             return
         checked = self._rtp_group.checkedButton()
-        if checked is not None:
+        if checked is not None and checked in self._rtp_buttons:
             token = str(checked.property("rtpToken") or "")
             if token:
                 row.return_percent = token
@@ -222,6 +237,18 @@ class GameMathDialog(QDialog):
                 steps.append(int(box.property("betStep")))
         if steps:
             row.bet_multipliers = steps
+
+    def _disconnect_editors(self) -> None:
+        for radio in self._rtp_buttons:
+            try:
+                radio.toggled.disconnect(self._mark_dirty)
+            except (RuntimeError, TypeError):
+                pass
+        for box in self._bet_boxes:
+            try:
+                box.stateChanged.disconnect(self._mark_dirty)
+            except (RuntimeError, TypeError):
+                pass
 
     def _clear_layout(self, layout) -> None:
         while layout.count():
@@ -235,6 +262,7 @@ class GameMathDialog(QDialog):
     def _show_row(self, row: MathDenomSettings | None) -> None:
         self._loading = True
         try:
+            self._disconnect_editors()
             self._current_theme = (row.theme if row else "") or ""
             self._clear_layout(self._rtp_layout)
             self._clear_layout(self._bets_layout)
@@ -324,16 +352,18 @@ class GameMathDialog(QDialog):
         )
 
     def _reset_current(self) -> None:
-        live = self._live_for(self._current_theme)
+        theme = self._current_theme or self._selected_theme()
+        live = self._live_for(theme)
         if live is None:
             return
+        replacement = clone_math_rows([live])[0]
         for index, row in enumerate(self._rows):
             if row.theme == live.theme:
-                self._rows[index] = clone_math_rows([live])[0]
+                self._rows[index] = replacement
                 break
         self._rebuild_list(live.theme, flush=False)
 
     def _reset_all(self) -> None:
-        keep = self._current_theme
+        keep = self._current_theme or self._selected_theme()
         self._rows = clone_math_rows(self._live)
         self._rebuild_list(keep, flush=False)
