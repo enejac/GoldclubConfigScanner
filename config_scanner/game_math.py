@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Sequence
+from pathlib import Path
 
-from config_scanner.slot_setup import MathDenomSettings
+from config_scanner.slot_setup import MathDenomSettings, math_settings_unreadable_reason
 
 GAMES_MATH_LABEL = "Games / math"
 
@@ -201,6 +202,82 @@ def offered_bet_steps(
             seen.add(step)
             values.append(step)
     return values
+
+
+def theme_math_row_dirty(
+    live_row: MathDenomSettings | None, row: MathDenomSettings
+) -> bool:
+    """True when RTP or bet steps differ from live, or the theme was not loaded."""
+    if live_row is None:
+        return bool(
+            (row.theme or "").strip()
+            and (row.theme or "").strip() != "*"
+            and (
+                (row.return_percent or "").strip()
+                or list(row.bet_multipliers or [])
+            )
+        )
+    if (live_row.return_percent or "") != (row.return_percent or ""):
+        return True
+    return not math_bets_equal(live_row.bet_multipliers, row.bet_multipliers)
+
+
+def theme_rtp_errors(
+    live_rows: Sequence[MathDenomSettings],
+    form_rows: Sequence[MathDenomSettings],
+) -> list[str]:
+    """Changed RTP must stay on that theme's loaded AllowedReturnPercents."""
+    live_map = math_by_theme(live_rows)
+    errors: list[str] = []
+    for row in form_rows:
+        theme = (row.theme or "").strip()
+        if not theme or theme == "*":
+            continue
+        live = live_map.get(theme)
+        new = (row.return_percent or "").strip()
+        old = (live.return_percent or "").strip() if live is not None else ""
+        if new == old:
+            continue
+        if live is None:
+            continue
+        if not new:
+            errors.append(f"{theme}: return percent cannot be empty.")
+            continue
+        choices = allowed_return_choices(live)
+        if not choices:
+            errors.append(
+                f"{theme}: MathSettings.xml has no return percents; "
+                "RTP cannot be changed."
+            )
+            continue
+        if new not in choices:
+            errors.append(
+                f"{theme}: {format_return_percent(new)} is not in "
+                "AllowedReturnPercents."
+            )
+    return errors
+
+
+def theme_math_write_errors(
+    goldclub: Path,
+    live_rows: Sequence[MathDenomSettings],
+    form_rows: Sequence[MathDenomSettings],
+) -> list[str]:
+    """Block RTP / bet writes when MathSettings.xml is missing or undecodable."""
+    live_map = math_by_theme(live_rows)
+    errors = theme_rtp_errors(live_rows, form_rows)
+    seen = set(errors)
+    for row in form_rows:
+        theme = (row.theme or "").strip()
+        if not theme or theme == "*":
+            continue
+        if not theme_math_row_dirty(live_map.get(theme), row):
+            continue
+        reason = math_settings_unreadable_reason(goldclub, theme)
+        if reason and reason not in seen:
+            seen.add(reason)
+            errors.append(reason)
+    return errors
 
 
 def theme_bet_step_errors(

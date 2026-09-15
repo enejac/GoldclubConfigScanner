@@ -2414,6 +2414,36 @@ def _xml_string_list(parent: ET.Element | None) -> list[str]:
     return out
 
 
+def math_settings_unreadable_reason(goldclub: Path, theme: str) -> str | None:
+    """Why this theme cannot accept an RTP / bet-step write, or None if ready.
+
+    Live Push only patches plaintext ``MathSettings.xml``. Missing, binary, or
+    XML without ``DenomConfigSettings`` cannot be decoded into return percents.
+    """
+    name = (theme or "").strip()
+    if not name or name == "*":
+        return None
+    path = Path(goldclub) / "slot" / "themes" / name / "MathSettings.xml"
+    try:
+        if not path.is_file():
+            return (
+                f"{name}: MathSettings.xml is not present; "
+                "RTP and bet steps cannot be changed."
+            )
+        root = _parse_xml(path).getroot()
+    except (ET.ParseError, OSError, ValueError):
+        return (
+            f"{name}: MathSettings.xml cannot be decoded; "
+            "RTP and bet steps cannot be changed."
+        )
+    if _find_desc(root, "DenomConfigSettings") is None:
+        return (
+            f"{name}: MathSettings.xml cannot be decoded; "
+            "RTP and bet steps cannot be changed."
+        )
+    return None
+
+
 def read_math_settings(goldclub: Path) -> list[MathDenomSettings]:
     themes = goldclub / "slot" / "themes"
     if not themes.is_dir():
@@ -2425,7 +2455,10 @@ def read_math_settings(goldclub: Path) -> list[MathDenomSettings]:
         math_path = game_dir / "MathSettings.xml"
         if not math_path.is_file():
             continue
-        root = _parse_xml(math_path).getroot()
+        try:
+            root = _parse_xml(math_path).getroot()
+        except (ET.ParseError, OSError, ValueError):
+            continue
         denom = _find_desc(root, "DenomConfigSettings")
         if denom is None:
             continue
@@ -3684,11 +3717,23 @@ def build_config_pack(
                     continue
                 rel = f"slot/themes/{theme}/MathSettings.xml"
                 src = live / rel
-                if not src.is_file():
+                named = math.theme not in ("", "*")
+                reason = math_settings_unreadable_reason(live, theme)
+                if reason:
+                    if named:
+                        raise ValueError(reason)
                     continue
                 dest = pack_dir / rel
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                patch_math_settings(src, dest, math)
+                try:
+                    patch_math_settings(src, dest, math)
+                except (ET.ParseError, OSError, ValueError) as exc:
+                    if named:
+                        raise ValueError(
+                            f"{theme}: MathSettings.xml cannot be decoded; "
+                            "RTP and bet steps cannot be changed."
+                        ) from exc
+                    continue
                 written.append(normalize_rel_path(rel))
         if pl.bet_multipliers:
             for theme in _math_theme_names(live):

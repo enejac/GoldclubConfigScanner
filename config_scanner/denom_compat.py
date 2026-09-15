@@ -971,11 +971,12 @@ def validate_denom_configuration(
                     f"{expected_avg}c average). Adjust Magic wheel or pick a valid denom."
                 )
 
-    from config_scanner.game_math import theme_bet_step_errors
+    from config_scanner.game_math import theme_bet_step_errors, theme_math_write_errors
 
     # Live Push writes per-theme recipe.math. play_limits.bet_multipliers is
     # leftover from market presets and must not veto a title's own ladder.
     errors.extend(theme_bet_step_errors(live.math, proposed.math))
+    errors.extend(theme_math_write_errors(root, live.math, proposed.math))
 
     return DenomValidation(
         errors=tuple(errors),
