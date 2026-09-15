@@ -7,7 +7,7 @@ import pytest
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import Qt  # noqa: E402
-from PySide6.QtWidgets import QApplication, QRadioButton  # noqa: E402
+from PySide6.QtWidgets import QApplication, QPushButton, QRadioButton  # noqa: E402
 
 from config_scanner.game_math import format_return_percent  # noqa: E402
 from config_scanner.slot_setup import MathDenomSettings  # noqa: E402
@@ -103,6 +103,108 @@ def test_dialog_bulk_set_rtp(qt_app: QApplication, monkeypatch: pytest.MonkeyPat
     assert by_theme["PR3_RedZone"].return_percent == "return_94_0"
     assert by_theme["PR2_GoldRushDeluxe"].return_percent == "return_94_0"
     assert by_theme["Frog"].return_percent == "return_frog_92_0"
+
+
+def _click_rtp(dialog: GameMathDialog, token: str) -> None:
+    target = next(
+        radio for radio in dialog._rtp_buttons if radio.property("rtpToken") == token
+    )
+    target.click()
+
+
+def test_reset_this_game_restores_live_rtp_and_bets(qt_app: QApplication) -> None:
+    live = [
+        _row(
+            "PR3_RedZone",
+            [1, 2, 3, 4, 5],
+            "return_92_0",
+            ["return_92_0", "return_94_0"],
+        ),
+        _row(
+            "PR2_GoldRushDeluxe",
+            [1, 2],
+            "return_92_0",
+            ["return_92_0", "return_94_0"],
+        ),
+    ]
+    dialog = GameMathDialog(live_rows=live, form_rows=live, focus_theme="PR3_RedZone")
+    dialog.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    dialog.show()
+    qt_app.processEvents()
+    _click_rtp(dialog, "return_94_0")
+    qt_app.processEvents()
+    drop = next(box for box in dialog._bet_boxes if int(box.property("betStep")) == 5)
+    drop.setChecked(False)
+    qt_app.processEvents()
+    other = next(
+        item
+        for i in range(dialog._list.count())
+        if (item := dialog._list.item(i)).data(Qt.ItemDataRole.UserRole)
+        == "PR2_GoldRushDeluxe"
+    )
+    dialog._list.setCurrentItem(other)
+    qt_app.processEvents()
+    _click_rtp(dialog, "return_94_0")
+    qt_app.processEvents()
+    redzone = next(
+        item
+        for i in range(dialog._list.count())
+        if (item := dialog._list.item(i)).data(Qt.ItemDataRole.UserRole)
+        == "PR3_RedZone"
+    )
+    dialog._list.setCurrentItem(redzone)
+    qt_app.processEvents()
+    dialog.findChild(QPushButton, "gameMathResetOne").click()
+    qt_app.processEvents()
+    by_theme = {row.theme: row for row in dialog.result_rows()}
+    assert by_theme["PR3_RedZone"].return_percent == "return_92_0"
+    assert by_theme["PR3_RedZone"].bet_multipliers == [1, 2, 3, 4, 5]
+    assert by_theme["PR2_GoldRushDeluxe"].return_percent == "return_94_0"
+    checked = [radio for radio in dialog._rtp_buttons if radio.isChecked()]
+    assert len(checked) == 1
+    assert checked[0].property("rtpToken") == "return_92_0"
+
+
+def test_reset_all_restores_every_game(qt_app: QApplication) -> None:
+    live = [
+        _row(
+            "PR3_RedZone",
+            [1, 2, 3],
+            "return_92_0",
+            ["return_92_0", "return_94_0"],
+        ),
+        _row(
+            "PR2_GoldRushDeluxe",
+            [1, 2],
+            "return_92_0",
+            ["return_92_0", "return_94_0"],
+        ),
+    ]
+    dialog = GameMathDialog(live_rows=live, form_rows=live, focus_theme="PR3_RedZone")
+    dialog.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    dialog.show()
+    qt_app.processEvents()
+    _click_rtp(dialog, "return_94_0")
+    qt_app.processEvents()
+    other = next(
+        item
+        for i in range(dialog._list.count())
+        if (item := dialog._list.item(i)).data(Qt.ItemDataRole.UserRole)
+        == "PR2_GoldRushDeluxe"
+    )
+    dialog._list.setCurrentItem(other)
+    qt_app.processEvents()
+    _click_rtp(dialog, "return_94_0")
+    qt_app.processEvents()
+    dialog.findChild(QPushButton, "gameMathResetAll").click()
+    qt_app.processEvents()
+    by_theme = {row.theme: row for row in dialog.result_rows()}
+    assert by_theme["PR3_RedZone"].return_percent == "return_92_0"
+    assert by_theme["PR3_RedZone"].bet_multipliers == [1, 2, 3]
+    assert by_theme["PR2_GoldRushDeluxe"].return_percent == "return_92_0"
+    checked = [radio for radio in dialog._rtp_buttons if radio.isChecked()]
+    assert len(checked) == 1
+    assert checked[0].property("rtpToken") == "return_92_0"
 
 
 def test_live_push_panel_loads_game_combo(qt_app: QApplication, tmp_path) -> None:
