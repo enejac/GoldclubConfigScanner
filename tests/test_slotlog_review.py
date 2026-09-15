@@ -340,6 +340,10 @@ def test_live_push_panel_wires_slotlog_check() -> None:
     assert "restore_live_push_backup" in src
     assert "field_highlight_error" in src
     assert "_start_slotlog_review" in src
+    start = src.index("def _start_slotlog_review")
+    chunk = src[start : start + 1500]
+    assert "resolve_goldclub_for_slotlog" in chunk
+    assert "if not goldclub.is_dir()" not in chunk
     assert "wait_sec=90.0" in src
     assert "format_live_push_apply_status" in src
     assert 'QMessageBox.information(\n            self,\n            "Apply complete"' not in src

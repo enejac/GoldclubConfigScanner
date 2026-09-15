@@ -27,6 +27,7 @@ from config_scanner.live_push import (
     locale_defaults_for_currency,
     looks_like_goldclub_root,
     overlay_jurisdiction_recipe,
+    cabinet_host_reachable,
     prepare_live_goldclub,
     recipe_change_lines,
     recipe_from_market_id,
@@ -600,6 +601,35 @@ def test_goldclub_root_helpers(tmp_path: Path) -> None:
     missing, missing_err = prepare_live_goldclub("")
     assert missing is None
     assert "Enter" in missing_err
+    from config_scanner.live_push import resolve_goldclub_for_slotlog
+    from config_scanner.net_gate import remote_path_available
+    from config_scanner.slotlog_review import review_slot_logs
+
+    typed = r"\\10.0.0.111\c$\Goldclub"
+    loaded = Path(r"\\10.0.0.111\slot")
+    used, err = resolve_goldclub_for_slotlog(loaded, typed)
+    assert err == ""
+    assert used == loaded
+    empty, empty_err = resolve_goldclub_for_slotlog(None, "")
+    assert empty is None
+    assert "Load a cabinet" in empty_err
+    local_used, local_err = resolve_goldclub_for_slotlog(gold, r"C:\Goldclub")
+    assert local_err == ""
+    assert local_used == gold
+    probed, probed_err = resolve_goldclub_for_slotlog(None, str(gold))
+    assert probed_err == ""
+    assert probed == gold
+    assert cabinet_host_reachable(str(gold)) == (True, "")
+    assert remote_path_available(str(gold)) is True
+    slotlog = gold / "var" / "log" / "SlotLog" / "local.log"
+    slotlog.parent.mkdir(parents=True, exist_ok=True)
+    slotlog.write_text(
+        "2026-09-15T09:00:00.000+02:00 INFO OneHand started\n",
+        encoding="utf-8",
+    )
+    review = review_slot_logs(gold)
+    assert any(name.endswith("local.log") for name in review.logs_scanned)
+    assert review.has_actionable is False
     assert _unc_parent_is_host_only(Path(r"\\10.0.0.111"))
     assert not _unc_parent_is_host_only(Path(r"\\10.0.0.111\slot"))
     assert not _unc_parent_is_host_only(gold / "slot")

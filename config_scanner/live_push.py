@@ -3486,6 +3486,23 @@ def _ensure_lab_smb(host: str) -> None:
         return
 
 
+def resolve_goldclub_for_slotlog(
+    loaded: Path | None,
+    typed: str,
+) -> tuple[Path | None, str]:
+    """Goldclub root for Check SlotLog — prefer the Load result, else probe.
+
+    Typed IP / ``\\\\host\\c$\\Goldclub`` is often not the share Load used
+    (``.111`` is ``\\\\host\\slot``). Do not require that typed folder to exist.
+    """
+    if loaded is not None:
+        return Path(loaded), ""
+    raw = (typed or "").strip()
+    if not raw:
+        return None, "Load a cabinet path first."
+    return prepare_live_goldclub(raw)
+
+
 def prepare_live_goldclub(target: str) -> tuple[Path | None, str]:
     """Resolve a Goldclub root, mapping lab SMB credentials for UNC cabinets.
 
@@ -3509,7 +3526,7 @@ def _probe_live_goldclub(
     if host:
         _ensure_lab_smb(host)
     try:
-        root = goldclub_root_from_target(raw)
+        root = goldclub_root_from_target(_local_candidate_path(raw) if not host else raw)
         if looks_like_goldclub_root(root):
             return root, ""
         if host:
