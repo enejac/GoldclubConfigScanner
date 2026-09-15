@@ -64,6 +64,11 @@ TICKET_HW_DRIVER: dict[str, str] = {
     "JCM": "GoldClub.HW.Subsys.Driver.TicketPrinter.FutureLogic.PSA66ST2",
     "TRANSACT": "GoldClub.HW.Subsys.Driver.TicketPrinter.Ithaca.Epic950",
 }
+# HWSubsys receipt.xml catalog ids for the two TicketPrinter receipts.
+TICKET_HW_RECEIPT_ID: dict[str, str] = {
+    "JCM": "f9b33669-76ea-4a18-a5fa-e20ad923e5e1",
+    "TRANSACT": "67182b9f-a7ed-425a-9271-e2ce271c24f6",
+}
 
 _QUIXANT_REL = "slot/hwdrivers/QuixantHardware.xml"
 _KEYBOARD_REL = "slot/hwdrivers/Keyboard.xml"
@@ -1034,6 +1039,16 @@ def _driver_raw_el(item: ET.Element) -> ET.Element | None:
     return _find_child(options, "driverRawName")
 
 
+def _receipt_id_el(item: ET.Element) -> ET.Element | None:
+    el = _find_child(item, "receiptId")
+    if el is not None:
+        return el
+    options = _find_child(item, "options")
+    if options is None:
+        return None
+    return _find_child(options, "receiptId")
+
+
 def _driverssetup_rel(goldclub: Path) -> str | None:
     for rel in _DRIVERSSETUP_RELS:
         if (goldclub / rel).is_file():
@@ -1098,7 +1113,12 @@ def patch_quixant_ticket_protocol(src: Path, dest: Path, protocol: str) -> None:
 
 
 def patch_tito_ticket_driver(src: Path, dest: Path, protocol: str) -> None:
-    """Swap the tito TicketPrinter class in driverssetup; keep the TCP endpoint."""
+    """Swap the tito TicketPrinter class and receipt in driverssetup.
+
+    Keeps the TCP endpoint. Writes ``driverRawName`` and the matching
+    HWSubsys ``receiptId`` with in-place string replaces so the
+    ``xmlns="config"`` file is not rewritten with ``ns0:``.
+    """
     protocol = protocol.upper()
     if protocol not in TICKET_PROTOCOLS:
         raise ValueError(f"Unsupported ticket protocol: {protocol}")
@@ -1111,22 +1131,31 @@ def patch_tito_ticket_driver(src: Path, dest: Path, protocol: str) -> None:
             dest.write_text(text, encoding="utf-8")
         return
     raw_el = _driver_raw_el(item)
+    receipt_el = _receipt_id_el(item)
     old_raw = (raw_el.text or "").strip() if raw_el is not None else ""
-    if not old_raw:
-        if src.resolve() != dest.resolve():
-            dest.write_text(text, encoding="utf-8")
-        return
-    new_raw = _replace_ticket_driver_in_raw(old_raw, protocol)
-    if new_raw == old_raw:
-        if src.resolve() != dest.resolve():
-            dest.write_text(text, encoding="utf-8")
-        return
-    if old_raw in text:
-        dest.write_text(text.replace(old_raw, new_raw, 1), encoding="utf-8")
-        return
-    if raw_el is not None:
-        raw_el.text = new_raw
-    _write_tree(tree, dest)
+    old_receipt = (receipt_el.text or "").strip() if receipt_el is not None else ""
+    new_raw = (
+        _replace_ticket_driver_in_raw(old_raw, protocol) if old_raw else old_raw
+    )
+    new_receipt = TICKET_HW_RECEIPT_ID[protocol]
+    out = text
+    if old_raw and new_raw != old_raw:
+        if old_raw not in out:
+            if src.resolve() != dest.resolve():
+                dest.write_text(text, encoding="utf-8")
+            return
+        out = out.replace(old_raw, new_raw, 1)
+    if old_receipt and old_receipt != new_receipt and old_receipt in out:
+        out = out.replace(old_receipt, new_receipt, 1)
+    elif not old_receipt and new_receipt:
+        current_raw = new_raw or old_raw
+        tag = f"<driverRawName>{current_raw}</driverRawName>"
+        if tag in out:
+            out = out.replace(
+                tag, f"<receiptId>{new_receipt}</receiptId>\n      {tag}", 1
+            )
+    if out != text or src.resolve() != dest.resolve():
+        dest.write_text(out, encoding="utf-8")
 
 
 def read_bill_tokens(goldclub: Path) -> list[BillToken]:
