@@ -16,12 +16,72 @@ from config_scanner.slot_setup import (
     PlayLimitsSettings,
     SlotSetupRecipe,
     build_config_pack,
+    cabinet_has_magic_wheel_gamepack,
     iter_magicwheel_setting_rels,
     load_recipe_from_goldclub,
     read_play_limits,
     theme_rel_from_mgconfig_path,
 )
 from tests.test_slot_setup import _fake_goldclub, _write
+
+
+def _goldclub_jurisdiction_wheel_only(tmp_path: Path) -> Path:
+    """Gamepack with MagicWheelPackSettings but no dedicated wheel files."""
+    gold = _fake_goldclub(tmp_path)
+    (gold / "slot" / "themes" / "magicwheel_Config.xml").unlink()
+    return gold
+
+
+def test_cabinet_has_magic_wheel_gamepack_from_dedicated_config(tmp_path: Path) -> None:
+    gold = _fake_goldclub(tmp_path)
+    assert cabinet_has_magic_wheel_gamepack(gold) is True
+
+
+def test_cabinet_has_magic_wheel_gamepack_from_magicwheel_path(tmp_path: Path) -> None:
+    gold = _goldclub_jurisdiction_wheel_only(tmp_path)
+    _write(
+        gold / "slot" / "themes" / "custom_wheel.xml",
+        """<?xml version="1.0"?>
+<MagicWheelSettingsConfig>
+  <Enabled>true</Enabled>
+  <Bet>5</Bet>
+</MagicWheelSettingsConfig>
+""",
+    )
+    mg = gold / "slot" / "themes" / "mgconfig.xml"
+    text = mg.read_text(encoding="utf-8")
+    text = text.replace(
+        "<Multigamer>",
+        "<Multigamer>\n  <MagicWheelPath>themes\\\\custom_wheel.xml</MagicWheelPath>",
+        1,
+    )
+    mg.write_text(text, encoding="utf-8")
+    assert cabinet_has_magic_wheel_gamepack(gold) is True
+
+
+def test_cabinet_has_magic_wheel_gamepack_from_theme_folder(tmp_path: Path) -> None:
+    gold = _goldclub_jurisdiction_wheel_only(tmp_path)
+    (gold / "slot" / "themes" / "MagicWheel").mkdir()
+    assert cabinet_has_magic_wheel_gamepack(gold) is True
+
+
+def test_cabinet_has_magic_wheel_gamepack_false_for_jurisdiction_only(
+    tmp_path: Path,
+) -> None:
+    gold = _goldclub_jurisdiction_wheel_only(tmp_path)
+    assert "slot/themes/jurisdiction_config.xml" in iter_magicwheel_setting_rels(gold)
+    assert cabinet_has_magic_wheel_gamepack(gold) is False
+
+
+def test_load_live_cabinet_flags_magic_wheel_gamepack(tmp_path: Path) -> None:
+    from config_scanner.live_push import load_live_cabinet
+
+    with_wheel = load_live_cabinet(str(_fake_goldclub(tmp_path / "with")))
+    without = load_live_cabinet(
+        str(_goldclub_jurisdiction_wheel_only(tmp_path / "without"))
+    )
+    assert with_wheel.has_magic_wheel_gamepack is True
+    assert without.has_magic_wheel_gamepack is False
 
 
 def test_theme_rel_from_mgconfig_path_prefixes_slot() -> None:

@@ -1028,3 +1028,53 @@ def test_fleet_scan_runnable_fills_cabinet_combo(qt_app, monkeypatch) -> None:
     assert "10.0.0.112" in items
     assert panel._path.text() == ""
     assert not hasattr(panel, "_ip")
+
+
+def test_column_board_skips_hidden_magic_wheel(qt_app: QApplication) -> None:
+    board = _board(qt_app)
+    mw = next(box for box in board.findChildren(QGroupBox) if box.title() == "Magic wheel")
+    board.set_box_visible(mw, False)
+    qt_app.processEvents()
+    assert "Magic wheel" not in _placements(board)
+    board.set_box_visible(mw, True)
+    qt_app.processEvents()
+    assert "Magic wheel" in _placements(board)
+
+
+def test_magic_wheel_group_hidden_until_gamepack_has_wheel(
+    qt_app: QApplication, tmp_path: Path
+) -> None:
+    from config_scanner.live_push import load_live_cabinet
+    from gui.live_push_panel import LivePushPanel, _set_combo_code
+    from tests.test_magicwheel_jurisdiction import _goldclub_jurisdiction_wheel_only
+    from tests.test_slot_setup import _fake_goldclub
+
+    panel = LivePushPanel(autoload=False)
+    panel.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    panel.show()
+    qt_app.processEvents()
+    assert panel._mw_box.isHidden()
+    assert panel._has_magic_wheel_gamepack is False
+
+    with_wheel = load_live_cabinet(str(_fake_goldclub(tmp_path / "with")))
+    assert with_wheel.recipe is not None
+    panel._on_load_finished(with_wheel)
+    qt_app.processEvents()
+    assert panel._has_magic_wheel_gamepack is True
+    assert not panel._mw_box.isHidden()
+    live_bet = with_wheel.recipe.play_limits.magic_wheel_bet
+    _set_combo_code(panel._mw_bet, "25")
+    changed = panel._recipe_from_form()
+    assert changed.play_limits.magic_wheel_bet == 25
+    assert changed.play_limits.magic_wheel_bet != live_bet
+
+    without = load_live_cabinet(str(_goldclub_jurisdiction_wheel_only(tmp_path / "without")))
+    assert without.recipe is not None
+    panel._on_load_finished(without)
+    qt_app.processEvents()
+    assert without.has_magic_wheel_gamepack is False
+    assert panel._mw_box.isHidden()
+    seed_bet = without.recipe.play_limits.magic_wheel_bet
+    _set_combo_code(panel._mw_bet, "25")
+    kept = panel._recipe_from_form()
+    assert kept.play_limits.magic_wheel_bet == seed_bet

@@ -56,6 +56,7 @@ from config_scanner.slot_setup import (
     goldclub_root_from_target,
     leftover_jurisdiction_single_denomination,
     load_recipe_from_goldclub,
+    cabinet_has_magic_wheel_gamepack,
     iter_magicwheel_setting_rels,
     markets_accepted_by_onehand,
     read_sas_settings,
@@ -3645,7 +3646,9 @@ class LiveLoadOutcome:
     ticket_printer_active: bool = False
     # slot\languages catalog + jurisdiction_config <Languages> of this root.
     languages: CabinetLanguages | None = None
-    # True for the early callback that carries only ``root`` + ``recipe``.
+    # Dedicated wheel XML / theme folder — not jurisdiction MagicWheelPackSettings.
+    has_magic_wheel_gamepack: bool = False
+    # True for the early callback (root + recipe + wheel flag) before licences.
     partial: bool = False
 
 
@@ -3751,6 +3754,12 @@ def load_live_cabinet(
             f_langs = submit(
                 _quiet("cabinet languages", read_cabinet_languages, None), root
             )
+            f_mw = submit(
+                _quiet(
+                    "magic wheel pack", cabinet_has_magic_wheel_gamepack, False
+                ),
+                root,
+            )
             f_corrupt = submit(
                 _quiet("display corruption scan", live_display_corruption_errors, {}),
                 root,
@@ -3760,11 +3769,19 @@ def load_live_cabinet(
                 f_math = submit(_quiet("math prefetch", prefetch_link2win_math, None), root)
 
             recipe = f_recipe.result()
+            has_mw = bool(f_mw.result())
             status = _load_status_text(root, kind, recipe)
             if on_partial is not None:
                 try:
                     on_partial(
-                        LiveLoadOutcome(root, recipe, "", status, partial=True)
+                        LiveLoadOutcome(
+                            root,
+                            recipe,
+                            "",
+                            status,
+                            has_magic_wheel_gamepack=has_mw,
+                            partial=True,
+                        )
                     )
                 except Exception as exc:  # noqa: BLE001
                     _lp_log(f"partial-load callback failed: {exc}")
@@ -3794,6 +3811,7 @@ def load_live_cabinet(
             onehand_markets=markets,
             ticket_printer_active=printer_on,
             languages=languages,
+            has_magic_wheel_gamepack=has_mw,
         )
     except Exception as exc:  # noqa: BLE001
         return LiveLoadOutcome(

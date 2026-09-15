@@ -43,7 +43,14 @@ def test_partial_result_paints_form_but_stays_busy(qt_app: QApplication, tmp_pat
 
     panel = _panel(qt_app)
     panel._set_busy(True)
-    early = LiveLoadOutcome(full.root, full.recipe, "", full.status, partial=True)
+    early = LiveLoadOutcome(
+        full.root,
+        full.recipe,
+        "",
+        full.status,
+        has_magic_wheel_gamepack=full.has_magic_wheel_gamepack,
+        partial=True,
+    )
     panel._on_load_partial(early)
     qt_app.processEvents()
 
@@ -65,7 +72,16 @@ def test_partial_result_ignored_when_not_busy(qt_app: QApplication, tmp_path: Pa
     full = load_live_cabinet(str(gold))
     panel = _panel(qt_app)
     assert panel._busy is False
-    panel._on_load_partial(LiveLoadOutcome(full.root, full.recipe, "", full.status, partial=True))
+    panel._on_load_partial(
+        LiveLoadOutcome(
+            full.root,
+            full.recipe,
+            "",
+            full.status,
+            has_magic_wheel_gamepack=full.has_magic_wheel_gamepack,
+            partial=True,
+        )
+    )
     assert panel._loaded is None
 
 
