@@ -2870,6 +2870,36 @@ def dedicated_magicwheel_file_exists(goldclub: Path) -> bool:
     )
 
 
+_MAGIC_WHEEL_THEME_DIR_NAMES = frozenset({"magicwheel", "moneywheel"})
+
+
+def cabinet_has_magic_wheel_gamepack(goldclub: Path) -> bool:
+    """True when this gamepack ships a Magic Wheel, not just jurisdiction knobs.
+
+    Newer ``jurisdiction_config`` files always carry ``MagicWheelPackSettings``.
+    That is a market requirement, not proof the installed titles include a
+    wheel. Dedicated theme XML (or a MagicWheel / MoneyWheel theme folder)
+    is the gamepack signal Live Push uses to show the Magic wheel group.
+    """
+    root = goldclub_root_from_target(goldclub)
+    if dedicated_magicwheel_file_exists(root):
+        return True
+    themes = root / "slot" / "themes"
+    if not themes.is_dir():
+        return False
+    try:
+        children = list(themes.iterdir())
+    except OSError:
+        return False
+    for child in children:
+        try:
+            if child.is_dir() and child.name.casefold() in _MAGIC_WHEEL_THEME_DIR_NAMES:
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def looks_like_magicwheel_settings(path: Path) -> bool:
     try:
         root = _parse_xml(path).getroot()

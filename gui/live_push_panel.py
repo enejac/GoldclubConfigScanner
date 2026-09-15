@@ -427,6 +427,7 @@ class _ColumnBoard(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._boxes: list[tuple[QWidget, int]] = []
+        self._hidden_boxes: set[QWidget] = set()
         self._columns = 0
         self._relayouting = False
         self._column_hosts: list[QWidget] = []
@@ -453,6 +454,24 @@ class _ColumnBoard(QWidget):
         self._boxes.append((widget, max(1, weight)))
         self._relayout(force=True)
 
+    def refresh_layout(self) -> None:
+        """Repack columns after a group is shown or hidden."""
+        self._relayout(force=True)
+
+    def set_box_visible(self, widget: QWidget, visible: bool) -> None:
+        """Show or hide a group and reflow. Do not use ``isHidden()`` here.
+
+        Qt reports ``isHidden()`` for widgets that have never been shown, so
+        the constructor packer cannot use that flag or every group vanishes.
+        """
+        if visible:
+            self._hidden_boxes.discard(widget)
+            widget.show()
+        else:
+            self._hidden_boxes.add(widget)
+            widget.hide()
+        self._relayout(force=True)
+
     def group_placements(self) -> dict[str, tuple[int, int]]:
         """Map group title to ``(row in column, column index)``."""
         out: dict[str, tuple[int, int]] = {}
@@ -466,6 +485,8 @@ class _ColumnBoard(QWidget):
             for i in range(lay.count()):
                 widget = lay.itemAt(i).widget()
                 if isinstance(widget, QGroupBox):
+                    if widget in self._hidden_boxes:
+                        continue
                     out[widget.title()] = (row, col)
                     row += 1
         return out
@@ -529,6 +550,8 @@ class _ColumnBoard(QWidget):
             heights = [0] * columns
             packed: list[list[QWidget]] = [[] for _ in range(columns)]
             for widget, weight in self._boxes:
+                if widget in self._hidden_boxes:
+                    continue
                 col = heights.index(min(heights))
                 packed[col].append(widget)
                 heights[col] += weight
@@ -744,6 +767,7 @@ class LivePushPanel(QWidget):
         self._fleet_emitter.found.connect(self._on_fleet_found)
         self._fleet_emitter.finished.connect(self._on_fleet_finished)
         self._goldclub: Path | None = None
+        self._has_magic_wheel_gamepack = False
         self._display_corruption: dict[str, str] = {}
         self._live_baseline: list[str] = []
         self._live_baseline_key: tuple[int, str] | None = None
@@ -887,6 +911,7 @@ class LivePushPanel(QWidget):
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         board = _ColumnBoard()
+        self._board = board
 
         # --- Market first (top-left), then denoms, then the rest; licence last ---
         loc_box, loc = _group_form("Currency / market")
@@ -961,6 +986,7 @@ class LivePushPanel(QWidget):
         board.add_box(denom_box, 2)
 
         mw_box, mw = _group_form("Magic wheel")
+        self._mw_box = mw_box
         self._mw_limit = _int_combo(MAGIC_WHEEL_LIMITS)
         self._mw_bet = _int_combo(MAGIC_WHEEL_BETS)
         self._mw_enabled = _bool_combo()
@@ -971,7 +997,10 @@ class LivePushPanel(QWidget):
         mw.addRow("Enabled", self._mw_enabled)
         mw.addRow("Max spins", self._mw_spins)
         mw.addRow("Money average", self._mw_average)
+        # Gamepack probe happens on Load. Hide until then so packs without a
+        # wheel do not show jurisdiction MagicWheelPackSettings as live knobs.
         board.add_box(mw_box, 5)
+        board.set_box_visible(mw_box, False)
 
         jp_box, jp = _group_form("Jackpots")
         self._jp_counters = _int_combo(JACKPOT_COUNTERS)
@@ -1565,7 +1594,7 @@ class LivePushPanel(QWidget):
         )
 
     def _live_field_widgets(self) -> list[tuple[str, QWidget]]:
-        return [
+        rows: list[tuple[str, QWidget]] = [
             ("SAS enabled", self._sas_enabled),
             ("SAS address", self._sas_address),
             ("Funds transfer", self._sas_transfer),
@@ -1616,6 +1645,16 @@ class LivePushPanel(QWidget):
             ("Inactivity to selector", self._inactivity),
             ("Show all lines", self._show_all_lines),
         ]
+        if self._has_magic_wheel_gamepack:
+            return rows
+        skip = {
+            "Magic wheel limit",
+            "Magic wheel bet",
+            "Magic wheel enabled",
+            "Magic wheel max spins",
+            "Magic wheel average",
+        }
+        return [(label, widget) for label, widget in rows if label not in skip]
 
     def _is_live_field_editable(self, label: str, widget: QWidget) -> bool:
         for spec in LIMIT_SETUP_FIELDS:
@@ -1991,6 +2030,7 @@ class LivePushPanel(QWidget):
         self._loaded = outcome.recipe
         self._goldclub = outcome.root
         self._show_resolved_target(outcome.root)
+        self._sync_magic_wheel_ui(outcome.has_magic_wheel_gamepack)
         self._fill_form(outcome.recipe)
         self._status.setText(
             f"Loaded {outcome.root} — checking licences, OneHand build and math…"
@@ -2015,10 +2055,12 @@ class LivePushPanel(QWidget):
             self._fill_language_combo()
             self._update_licence_ui(None)
             self._set_onehand_build_label(None)
+            self._sync_magic_wheel_ui(False)
             self._paint_live_highlights()
             return
         self._loaded = outcome.recipe
         self._goldclub = outcome.root
+        self._sync_magic_wheel_ui(outcome.has_magic_wheel_gamepack)
         self._show_resolved_target(outcome.root)
         self._remember_cabinet(self._path.text().strip())
         self._display_corruption = dict(outcome.display_corruption or {})
@@ -2695,27 +2737,32 @@ class LivePushPanel(QWidget):
             # Typing the denom the cabinet already plays is not a change:
             # keep its catalog and do not re-derive the magic wheel.
             normalize_effective_denoms(self._loaded, recipe)
-            if len(denoms) == 1 and list(recipe.denomination_list) == denoms:
+            if (
+                self._has_magic_wheel_gamepack
+                and len(denoms) == 1
+                and list(recipe.denomination_list) == denoms
+            ):
                 live_denoms = list(self._loaded.denomination_list or [])
                 if live_denoms != denoms:
                     bet, average = expected_magic_wheel_for_denom(denoms[0])
                     recipe.play_limits.magic_wheel_bet = bet
                     recipe.play_limits.magic_wheel_average = average
-        mw_limit = _optional_int(self._mw_limit)
-        if mw_limit is not None:
-            recipe.jurisdiction.magic_wheel_money_limit = mw_limit
-        mw_bet = _optional_int(self._mw_bet)
-        if mw_bet is not None:
-            recipe.play_limits.magic_wheel_bet = mw_bet
-        mw_on = _optional_bool(self._mw_enabled)
-        if mw_on is not None:
-            recipe.play_limits.magic_wheel_enabled = mw_on
-        mw_spins = _optional_int(self._mw_spins)
-        if mw_spins is not None:
-            recipe.play_limits.magic_wheel_max_spins = mw_spins
-        mw_avg = _optional_int(self._mw_average)
-        if mw_avg is not None:
-            recipe.play_limits.magic_wheel_average = mw_avg
+        if self._has_magic_wheel_gamepack:
+            mw_limit = _optional_int(self._mw_limit)
+            if mw_limit is not None:
+                recipe.jurisdiction.magic_wheel_money_limit = mw_limit
+            mw_bet = _optional_int(self._mw_bet)
+            if mw_bet is not None:
+                recipe.play_limits.magic_wheel_bet = mw_bet
+            mw_on = _optional_bool(self._mw_enabled)
+            if mw_on is not None:
+                recipe.play_limits.magic_wheel_enabled = mw_on
+            mw_spins = _optional_int(self._mw_spins)
+            if mw_spins is not None:
+                recipe.play_limits.magic_wheel_max_spins = mw_spins
+            mw_avg = _optional_int(self._mw_average)
+            if mw_avg is not None:
+                recipe.play_limits.magic_wheel_average = mw_avg
         jp_n = _optional_int(self._jp_counters)
         if jp_n is not None:
             recipe.play_limits.jackpot_counters = jp_n
@@ -2903,11 +2950,20 @@ class LivePushPanel(QWidget):
         src = f" ({result.source})" if result.source else ""
         self._status.setText(f"Dallas key read via {via}: {code}{src}")
 
+    def _sync_magic_wheel_ui(self, available: bool) -> None:
+        """Show Magic wheel only when the loaded gamepack ships the feature."""
+        available = bool(available)
+        self._has_magic_wheel_gamepack = available
+        self._board.set_box_visible(self._mw_box, available)
+
     def _denom_chosen(self, _index: int = -1) -> None:
         if self._applying:
             return
         denoms = self._parse_denoms()
         if len(denoms) != 1:
+            self._refresh_changes()
+            return
+        if not self._has_magic_wheel_gamepack:
             self._refresh_changes()
             return
         bet, average = expected_magic_wheel_for_denom(denoms[0])

@@ -28,6 +28,7 @@ from config_scanner.slot_setup import (
     PlayLimitsSettings,
     SlotSetupRecipe,
     _MAGICWHEEL_REL,
+    cabinet_has_magic_wheel_gamepack,
     goldclub_root_from_target,
     read_mgconfig_denoms,
     read_play_limits,
@@ -947,7 +948,7 @@ def validate_denom_configuration(
                     "includes that denom."
                 )
 
-    if denom_changed:
+    if denom_changed and cabinet_has_magic_wheel_gamepack(root):
         expected_bet, expected_avg = expected_magic_wheel_for_denom(min_denom)
         pl = effective_play_limits(live, proposed, root)
         wheel_bet = (

@@ -103,6 +103,26 @@ def test_rejects_denom_change_without_magic_wheel_sync(tmp_path: Path) -> None:
     assert any("Magic wheel" in err for err in result.errors)
 
 
+def test_skips_magic_wheel_sync_when_gamepack_has_no_wheel(tmp_path: Path) -> None:
+    gold = _fake_goldclub(tmp_path)
+    (gold / "slot" / "themes" / "magicwheel_Config.xml").unlink()
+
+    live = load_recipe_from_goldclub(gold, label="live")
+    live.denomination_list = [10]
+    live.credit_rate_values = [10]
+    live.play_limits.magic_wheel_bet = 10
+    live.play_limits.magic_wheel_average = 50
+
+    proposed = SlotSetupRecipe.from_dict(live.to_dict())
+    proposed.denomination_list = [5]
+    proposed.credit_rate_values = [5]
+    proposed.play_limits.magic_wheel_bet = 10
+    proposed.play_limits.magic_wheel_average = 50
+
+    result = validate_denom_configuration(live, proposed, gold)
+    assert not any("Magic wheel" in err for err in result.errors)
+
+
 def test_finds_staged_leaf_for_ttd_10c() -> None:
     leaf = find_staged_leaf_for_denom(
         10,
