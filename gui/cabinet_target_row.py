@@ -95,8 +95,12 @@ class _FleetScanRunnable(QRunnable):
 
     def run(self) -> None:
         try:
+            from config_scanner.app_shutdown import is_shutting_down
             from network.lab_access import discover_active_lab_fleet, priority_lab_scan_ips
 
+            if is_shutting_down():
+                self._emitter.finished.emit([])
+                return
             live = discover_active_lab_fleet(
                 priority_hosts=priority_lab_scan_ips(self._recent),
                 on_found=self._emitter.found.emit,
@@ -240,6 +244,10 @@ class CabinetTargetRow(QWidget):
 
     def start_fleet_scan(self) -> None:
         if self._fleet_scanning:
+            return
+        from config_scanner.app_shutdown import is_shutting_down
+
+        if is_shutting_down():
             return
         self._fleet_scanning = True
         QThreadPool.globalInstance().start(

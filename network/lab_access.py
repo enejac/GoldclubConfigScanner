@@ -18,7 +18,7 @@ import re
 import socket
 import sys
 from collections.abc import Callable, Sequence
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 LAB_FLEET_IPS: frozenset[str] = frozenset(
@@ -401,6 +401,15 @@ def priority_lab_scan_ips(
     return out
 
 
+def _app_is_shutting_down() -> bool:
+    """True after the Config Scanner window X is clicked (real app session)."""
+    try:
+        from config_scanner.app_shutdown import is_shutting_down
+    except Exception:
+        return False
+    return bool(is_shutting_down())
+
+
 def _host_answers_smb(host: str, *, timeout_sec: float) -> bool:
     if probe_tcp_port(host, 445, timeout_sec=timeout_sec):
         return True
@@ -441,14 +450,31 @@ def discover_active_lab_fleet(
         batches = [priority, rest] if priority else [rest]
 
     check = probe or (lambda host: _host_answers_smb(host, timeout_sec=timeout_sec))
+
+    def _guarded(host: str) -> bool:
+        if _app_is_shutting_down():
+            return False
+        return bool(check(host))
+
     live: list[str] = []
     seen: set[str] = set()
     pool_size = max(1, min(int(workers), 64))
     for batch in batches:
+        if _app_is_shutting_down():
+            break
         if not batch:
             continue
         with ThreadPoolExecutor(max_workers=min(pool_size, len(batch))) as pool:
-            for host, ok in zip(batch, pool.map(check, batch)):
+            futures = {pool.submit(_guarded, host): host for host in batch}
+            for fut in as_completed(futures):
+                if _app_is_shutting_down():
+                    pool.shutdown(wait=False, cancel_futures=True)
+                    break
+                try:
+                    ok = fut.result()
+                except Exception:
+                    continue
+                host = futures[fut]
                 if not ok or host in seen:
                     continue
                 seen.add(host)

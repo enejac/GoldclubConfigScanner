@@ -5,6 +5,10 @@ Updated automatically when a PR is merged.
 
 ## 2026-09-14
 
+- Say the dead WinRM channel once, not four times ([#73](https://github.com/enejac/GoldclubConfigScanner/pull/73))
+- Exit Config Scanner on window close so it does not stay in Task Manager ([#72](https://github.com/enejac/GoldclubConfigScanner/pull/72))
+- Live Push: reload OneHand for cashout and keep Apply status on the panel ([#71](https://github.com/enejac/GoldclubConfigScanner/pull/71))
+- Live Push: add Cashless to the Cashout button list ([#70](https://github.com/enejac/GoldclubConfigScanner/pull/70))
 - Snapshots: show Create a backup next to Auto-start stack ([#69](https://github.com/enejac/GoldclubConfigScanner/pull/69))
 - Keep pytest tmp paths out of the remembered cabinet ([#68](https://github.com/enejac/GoldclubConfigScanner/pull/68))
 - Live Push: give door labels and checkbox text a bit of margin ([#67](https://github.com/enejac/GoldclubConfigScanner/pull/67))

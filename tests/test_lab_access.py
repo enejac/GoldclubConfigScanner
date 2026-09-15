@@ -214,6 +214,27 @@ def test_discover_active_lab_fleet_skips_this_pc(
     assert live == ["10.0.0.76"]
 
 
+def test_discover_active_lab_fleet_stops_on_app_shutdown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from config_scanner.app_shutdown import request_shutdown, reset_shutdown_for_tests
+
+    reset_shutdown_for_tests()
+    request_shutdown()
+    try:
+        seen: list[str] = []
+        live = la.discover_active_lab_fleet(
+            hosts=("10.0.0.1", "10.0.0.76"),
+            probe=lambda host: seen.append(host) or True,
+            skip_hosts=(),
+            workers=2,
+        )
+        assert live == []
+        assert seen == []
+    finally:
+        reset_shutdown_for_tests()
+
+
 def test_discover_priority_hosts_are_probed_first() -> None:
     order: list[str] = []
 
