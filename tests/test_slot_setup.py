@@ -222,6 +222,10 @@ def _fake_goldclub(tmp_path: Path) -> Path:
         """<?xml version="1.0"?>
 <MathSettings>
   <CurrentReturnPercent>return_94_0</CurrentReturnPercent>
+  <AllowedReturnPercents>
+    <string>return_92_0</string>
+    <string>return_94_0</string>
+  </AllowedReturnPercents>
   <FixedBet>7.5</FixedBet>
   <DenomConfig>
     <DenomConfigSettings>
@@ -233,6 +237,10 @@ def _fake_goldclub(tmp_path: Path) -> Path:
         <int>12</int>
       </BetMultipliers>
       <ReturnPercent>return_94_0</ReturnPercent>
+      <AllowedReturnPercents>
+        <string>return_92_0</string>
+        <string>return_94_0</string>
+      </AllowedReturnPercents>
     </DenomConfigSettings>
   </DenomConfig>
 </MathSettings>
@@ -346,6 +354,9 @@ def test_load_recipe_from_goldclub(tmp_path: Path) -> None:
     assert recipe.keyboard["270"] == "Spin"
     assert recipe.sas.address == 1
     assert recipe.math[0].theme == "BigSafari_HnW"
+    assert recipe.math[0].return_percent == "return_94_0"
+    assert recipe.math[0].allowed_return_percents == ["return_92_0", "return_94_0"]
+    assert recipe.math[0].bet_multipliers == [4, 8, 12]
     assert recipe.denomination_list == [5]
     assert recipe.jurisdiction.tag == "PuertoRico"
     assert recipe.offline_enabled is False

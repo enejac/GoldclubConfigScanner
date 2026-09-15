@@ -26,6 +26,13 @@ from datetime import datetime
 from pathlib import Path
 
 from config_scanner.bill_tokens_view import format_bill_notes_snapshot
+from config_scanner.game_math import (
+    GAMES_MATH_LABEL,
+    bet_steps_changed,
+    clone_math_rows,
+    format_game_math_snapshot,
+    game_math_change_lines,
+)
 from config_scanner.build_version import OneHandBuildInfo, detect_onehand_build
 from config_scanner.language_flags import COUNTRY_FLAG_LABEL, flags_snapshot
 from config_scanner.denom_compat import (
@@ -1428,6 +1435,7 @@ _LABEL_SECTIONS: dict[str, frozenset[str]] = {
     "Denoms (cents)": frozenset(
         {"mgconfig", "jurisdiction", "link2win", "magicwheel", "math"}
     ),
+    GAMES_MATH_LABEL: frozenset({"math"}),
     "Bet multipliers": frozenset({"math"}),
     "Magic wheel limit": frozenset({"magicwheel", "jurisdiction"}),
     "Magic wheel bet": frozenset({"magicwheel", "jurisdiction"}),
@@ -1509,12 +1517,10 @@ def live_push_ramclear_reasons(
         reasons.append("denomination list")
 
     form_mults = list(form.play_limits.bet_multipliers or [])
-    if not form_mults and form.math:
-        form_mults = list(form.math[0].bet_multipliers or [])
     live_mults = list(live.play_limits.bet_multipliers or [])
-    if not live_mults and live.math:
-        live_mults = list(live.math[0].bet_multipliers or [])
     if form_mults and list(form_mults) != list(live_mults):
+        reasons.append("bet multipliers / bet steps")
+    elif bet_steps_changed(live.math, form.math):
         reasons.append("bet multipliers / bet steps")
 
     return tuple(reasons)
@@ -1529,8 +1535,9 @@ LIVE_PUSH_WRITE_AND_RESTART = "Write and restart"
 # deltas — they use the normal Apply confirm, not this warning.
 _SAS_RESTART_LABELS = frozenset({"SAS enabled", "AFT", "Funds transfer"})
 _CURRENCY_RESTART_LABELS = frozenset(
-    {"Currency", "Currency symbol", "Denoms (cents)", "Bet multipliers"}
+    {"Currency", "Currency symbol", "Denoms (cents)"}
 )
+_GAMES_MATH_RESTART_LABELS = frozenset({GAMES_MATH_LABEL, "Bet multipliers"})
 _LANGUAGE_RESTART_LABELS = frozenset(
     {"Language", COUNTRY_FLAG_LABEL, "Culture"}
 )
@@ -1553,6 +1560,8 @@ def live_push_ramclear_notice(reasons: Sequence[str]) -> str:
 
 def live_push_restart_reason_for_label(label: str) -> str | None:
     """Group name if this snapshot label needs the restart warning, else None."""
+    if label in _GAMES_MATH_RESTART_LABELS:
+        return "game RTP or bet steps"
     if label in _CURRENCY_RESTART_LABELS:
         return "currency, denoms, or bet steps"
     if label in _LANGUAGE_RESTART_LABELS:
@@ -1593,6 +1602,8 @@ def live_push_restart_required_reasons(
     for line in recipe_change_lines(live, form):
         label = line.split(":", 1)[0].strip()
         _add(live_push_restart_reason_for_label(label))
+    if game_math_change_lines(live.math, form.math):
+        _add(live_push_restart_reason_for_label(GAMES_MATH_LABEL))
     if goldclub is not None:
         from config_scanner.denom_compat import link2win_restage_change_line
 
@@ -2650,9 +2661,16 @@ LIVE_OPTION_HELP: dict[str, str] = {
         "through 5000c. Live Push blocks a denom unless the live cabinet "
         "Link2WinBonusMath.json already contains that denom (red if it does not)."
     ),
+    GAMES_MATH_LABEL: (
+        "Per-game bet steps and return percent from each theme's "
+        "MathSettings.xml. Edit opens a picker: RTP only from that game's "
+        "AllowedReturnPercents, and bet steps only from that game's live "
+        "ladder (toggle off to drop a step). Apply writes each changed "
+        "theme; it does not stamp one list onto every game."
+    ),
     "Bet multipliers": (
-        "Bet multiplier list offered to the player. Must match an approved bet "
-        "setup for the selected denoms / market."
+        "Per-game bet steps — same as Games / math. Live Push no longer "
+        "applies one cabinet-wide multiplier list."
     ),
     "Magic wheel limit": (
         "Maximum money the magic wheel can award. Written to "
@@ -2825,6 +2843,7 @@ LIVE_FIELD_CONFIG_RELS: dict[str, tuple[str, ...]] = {
         "slot/themes/Link2WinFeature/Link2WinBonusMath.json",
         "slot/themes/Link2WinFeature/Link2WinBonusMath_Config2.json",
     ),
+    GAMES_MATH_LABEL: ("slot/themes/*/MathSettings.xml",),
     "Bet multipliers": ("slot/themes/*/MathSettings.xml",),
     "Magic wheel limit": (
         _JURISDICTION_REL,
@@ -3005,6 +3024,7 @@ def live_display_corruption_errors(goldclub: Path | str) -> dict[str, str]:
 
 
 _FIELD_LABEL_ALIASES: dict[str, str] = {
+    "Bet multipliers": GAMES_MATH_LABEL,
     "Money limit": "Magic wheel limit",
     "Wheel bet": "Magic wheel bet",
     "Max spins": "Magic wheel max spins",
@@ -3040,7 +3060,7 @@ def _live_field_rels_for(goldclub: Path, label: str) -> list[str]:
             discovered = []
         if discovered:
             return list(discovered)
-    if canon == "Bet multipliers":
+    if canon in {GAMES_MATH_LABEL, "Bet multipliers"}:
         try:
             math_rels = math_settings_rels(goldclub)
         except (OSError, ValueError):
@@ -3093,8 +3113,8 @@ def live_field_validation_errors(errors: list[str]) -> dict[str, str]:
             labels.extend(
                 ["Magic wheel bet", "Magic wheel average", "Denoms (cents)"]
             )
-        elif "bet multiplier" in low:
-            labels.append("Bet multipliers")
+        elif "bet multiplier" in low or "bet step" in low:
+            labels.append(GAMES_MATH_LABEL)
         elif "target market" in low:
             labels.extend(["Market", "Currency"])
         elif any(
@@ -3280,13 +3300,9 @@ def _revert_live_push_label(
         out.credit_rate_values = list(
             live.credit_rate_values or live.denomination_list or []
         )
-    elif label == "Bet multipliers":
-        live_mults = list(live.play_limits.bet_multipliers or [])
-        if not live_mults and live.math:
-            live_mults = list(live.math[0].bet_multipliers or [])
-        out.play_limits.bet_multipliers = list(live_mults)
-        if out.math and live.math:
-            out.math[0].bet_multipliers = list(live.math[0].bet_multipliers or [])
+    elif label in {GAMES_MATH_LABEL, "Bet multipliers"}:
+        out.math = clone_math_rows(live.math)
+        out.play_limits.bet_multipliers = list(live.play_limits.bet_multipliers or [])
     elif label == "Default bet":
         out.play_limits.default_bet = live.play_limits.default_bet
     elif label == "Show denom selector":
@@ -3431,6 +3447,7 @@ def live_field_tooltip(
 _MATH_HOVER_LABELS = frozenset(
     {
         "Denoms (cents)",
+        GAMES_MATH_LABEL,
         "Bet multipliers",
         "Magic wheel bet",
         "Magic wheel average",
@@ -4233,9 +4250,7 @@ def recipe_snapshot_rows(recipe: SlotSetupRecipe) -> tuple[tuple[str, str], ...]
         (COUNTRY_FLAG_LABEL, flags_snapshot(recipe.jurisdiction.language_flags)),
         ("Market", recipe.jurisdiction.tag or "—"),
         ("Denoms (cents)", _fmt_list(recipe.denomination_list)),
-        ("Bet multipliers", _fmt_list(pl.bet_multipliers or (
-            recipe.math[0].bet_multipliers if recipe.math else []
-        ))),
+        (GAMES_MATH_LABEL, format_game_math_snapshot(recipe.math)),
         ("Default bet", _fmt_opt(pl.default_bet)),
         ("Show denom selector", _fmt_opt(pl.show_denom_selector)),
         ("Magic wheel limit", _fmt_opt(recipe.jurisdiction.magic_wheel_money_limit)),
@@ -4279,8 +4294,16 @@ def recipe_change_lines(before: SlotSetupRecipe, after: SlotSetupRecipe) -> list
     lines: list[str] = []
     for label, old_val in old.items():
         new_val = new.get(label, "—")
-        if old_val != new_val:
-            lines.append(f"{label}: {old_val} → {new_val}")
+        if old_val == new_val:
+            continue
+        if label == GAMES_MATH_LABEL:
+            detail = game_math_change_lines(before.math, after.math)
+            if detail:
+                lines.extend(detail)
+            else:
+                lines.append(f"{label}: {old_val} → {new_val}")
+            continue
+        lines.append(f"{label}: {old_val} → {new_val}")
     return lines
 
 
@@ -4328,6 +4351,9 @@ def overlay_jurisdiction_recipe(
     # Keep the cabinet's active denomination list — presets carry allowed_denoms
     # for validation/choices, not a wholesale mgconfig replacement.
     out.play_limits = merge_play_limits(live.play_limits, preset_copy.play_limits)
+    # Market presets carry a wildcard bet list. Keep each live theme's ladder.
+    out.play_limits.bet_multipliers = list(live.play_limits.bet_multipliers or [])
+    out.math = clone_math_rows(live.math)
     out.dallas = live.dallas
     out.keyboard = dict(live.keyboard)
     out.aurum_identity = live.aurum_identity

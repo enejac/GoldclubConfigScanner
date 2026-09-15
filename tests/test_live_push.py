@@ -89,6 +89,9 @@ def test_overlay_keeps_live_dallas_and_sas_address(tmp_path: Path) -> None:
     assert merged.play_limits.jackpot_receipt_layout == "jackpotreceipt0"
     assert merged.denomination_list == live.denomination_list
     assert merged.jurisdiction.language_flags == live.jurisdiction.language_flags
+    assert merged.play_limits.bet_multipliers == live.play_limits.bet_multipliers
+    assert [row.theme for row in merged.math] == [row.theme for row in live.math]
+    assert merged.math[0].bet_multipliers == live.math[0].bet_multipliers
 
 
 def test_catalog_has_ready_currencies_and_locale_defaults() -> None:
@@ -460,6 +463,7 @@ def test_live_option_help_covers_core_fields() -> None:
     required = {
         "Currency",
         "Denoms (cents)",
+        "Games / math",
         "SAS enabled",
         "Bill protocol",
         "Bill notes",
@@ -618,13 +622,13 @@ def test_home_and_wizard_tooltips() -> None:
 def test_live_field_validation_errors_map_denoms_and_magic_wheel() -> None:
     errors = [
         "Magic wheel must match the new denom (5c bet, 25c average).",
-        "Bet multipliers do not match any approved bet setup for this market.",
+        "BigSafari_HnW: bet steps 20 are not on this game's live list.",
         "Live Link2WinBonusMath.json on the cabinet does not include 10c.",
     ]
     mapped = live_field_validation_errors(errors)
     assert "Denoms (cents)" in mapped
     assert "Magic wheel bet" in mapped
-    assert "Bet multipliers" in mapped
+    assert "Games / math" in mapped
     math_only = live_field_validation_errors(
         ["Live Link2WinBonusMath.json on the cabinet does not include 10c."]
     )
