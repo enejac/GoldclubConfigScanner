@@ -370,8 +370,20 @@ def compare_manifests(
     baseline_game_drive: str = "",
     target_game_drive: str = "",
 ) -> list[FileDiff]:
-    baseline_map = {entry.relative_path: entry for entry in baseline_manifest.files}
-    target_map = {entry.relative_path: entry for entry in target_manifest.files}
+    from config_scanner.path_mirror import select_canonical_licence_paths
+
+    def _licence_collapsed(files):
+        by_rel = {entry.relative_path: entry for entry in files}
+        return [by_rel[rel] for rel in select_canonical_licence_paths(by_rel)]
+
+    baseline_map = {
+        entry.relative_path: entry
+        for entry in _licence_collapsed(baseline_manifest.files)
+    }
+    target_map = {
+        entry.relative_path: entry
+        for entry in _licence_collapsed(target_manifest.files)
+    }
     results: list[FileDiff] = []
 
     def _resolve_path(

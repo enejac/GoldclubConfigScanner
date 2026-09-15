@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from config_scanner.scanner import SNAPSHOT_FILES_SUBDIR
 from config_scanner.service import ConfigScannerService
 from config_scanner.software_compat import (
     SNAPSHOT_SOFTWARE_SUBDIR,
@@ -235,6 +236,15 @@ def _slot_goldclub(tmp_path: Path) -> Path:
     (bios / "etc" / "game-start" / "checksum.sha1").write_text("deadbeef", encoding="utf-8")
     (root / "Licenses").mkdir()
     (root / "Licenses" / "dongle.xml").write_text("<licence/>", encoding="utf-8")
+    (root / "Licenses" / "Licence12-12262688_447_24234.xml").write_text(
+        "<Licence/>", encoding="utf-8"
+    )
+    (slot / "Licence12-12262688_447_24234.xml").write_text(
+        "<Licence/>", encoding="utf-8"
+    )
+    (root / "Licence12-12262688_447_24234.xml").write_text(
+        "<Licence/>", encoding="utf-8"
+    )
     (root / "maintenance" / "config").mkdir(parents=True)
     (root / "maintenance" / "config" / "serialports.conf").write_text("COM4", encoding="utf-8")
     (root / "Bootstrap.exe").write_bytes(b"MZ boot")
@@ -253,9 +263,12 @@ def test_capture_slot_software_skips_gamepack_keeps_licence_and_hw(tmp_path: Pat
     assert (software / "slot" / "hwdrivers" / "device.xml").is_file()
     assert (software / "bios" / "BiOS2.exe").is_file()
     assert (software / "Bootstrap.exe").is_file()
-    assert (software / "licence.dll").read_bytes() == b"wibu"
+    assert not (software / "licence.dll").exists()
     assert (software / "slot" / "licence.dll").read_bytes() == b"wibu-slot"
     assert (software / "Licenses" / "dongle.xml").is_file()
+    assert (software / "Licenses" / "Licence12-12262688_447_24234.xml").is_file()
+    assert not (software / "Licence12-12262688_447_24234.xml").exists()
+    assert not (software / "slot" / "Licence12-12262688_447_24234.xml").exists()
     assert (software / "bios" / "License" / "License.lic").is_file()
     assert (software / "slot" / "themes" / "mgconfig.xml").is_file()
     assert (software / "slot" / "themes" / "HardwareConfig.xml").is_file()
@@ -299,5 +312,14 @@ def test_run_scan_slot_full_snapshot_prelicence_tag(tmp_path: Path) -> None:
     listed = {row.name: row for row in service.list_snapshots()}
     assert listed[result.snapshot_name].has_software is True
     software = result.snapshot_path / SNAPSHOT_SOFTWARE_SUBDIR
-    assert (software / "licence.dll").is_file()
+    files = result.snapshot_path / SNAPSHOT_FILES_SUBDIR
+    xml_name = "Licence12-12262688_447_24234.xml"
+    assert (software / "slot" / "licence.dll").is_file()
+    assert not (software / "licence.dll").exists()
+    assert (software / "Licenses" / xml_name).is_file()
+    assert not (software / xml_name).exists()
+    assert not (software / "slot" / xml_name).exists()
+    assert (files / "Licenses" / xml_name).is_file()
+    assert not (files / xml_name).exists()
+    assert not (files / "slot" / xml_name).exists()
     assert not (software / "slot" / "themes" / "PR2_Foo" / "game.xml").exists()

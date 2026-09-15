@@ -130,6 +130,8 @@ def test_slot_profile_definition() -> None:
         for glob_pat in profile.extra_file_globs
     )
     assert "slot/Confirmation.txt" in profile.extra_file_globs
+    assert "slot/licence.dll" in profile.extra_file_globs
+    assert "licence.dll" not in profile.extra_file_globs
     assert any(root.path.casefold() == "services" for root in profile.scan_roots)
 
 
@@ -238,6 +240,7 @@ def test_collect_scan_files_includes_mgconfig_hardware_licence_not_gamepack(
     assert "bios/License/License.lic" in rels
     assert "Licenses/dongle.xml" in rels
     assert "slot/licence.dll" in rels
+    assert "licence.dll" not in rels
     assert "maintenance/config/serialports.conf" in rels
     assert "maintenance/config/configure-aurum.conf" in rels
     assert "platform/user/init/onlogon/Serial/USBtoSerialPorts.conf" in rels
@@ -517,6 +520,69 @@ def test_compare_does_not_force_unchanged_when_setup_paths_missing() -> None:
     assert diffs[0].content_diff == []
 
 
+def test_licence_mirror_keeps_licenses_xml_and_slot_dll() -> None:
+    from config_scanner.path_mirror import select_canonical_licence_paths
+
+    kept = select_canonical_licence_paths(
+        [
+            "Licence12-12262688_447_24234.xml",
+            "Licenses/Licence12-12262688_447_24234.xml",
+            "slot/Licence12-12262688_447_24234.xml",
+            "licence.dll",
+            "slot/licence.dll",
+            "slot/themes/mgconfig.xml",
+        ]
+    )
+    assert kept == [
+        "Licenses/Licence12-12262688_447_24234.xml",
+        "slot/licence.dll",
+        "slot/themes/mgconfig.xml",
+    ]
+
+
+def test_licence_mirror_falls_back_to_slot_when_licenses_missing() -> None:
+    from config_scanner.path_mirror import select_canonical_licence_paths
+
+    kept = select_canonical_licence_paths(
+        [
+            "Licence12-12262688_447_24234.xml",
+            "slot/Licence12-12262688_447_24234.xml",
+            "licence.dll",
+            "slot/licence.dll",
+        ]
+    )
+    assert kept == [
+        "slot/licence.dll",
+        "slot/Licence12-12262688_447_24234.xml",
+    ]
+
+
+def test_collect_scan_files_keeps_one_licence_xml_location(tmp_path: Path) -> None:
+    profile = get_profile("slot_lab_90")
+    name = "Licence12-12262688_447_24234.xml"
+    body = "<Licence/>"
+    (tmp_path / "Licenses").mkdir()
+    (tmp_path / "Licenses" / name).write_text(body, encoding="utf-8")
+    (tmp_path / name).write_text(body, encoding="utf-8")
+    slot = tmp_path / "slot"
+    slot.mkdir()
+    (slot / name).write_text(body, encoding="utf-8")
+    (slot / "licence.dll").write_bytes(b"wibu")
+    (tmp_path / "licence.dll").write_bytes(b"root-wibu")
+    files = collect_scan_files(
+        tmp_path,
+        profile.scan_roots,
+        profile.include_patterns,
+        extra_file_globs=profile.extra_file_globs,
+    )
+    rels = {path.relative_to(tmp_path).as_posix() for path in files}
+    assert f"Licenses/{name}" in rels
+    assert name not in rels
+    assert f"slot/{name}" not in rels
+    assert "slot/licence.dll" in rels
+    assert "licence.dll" not in rels
+
+
 def test_etc_mirror_prefers_highest_full_path() -> None:
     from config_scanner.path_mirror import (
         highest_full_path,
@@ -562,6 +628,63 @@ def test_compare_dedupes_bios_and_config_etc_mirrors() -> None:
     assert len(changed) == 1
     assert changed[0].relative_path == config
     assert changed[0].status == "modified"
+
+
+def test_compare_dedupes_licence_xml_locations() -> None:
+    name = "Licence12-12262688_447_24234.xml"
+    paths = [name, f"Licenses/{name}", f"slot/{name}"]
+    baseline = Manifest(
+        scanned_at="t0",
+        file_count=3,
+        elapsed_seconds=0.1,
+        files=[FileEntry(path, "OLD1", 10, "t") for path in paths],
+    )
+    target = Manifest(
+        scanned_at="t1",
+        file_count=3,
+        elapsed_seconds=0.1,
+        files=[FileEntry(path, "NEW1", 11, "t") for path in paths],
+    )
+    diffs = compare_manifests(
+        baseline,
+        target,
+        baseline_game_drive="",
+        target_game_drive="",
+    )
+    licence = [item for item in diffs if name in item.relative_path]
+    assert len(licence) == 1
+    assert licence[0].relative_path == f"Licenses/{name}"
+    assert licence[0].status == "modified"
+
+
+def test_compare_old_triple_licence_to_licenses_only() -> None:
+    name = "Licence12-12262688_447_24234.xml"
+    baseline = Manifest(
+        scanned_at="t0",
+        file_count=3,
+        elapsed_seconds=0.1,
+        files=[
+            FileEntry(name, "SAME", 10, "t"),
+            FileEntry(f"Licenses/{name}", "SAME", 10, "t"),
+            FileEntry(f"slot/{name}", "SAME", 10, "t"),
+        ],
+    )
+    target = Manifest(
+        scanned_at="t1",
+        file_count=1,
+        elapsed_seconds=0.1,
+        files=[FileEntry(f"Licenses/{name}", "SAME", 10, "t")],
+    )
+    diffs = compare_manifests(
+        baseline,
+        target,
+        baseline_game_drive="",
+        target_game_drive="",
+    )
+    licence = [item for item in diffs if name in item.relative_path]
+    assert len(licence) == 1
+    assert licence[0].relative_path == f"Licenses/{name}"
+    assert licence[0].status == "unchanged"
 
 
 def test_collect_scan_files_drops_bios_etc_when_config_etc_exists(tmp_path: Path) -> None:

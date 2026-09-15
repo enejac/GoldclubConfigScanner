@@ -63,6 +63,29 @@ def test_capture_rollback_licence_on_scan(tmp_path: Path) -> None:
     assert any(r.startswith("Licenses/") for r in rels)
 
 
+def test_capture_rollback_licence_keeps_one_xml_location(tmp_path: Path) -> None:
+    root = tmp_path / "goldclub"
+    _write_slot_licence(root)
+    name = "Licence12-12262688_447_24234_A.xml"
+    body = (root / "Licenses" / name).read_text(encoding="utf-8")
+    (root / name).write_text(body, encoding="utf-8")
+    (root / "slot" / name).write_text(body, encoding="utf-8")
+    (root / "licence.dll").write_bytes(b"y" * 4096)
+    snap_dir = tmp_path / "snap-one"
+    capture_licence_state_for_rollback(root, snap_dir)
+    manifest = json.loads(
+        (rollback_licence_dir(snap_dir) / ROLLBACK_LICENCE_MANIFEST).read_text(
+            encoding="utf-8"
+        )
+    )
+    rels = {str(item["rel"]) for item in manifest["paths"]}
+    assert f"Licenses/{name}" in rels
+    assert name not in rels
+    assert f"slot/{name}" not in rels
+    assert "slot/licence.dll" in rels
+    assert "licence.dll" not in rels
+
+
 def test_compare_detects_licence_dll_change(tmp_path: Path) -> None:
     baseline_gc = tmp_path / "baseline_gc"
     target_gc = tmp_path / "target_gc"
