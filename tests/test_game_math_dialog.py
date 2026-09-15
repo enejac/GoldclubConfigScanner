@@ -207,6 +207,118 @@ def test_reset_all_restores_every_game(qt_app: QApplication) -> None:
     assert checked[0].property("rtpToken") == "return_92_0"
 
 
+def test_reset_this_game_restores_last_load_not_form_edits(
+    qt_app: QApplication,
+) -> None:
+    """Reset target is the last Load snapshot, not the values the dialog opened on."""
+    live = [
+        _row(
+            "PR3_RedZone",
+            [4, 8, 12, 60],
+            "return_94_0",
+            ["return_92_0", "return_94_0"],
+        )
+    ]
+    form = [
+        _row(
+            "PR3_RedZone",
+            [4, 8],
+            "return_92_0",
+            ["return_92_0", "return_94_0"],
+        )
+    ]
+    dialog = GameMathDialog(
+        live_rows=live, form_rows=form, focus_theme="PR3_RedZone"
+    )
+    dialog.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    dialog.show()
+    qt_app.processEvents()
+    opened = [radio for radio in dialog._rtp_buttons if radio.isChecked()]
+    assert opened[0].property("rtpToken") == "return_92_0"
+    dialog.findChild(QPushButton, "gameMathResetOne").click()
+    qt_app.processEvents()
+    row = dialog.result_rows()[0]
+    assert row.return_percent == "return_94_0"
+    assert row.bet_multipliers == [4, 8, 12, 60]
+    checked = [radio for radio in dialog._rtp_buttons if radio.isChecked()]
+    assert checked[0].property("rtpToken") == "return_94_0"
+    label = dialog._list.item(0).text()
+    assert "RedZone" in label
+    assert not label.startswith("•")
+
+
+def test_reset_this_game_without_leaving_the_title(qt_app: QApplication) -> None:
+    """First-row Reset must repaint radios even if the list selection is unchanged."""
+    live = [
+        _row(
+            "PR3_RedZone",
+            [4, 8, 12, 60],
+            "return_94_0",
+            ["return_92_0", "return_94_0"],
+        )
+    ]
+    dialog = GameMathDialog(live_rows=live, form_rows=live, focus_theme="PR3_RedZone")
+    dialog.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    dialog.show()
+    qt_app.processEvents()
+    _click_rtp(dialog, "return_92_0")
+    drop = next(box for box in dialog._bet_boxes if int(box.property("betStep")) == 60)
+    drop.setChecked(False)
+    qt_app.processEvents()
+    dialog.findChild(QPushButton, "gameMathResetOne").click()
+    qt_app.processEvents()
+    row = dialog.result_rows()[0]
+    assert row.return_percent == "return_94_0"
+    assert row.bet_multipliers == [4, 8, 12, 60]
+    checked = [radio for radio in dialog._rtp_buttons if radio.isChecked()]
+    assert len(checked) == 1
+    assert checked[0].property("rtpToken") == "return_94_0"
+    assert all(box.isChecked() for box in dialog._bet_boxes)
+
+
+def test_reset_all_after_set_rtp_on_every_game(
+    qt_app: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    live = [
+        _row(
+            "PR3_RedZone",
+            [4, 8],
+            "return_94_0",
+            ["return_92_0", "return_94_0"],
+        ),
+        _row(
+            "SearchForAtlantisDeluxe",
+            [4, 8],
+            "return_92_0",
+            ["return_92_0", "return_94_0"],
+        ),
+    ]
+    monkeypatch.setattr(
+        "gui.game_math_dialog.QMessageBox.information", lambda *a, **k: None
+    )
+    dialog = GameMathDialog(
+        live_rows=live, form_rows=live, focus_theme="SearchForAtlantisDeluxe"
+    )
+    dialog.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    dialog.show()
+    qt_app.processEvents()
+    _click_rtp(dialog, "return_94_0")
+    qt_app.processEvents()
+    dialog._set_rtp_all()
+    qt_app.processEvents()
+    by_theme = {row.theme: row for row in dialog.result_rows()}
+    assert by_theme["PR3_RedZone"].return_percent == "return_94_0"
+    assert by_theme["SearchForAtlantisDeluxe"].return_percent == "return_94_0"
+    dialog.findChild(QPushButton, "gameMathResetAll").click()
+    qt_app.processEvents()
+    by_theme = {row.theme: row for row in dialog.result_rows()}
+    assert by_theme["PR3_RedZone"].return_percent == "return_94_0"
+    assert by_theme["SearchForAtlantisDeluxe"].return_percent == "return_92_0"
+    checked = [radio for radio in dialog._rtp_buttons if radio.isChecked()]
+    assert len(checked) == 1
+    assert checked[0].property("rtpToken") == "return_92_0"
+
+
 def test_live_push_panel_loads_game_combo(qt_app: QApplication, tmp_path) -> None:
     from config_scanner.live_push import load_live_cabinet
 
