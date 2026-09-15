@@ -19,6 +19,8 @@ from config_scanner.game_math import (
     set_return_percent_where_allowed,
     theme_bet_step_errors,
     theme_display_name,
+    theme_math_write_errors,
+    theme_rtp_errors,
 )
 from config_scanner.live_push import (
     live_push_ramclear_reasons,
@@ -31,9 +33,13 @@ from config_scanner.slot_setup import (
     SlotSetupRecipe,
     build_config_pack,
     load_recipe_from_goldclub,
+    math_settings_unreadable_reason,
     receives_live_push_bet_steps,
 )
-from config_scanner.denom_compat import validate_denom_configuration
+from config_scanner.denom_compat import (
+    validate_denom_configuration,
+    validate_live_push_recipe,
+)
 from tests.test_slot_setup import _fake_goldclub, _write
 
 
@@ -243,3 +249,61 @@ def test_offered_steps_stay_on_theme_ladder() -> None:
     form = _row("BigSafari_HnW", bets=[4, 8], rtp="return_94_0")
     assert offered_bet_steps(form, live) == [4, 8, 12, 16]
     assert allowed_return_choices(live) == ["return_94_0"]
+
+
+def test_rtp_blocked_when_mathsettings_missing(tmp_path: Path) -> None:
+    gold = _fake_goldclub(tmp_path)
+    live = [_row("GhostTheme", bets=[1, 2], rtp="return_92_0", allowed=["return_92_0", "return_94_0"])]
+    form = clone_math_rows(live)
+    form[0].return_percent = "return_94_0"
+    errors = theme_math_write_errors(gold, live, form)
+    assert any("not present" in err and "GhostTheme" in err for err in errors)
+    assert math_settings_unreadable_reason(gold, "GhostTheme")
+    recipe_live = SlotSetupRecipe(math=live)
+    recipe_form = SlotSetupRecipe(math=form)
+    assert any(
+        "not present" in err
+        for err in validate_live_push_recipe(recipe_live, recipe_form, gold)
+    )
+    try:
+        build_config_pack(recipe_form, gold, tmp_path / "missing-math-pack")
+    except ValueError as exc:
+        assert "not present" in str(exc)
+    else:
+        raise AssertionError("expected pack to refuse a missing MathSettings.xml")
+
+
+def test_rtp_blocked_when_mathsettings_undecodable(tmp_path: Path) -> None:
+    gold = _fake_goldclub(tmp_path)
+    live = load_recipe_from_goldclub(gold, label="live")
+    safari = gold / "slot" / "themes" / "BigSafari_HnW" / "MathSettings.xml"
+    safari.write_bytes(b"\x00\x01encrypted-math")
+    form = SlotSetupRecipe.from_dict(live.to_dict())
+    form.math[0].return_percent = "return_92_0"
+    errors = theme_math_write_errors(gold, live.math, form.math)
+    assert any("cannot be decoded" in err for err in errors)
+    assert "cannot be decoded" in (math_settings_unreadable_reason(gold, "BigSafari_HnW") or "")
+    reloaded = load_recipe_from_goldclub(gold, label="again")
+    assert reloaded.math == []
+
+
+def test_rtp_blocked_when_token_not_allowed_or_empty() -> None:
+    live = [_row("PR3_RedZone", bets=[1, 2], rtp="return_92_0", allowed=["return_92_0"])]
+    bad = clone_math_rows(live)
+    bad[0].return_percent = "return_99_0"
+    errors = theme_rtp_errors(live, bad)
+    assert errors
+    assert "AllowedReturnPercents" in errors[0]
+    empty = clone_math_rows(live)
+    empty[0].return_percent = ""
+    assert any("cannot be empty" in err for err in theme_rtp_errors(live, empty))
+
+
+def test_rtp_allowed_token_passes_when_file_readable(tmp_path: Path) -> None:
+    gold = _fake_goldclub(tmp_path)
+    live = load_recipe_from_goldclub(gold, label="live")
+    form = SlotSetupRecipe.from_dict(live.to_dict())
+    form.math[0].return_percent = "return_92_0"
+    assert theme_math_write_errors(gold, live.math, form.math) == []
+    result = validate_denom_configuration(live, form, gold)
+    assert result.ok
