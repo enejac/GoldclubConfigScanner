@@ -58,6 +58,61 @@ def test_remember_shared_cabinet_target_writes_both_screens(isolated_settings: s
     assert remember_shared_cabinet_target("") == recent
 
 
+def test_enter_in_cabinet_field_loads_typed_ip(
+    qt_app: QApplication, isolated_settings: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from PySide6.QtTest import QTest
+
+    from gui import cabinet_target_row as row
+
+    monkeypatch.setattr(row, "this_pc_live_target", lambda: None)
+    widget = row.CabinetTargetRow(initial=r"\\10.0.0.111\c$\Goldclub")
+    widget.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    widget.show()
+    qt_app.processEvents()
+
+    got: list[str] = []
+    widget.load_requested.connect(got.append)
+    widget.set_text(r"\\10.0.0.76\c$\Goldclub")
+    QTest.keyClick(widget.line_edit(), Qt.Key.Key_Return)
+    qt_app.processEvents()
+    assert got == [r"\\10.0.0.76\c$\Goldclub"]
+
+
+def test_enter_key_helper_ignores_dropdown() -> None:
+    pytest.importorskip("PySide6.QtCore")
+    from PySide6.QtCore import QEvent, Qt
+
+    from gui.cabinet_target_row import is_cabinet_load_enter
+
+    class _Evt:
+        def __init__(self, typ: object, key: object) -> None:
+            self._typ = typ
+            self._key = key
+
+        def type(self) -> object:
+            return self._typ
+
+        def key(self) -> object:
+            return self._key
+
+    assert is_cabinet_load_enter(_Evt(QEvent.Type.KeyPress, Qt.Key.Key_Return)) is True
+    assert is_cabinet_load_enter(_Evt(QEvent.Type.KeyPress, Qt.Key.Key_Enter)) is True
+    assert is_cabinet_load_enter(
+        _Evt(QEvent.Type.KeyPress, Qt.Key.Key_Return), popup_open=True
+    ) is False
+    assert is_cabinet_load_enter(_Evt(QEvent.Type.KeyPress, Qt.Key.Key_Tab)) is False
+
+
+def test_live_push_enter_wires_load() -> None:
+    src = (
+        Path(__file__).resolve().parents[1] / "gui" / "live_push_panel.py"
+    ).read_text(encoding="utf-8")
+    assert "returnPressed.connect(self._load)" in src
+    assert "setCompleter(None)" in src
+    assert "is_cabinet_load_enter" in src
+
+
 def test_row_has_live_push_controls_and_normalizes_ip(
     qt_app: QApplication, isolated_settings: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:

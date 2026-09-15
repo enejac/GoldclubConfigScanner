@@ -10,7 +10,7 @@ that was last used on either of them.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
+from PySide6.QtCore import QEvent, QObject, QRunnable, QThreadPool, Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -88,6 +88,29 @@ def _combo_has_path(combo: QComboBox, path: str) -> bool:
         if key == want:
             return True
     return False
+
+
+def is_cabinet_load_enter(event: object, *, popup_open: bool = False) -> bool:
+    """True for Return/Enter in the Cabinet field when the dropdown is closed.
+
+    An editable combo only emits ``activated`` when the operator picks a
+    list item. Typing a new last octet and pressing Enter must Load too.
+    """
+    if popup_open:
+        return False
+    try:
+        if event.type() != QEvent.Type.KeyPress:
+            return False
+        return int(event.key()) in (int(Qt.Key.Key_Return), int(Qt.Key.Key_Enter))
+    except Exception:
+        return False
+
+
+def combo_popup_is_open(combo: QComboBox | None) -> bool:
+    if combo is None:
+        return False
+    view = combo.view()
+    return bool(view is not None and view.isVisible())
 
 
 def sort_fleet_ips(ips: list[str]) -> list[str]:
@@ -211,9 +234,11 @@ class CabinetTargetRow(QWidget):
         self._edit.setPlaceholderText(CABINET_FIELD_PLACEHOLDER)
         self._edit.setClearButtonEnabled(True)
         self._edit.setToolTip(CABINET_FIELD_TOOLTIP)
+        self._combo.setCompleter(None)
         self._edit.textChanged.connect(self.text_changed.emit)
         self._edit.editingFinished.connect(self.editing_finished.emit)
         self._edit.returnPressed.connect(self._emit_load)
+        self._edit.installEventFilter(self)
         self._combo.activated.connect(lambda _i: self._emit_load())
         lay.addWidget(self._combo, stretch=1)
 
@@ -236,6 +261,14 @@ class CabinetTargetRow(QWidget):
 
         start = shared_cabinet_target() if initial is None else initial
         self.refresh_history(current=start)
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802
+        if watched is self._edit and is_cabinet_load_enter(
+            event, popup_open=combo_popup_is_open(self._combo)
+        ):
+            self._emit_load()
+            return True
+        return super().eventFilter(watched, event)
 
     # -- accessors ---------------------------------------------------------
     def line_edit(self) -> QLineEdit:
@@ -389,10 +422,13 @@ class CabinetTargetRow(QWidget):
 
     # -- actions -----------------------------------------------------------
     def normalized_target(self) -> str:
-        """Typed IP → UNC Goldclub root (no network probe); paths pass through."""
-        index = self._combo.currentIndex()
-        data = self._combo.itemData(index) if index >= 0 else None
-        raw = strip_cabinet_combo_label(str(data) if data else self.text())
+        """Typed IP → UNC Goldclub root (no network probe); paths pass through.
+
+        Always read the line edit. ``currentIndex`` stays on the last loaded
+        cabinet after the operator changes only the last octet, so itemData
+        would Load the old IP.
+        """
+        raw = self.text()
         if not raw:
             return ""
         resolved = resolve_live_target_from_user(raw, probe=False)

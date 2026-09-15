@@ -259,6 +259,29 @@ def test_cabinet_hint_needs_resolve_for_bare_ip_only() -> None:
     assert cabinet_hint_needs_resolve(r"C:\Goldclub") is False
 
 
+def test_typed_ip_last_octet_and_display_label_resolve() -> None:
+    from config_scanner.live_push import (
+        cabinet_field_text,
+        live_targets_for_ip,
+        normalize_typed_ipv4,
+        resolve_live_target_from_user,
+    )
+
+    assert normalize_typed_ipv4("10.0.0.076") == "10.0.0.76"
+    assert cabinet_field_text(r"\\10.0.0.111\c$\goldclub (GST20663)") == (
+        r"\\10.0.0.111\c$\goldclub"
+    )
+    assert resolve_live_target_from_user("10.0.0.076", probe=False) == (
+        r"\\10.0.0.76\c$\Goldclub"
+    )
+    assert resolve_live_target_from_user(
+        r"\\10.0.0.76\c$\goldclub (GST20663)", probe=False
+    ) == r"\\10.0.0.76\c$\goldclub"
+    assert live_targets_for_ip(r"\\10.0.0.076\c$\Goldclub") == (
+        r"\\10.0.0.76\c$\Goldclub",
+    )
+
+
 def test_this_pc_live_target_none_when_not_a_cabinet(tmp_path: Path) -> None:
     missing = tmp_path / "no-goldclub"
     assert this_pc_live_target(local_candidates=(str(missing),)) is None
