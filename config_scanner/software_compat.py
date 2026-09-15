@@ -394,7 +394,15 @@ def _slot_should_skip_file(relative_posix: str, name: str) -> bool:
     return False
 
 
-def _copy_slot_tree(src: Path, dest: Path, prefix: str) -> int:
+def _copy_slot_tree(
+    src: Path,
+    dest: Path,
+    prefix: str,
+    *,
+    licence_keep: frozenset[str] | None = None,
+) -> int:
+    from config_scanner.path_mirror import licence_mirror_key, normalize_rel
+
     copied = 0
     dest.mkdir(parents=True, exist_ok=True)
     for dirpath, dirnames, filenames in os.walk(src):
@@ -410,6 +418,12 @@ def _copy_slot_tree(src: Path, dest: Path, prefix: str) -> int:
             rel = name if rel_dir in {".", ""} else f"{rel_dir}/{name}"
             full_rel = f"{prefix}/{rel}".replace("\\", "/")
             if _slot_should_skip_file(full_rel, name):
+                continue
+            if (
+                licence_keep is not None
+                and licence_mirror_key(full_rel)
+                and normalize_rel(full_rel).casefold() not in licence_keep
+            ):
                 continue
             source = current / name
             target = dest / Path(*rel.split("/"))
@@ -493,11 +507,19 @@ def capture_slot_software_into_snapshot(
                 "No live OneHand.exe — config was saved, software was not captured.",
             )
         dest.mkdir(parents=True, exist_ok=True)
+        from config_scanner.path_mirror import (
+            canonical_licence_rels_on_disk,
+            licence_mirror_key,
+        )
+
+        licence_keep = canonical_licence_rels_on_disk(live)
         copied = 0
         for tree in _SLOT_SOFTWARE_TREES:
             src = live / tree
             if src.is_dir():
-                copied += _copy_slot_tree(src, dest / tree, tree)
+                copied += _copy_slot_tree(
+                    src, dest / tree, tree, licence_keep=licence_keep
+                )
         slot_live = live / "slot" if (live / "slot").is_dir() else live
         if (slot_live / "themes").is_dir():
             slot_dest = dest / "slot" if slot_live.name.casefold() == "slot" else dest
@@ -510,6 +532,8 @@ def capture_slot_software_into_snapshot(
             if src.suffix.casefold() not in {".exe", ".dll", ".ini"}:
                 continue
             if _slot_should_skip_file(src.name, src.name):
+                continue
+            if licence_mirror_key(src.name) and src.name.casefold() not in licence_keep:
                 continue
             shutil.copy2(src, dest / src.name)
             copied += 1

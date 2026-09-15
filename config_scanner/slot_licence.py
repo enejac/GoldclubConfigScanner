@@ -81,6 +81,9 @@ _SLOT_LICENCE_GLOBS: tuple[str, ...] = (
     "config/licences/**/*.xml",
     "config/licenses/**/*.xml",
     "slot/Licence*.xml",
+    "slot/License*.xml",
+    "Licence*.xml",
+    "License*.xml",
     "slot/licence.dll",
     "slot/license.dll",
     "licence.dll",
@@ -114,7 +117,11 @@ def _is_slot_licence_rel(relative_path: str) -> bool:
     name = Path(norm).name
     if name in _BIOS_BIND_NAMES:
         return False
-    return is_licence_path(norm)
+    if is_licence_path(norm):
+        return True
+    from config_scanner.path_mirror import licence_mirror_key
+
+    return licence_mirror_key(norm) is not None
 
 
 def _collect_live_licence_paths(root: Path) -> list[Path]:
@@ -147,8 +154,19 @@ def capture_licence_state_for_rollback(dest_root: Path, snapshot_dir: Path) -> l
     entries: list[dict[str, object]] = []
     notes: list[str] = []
 
-    for path in _collect_live_licence_paths(dest):
+    from config_scanner.path_mirror import select_canonical_licence_paths
+
+    live_paths = _collect_live_licence_paths(dest)
+    keep = {
+        _normalize_rel(rel).casefold()
+        for rel in select_canonical_licence_paths(
+            _normalize_rel(str(path.relative_to(dest))) for path in live_paths
+        )
+    }
+    for path in live_paths:
         rel = _normalize_rel(str(path.relative_to(dest)))
+        if rel.casefold() not in keep:
+            continue
         archived = _archive_name(rel)
         entry: dict[str, object] = {"rel": rel, "present": True}
         try:

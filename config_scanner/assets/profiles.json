@@ -205,10 +205,7 @@
         "bios/etc/game-start/checksum.sha1",
         "bios/etc/game-start/checksum.md5",
         "bios/etc/game-start/list-game.sha1",
-        "licence.dll",
         "slot/licence.dll",
-        "license.dll",
-        "slot/license.dll",
         "Services/aurum/config/SASControler1/crcfileslist.txt",
         "services/aurum/config/SASControler1/crcfileslist.txt"
       ]

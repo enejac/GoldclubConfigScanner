@@ -401,7 +401,10 @@ def collect_scan_files(
     include_patterns: list[str],
     extra_file_globs: list[str] | tuple[str, ...] | None = None,
 ) -> list[Path]:
-    from config_scanner.path_mirror import select_highest_etc_mirror_paths
+    from config_scanner.path_mirror import (
+        select_canonical_licence_paths,
+        select_highest_etc_mirror_paths,
+    )
 
     seen: set[Path] = set()
     files: list[Path] = []
@@ -456,8 +459,10 @@ def collect_scan_files(
             continue
 
     # config/etc and bios/etc are the same settings tree — keep highest path only.
+    # Licence XML is copied to root / Licenses / slot — keep Licenses\\ only.
     rel_to_path = {_relative_path(game_drive, path): path for path in files}
     kept_rels = select_highest_etc_mirror_paths(rel_to_path.keys())
+    kept_rels = select_canonical_licence_paths(kept_rels)
     return sorted(
         (rel_to_path[rel] for rel in kept_rels),
         key=lambda path: _relative_path(game_drive, path).lower(),
