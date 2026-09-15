@@ -117,6 +117,7 @@ from config_scanner.live_push import (
     locale_defaults_for_market,
     overlay_jurisdiction_recipe,
     prepare_live_goldclub,
+    resolve_goldclub_for_slotlog,
     COUNTRY_FLAG_LABEL,
     recipe_change_lines,
     recipe_from_market_id,
@@ -3657,13 +3658,11 @@ class LivePushPanel(QWidget):
             self._status.setText(offline.splitlines()[0])
             QMessageBox.warning(self, "SlotLog", offline)
             return
-        try:
-            goldclub = goldclub_root_from_target(raw)
-        except (OSError, ValueError) as exc:
-            QMessageBox.warning(self, "SlotLog", str(exc))
-            return
-        if not goldclub.is_dir():
-            QMessageBox.warning(self, "SlotLog", f"Goldclub not found:\n{goldclub}")
+        goldclub, err = resolve_goldclub_for_slotlog(self._goldclub, raw)
+        if goldclub is None:
+            QMessageBox.warning(
+                self, "SlotLog", err or f"Goldclub not found:\n{raw}"
+            )
             return
         since = self._last_apply_since
         if since is None:
@@ -3708,8 +3707,14 @@ class LivePushPanel(QWidget):
         # Enrich market fix with live OneHand enum when possible.
         extra = ""
         try:
-            goldclub = goldclub_root_from_target(self._path.text().strip())
-            allowed = sorted(markets_accepted_by_onehand(goldclub) or ())
+            goldclub, _err = resolve_goldclub_for_slotlog(
+                self._goldclub, self._path.text().strip()
+            )
+            allowed = (
+                sorted(markets_accepted_by_onehand(goldclub) or ())
+                if goldclub is not None
+                else []
+            )
             if allowed:
                 extra = f"\n\nThis OneHand accepts Target market: {', '.join(allowed)}"
         except (OSError, ValueError, TypeError):
@@ -3771,10 +3776,9 @@ class LivePushPanel(QWidget):
             QMessageBox.warning(self, "Restore", f"Backup not found:\n{bak}")
             return
         raw = self._path.text().strip()
-        try:
-            goldclub = goldclub_root_from_target(raw)
-        except (OSError, ValueError) as exc:
-            QMessageBox.warning(self, "Restore", str(exc))
+        goldclub, err = resolve_goldclub_for_slotlog(self._goldclub, raw)
+        if goldclub is None:
+            QMessageBox.warning(self, "Restore", err or "Load a cabinet path first.")
             return
         reply = QMessageBox.question(
             self,
